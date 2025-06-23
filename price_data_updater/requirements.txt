@@ -1,7 +1,4 @@
-google-cloud-pubsub
 google-cloud-bigquery
 google-cloud-storage
 pandas
 requests
-pyarrow
-openpyxl
