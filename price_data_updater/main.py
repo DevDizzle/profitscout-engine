@@ -169,14 +169,17 @@ def fetch_prices_for_ticker(ticker: str, start_date: datetime.date, end_date: da
 def update_prices_for_ticker(ticker: str) -> pd.DataFrame:
     logging.info(f"▶ Updating {ticker} …")
     print(f"▶ Updating {ticker} …")
-    if INITIAL_LOAD:
-        start_date = DEFAULT_START_DATE
-    else:
+    
+    start_date = DEFAULT_START_DATE  # Default to the earliest desired date
+
+    if not INITIAL_LOAD:
         max_date = get_max_date(ticker)
         if max_date:
+            # If we have data, start from the next day
             start_date = max_date + datetime.timedelta(days=1)
-        else:
-            start_date = TODAY - datetime.timedelta(days=LOOKBACK_DAYS)
+        # If no max_date is found, we keep the original DEFAULT_START_DATE
+        # to ensure a full backfill for new tickers.
+
     end_date = TODAY
     df_prices = fetch_prices_for_ticker(ticker, start_date, end_date)
     return df_prices
