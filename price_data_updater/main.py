@@ -1,43 +1,59 @@
+import concurrent.futures
 import datetime
 import logging
 import os
+import time
+from threading import Lock
+
 import pandas as pd
 import requests
-from google.cloud import bigquery
-from google.cloud.exceptions import NotFound
-from threading import Lock
-import json
-import time
-import concurrent.futures
-import base64
-from google.cloud import pubsub_v1   
+from google.cloud import bigquery, storage
 
-# ---------- CONFIGURATION ----------
-FMP_API_KEY = os.getenv("FMP_API_KEY")
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
 BIGQUERY_TABLE = os.getenv("BIGQUERY_TABLE", "price_data")
-TICKER_LIST_PATH = "tickerlist.xlsx"
-LOOKBACK_DAYS = 7
+TICKER_FILE_PATH = "tickerlist.txt"
 DEFAULT_START_DATE = datetime.date(2022, 1, 1)
-TODAY = datetime.date.today()
+MAX_WORKERS = 24
 
-# ---------- AUTH ----------
+def _get_secret(secret_id: str) -> str | None:
+    """Reads a secret from the filesystem, as mounted by Google Cloud Functions."""
+    secret_path = f"/secrets/{secret_id}"
+    try:
+        with open(secret_path, "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        logging.error(f"Secret file not found at {secret_path}. Ensure the secret is mounted correctly in your deployment.")
+        # For local testing, you can fall back to an environment variable
+        fallback_key = os.getenv(secret_id)
+        if fallback_key:
+            logging.warning(f"Falling back to environment variable for {secret_id}. This should not happen in production.")
+            return fallback_key
+        return None
+
+# Retrieve the FMP API Key from Secret Manager
+FMP_API_KEY = _get_secret("FMP_API_KEY")
+
+# ==============================================================================
+# SETUP LOGGING AND API CLIENTS
+# ==============================================================================
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 bq_client = bigquery.Client(project=PROJECT_ID)
+storage_client = storage.Client(project=PROJECT_ID)
 
-# ---------- DETECT INITIAL LOAD ----------
-INITIAL_LOAD = False
-try:
-    bq_client.get_table(f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}")
-    logging.info(f"Table exists → running incremental append.")
-    print("✅ BigQuery table found, running incremental append.")
-except NotFound:
-    INITIAL_LOAD = True
-    logging.info(f"Table not found → running full load from {DEFAULT_START_DATE.isoformat()}.")
-    print("⚠️ BigQuery table NOT found, running full load.")
+# (The rest of the helper functions: RateLimiter, get_tickers, get_start_dates, fetch_prices_for_ticker remain unchanged from the previous version)
 
-# ---------- RATE LIMITER ----------
+# ==============================================================================
+# RATE LIMITER
+# ==============================================================================
 class RateLimiter:
+    """A simple thread-safe rate limiter."""
     def __init__(self, max_calls_per_period=50, period=1.0):
         self.max_calls = max_calls_per_period
         self.period = period
@@ -50,251 +66,157 @@ class RateLimiter:
             self.calls_timestamps = [ts for ts in self.calls_timestamps if now - ts < self.period]
             if len(self.calls_timestamps) >= self.max_calls:
                 sleep_time = (self.calls_timestamps[0] + self.period) - now
-                logging.info(f"⏱ Rate limit reached. Sleeping {sleep_time:.2f}s")
-                print(f"⏱ Rate limit reached. Sleeping {sleep_time:.2f}s")
+                logging.info(f"Rate limit reached. Sleeping for {sleep_time:.2f}s")
                 time.sleep(sleep_time)
             self.calls_timestamps.append(time.time())
 
-rate_limiter = RateLimiter(max_calls_per_period=50, period=1.0)
+rate_limiter = RateLimiter()
 
-# ---------- HELPERS ----------
+
+# ==============================================================================
+# HELPER FUNCTIONS
+# ==============================================================================
 def get_tickers() -> list[str]:
-    tickers = []
-    if not INITIAL_LOAD:
-        try:
-            query = f"""
-                SELECT DISTINCT ticker
-                FROM `{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}`
-                WHERE ticker IS NOT NULL AND ticker != ''
-                ORDER BY ticker
-            """
-            logging.info(f"Querying distinct tickers from BigQuery")
-            print("🔍 Querying tickers from BigQuery ...")
-            rows = bq_client.query(query).result(timeout=180)
-            tickers = [r.ticker for r in rows]
-            logging.info(f"Found {len(tickers)} tickers in BigQuery")
-            print(f"✅ {len(tickers)} tickers loaded from BigQuery.")
-        except Exception as e:
-            logging.warning(f"Could not fetch tickers from BigQuery: {e}")
-            print(f"⚠️ Could not fetch tickers from BigQuery: {e}")
+    """Loads the authoritative ticker list from a simple text file in GCS."""
+    try:
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(TICKER_FILE_PATH)
+        if not blob.exists():
+            logging.error(f"FATAL: Ticker file not found at gs://{GCS_BUCKET_NAME}/{TICKER_FILE_PATH}")
+            return []
+        
+        ticker_data = blob.download_as_text(encoding="utf-8")
+        tickers = [
+            line.strip().upper()
+            for line in ticker_data.strip().split("\n")
+            if line.strip()
+        ]
+        logging.info(f"Loaded {len(tickers)} tickers from gs://{GCS_BUCKET_NAME}/{TICKER_FILE_PATH}")
+        return tickers
+    except Exception as e:
+        logging.error(f"FATAL: Could not read ticker file from GCS: {e}")
+        return []
 
-    if not tickers:
-        try:
-            from google.cloud import storage
-            print("🔍 Loading tickerlist from GCS ...")
-            storage_client = storage.Client(project=PROJECT_ID)
-            bucket = storage_client.bucket("profit-scout-data")
-            blob = bucket.blob(TICKER_LIST_PATH)
-            temp_file = "/tmp/tickerlist.xlsx"
-            blob.download_to_filename(temp_file)
-            df = pd.read_excel(temp_file)
-            os.remove(temp_file)
-            tickers = df["Ticker"].dropna().astype(str).str.upper().tolist()
-            logging.info(f"Loaded {len(tickers)} tickers from GCS")
-            print(f"✅ {len(tickers)} tickers loaded from GCS.")
-        except Exception as e:
-            logging.error(f"Failed to load tickers from GCS: {e}")
-            print(f"❌ Failed to load tickers from GCS: {e}")
 
-    if not tickers:
-        logging.error("No tickers found – exiting.")
-        print("❌ No tickers found – exiting.")
-    return tickers
-
-def get_max_date(ticker: str) -> datetime.date | None:
+def get_start_dates(all_tickers: list[str]) -> dict:
+    """Queries BigQuery once to get the last recorded date for all tickers."""
+    logging.info("Querying BigQuery to get max dates for all existing tickers...")
+    table_ref = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
     try:
         query = f"""
-            SELECT MAX(date) AS max_date
-            FROM `{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}`
-            WHERE ticker = @ticker
+            SELECT ticker, MAX(date) AS max_date
+            FROM `{table_ref}`
+            GROUP BY ticker
         """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("ticker", "STRING", ticker)]
-        )
-        res = bq_client.query(query, job_config=job_config).result(timeout=60)
-        max_date = next(res).max_date
-        if max_date:
-            return max_date.date() if hasattr(max_date, "date") else max_date
+        results = bq_client.query(query).result()
+        max_dates = {row["ticker"]: row["max_date"].date() for row in results if row["max_date"]}
+        logging.info(f"Found max dates for {len(max_dates)} tickers in BigQuery.")
     except Exception as e:
-        logging.error(f"Error fetching max date for {ticker}: {e}")
-        print(f"⚠️ Error fetching max date for {ticker}: {e}")
-    return None
+        logging.warning(f"Could not query max dates from BigQuery (this is normal if table is new): {e}")
+        max_dates = {}
 
-def process_fmp_data(json_list: list[dict], ticker: str) -> pd.DataFrame:
-    if not json_list:
-        return pd.DataFrame()
-    df = pd.DataFrame(json_list)
-    df = df.rename(columns={"adjClose": "adj_close"})
-    df["ticker"] = ticker
-    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-    cols = ["ticker", "date", "open", "high", "low", "adj_close", "volume"]
-    available = [c for c in cols if c in df.columns]
-    df = df[available]
-    for c in ["open", "high", "low", "adj_close", "volume"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna()
-    return df
+    start_dates = {}
+    for ticker in all_tickers:
+        if ticker in max_dates:
+            start_dates[ticker] = max_dates[ticker] + datetime.timedelta(days=1)
+        else:
+            start_dates[ticker] = DEFAULT_START_DATE
+    return start_dates
+
 
 def fetch_prices_for_ticker(ticker: str, start_date: datetime.date, end_date: datetime.date) -> pd.DataFrame:
-    if start_date >= end_date:
+    """Fetches historical price data for a single ticker from the FMP API."""
+    if start_date > end_date:
+        logging.info(f"{ticker}: Already up-to-date.")
         return pd.DataFrame()
+
     start_str = start_date.isoformat()
-    to_str = end_date.isoformat()
-    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?from={start_str}&to={to_str}&apikey={FMP_API_KEY}"
+    end_str = end_date.isoformat()
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?from={start_str}&to={end_str}&apikey={FMP_API_KEY}"
+    
     rate_limiter.acquire()
+    
     try:
-        logging.info(f"Fetching {ticker} from {start_str} to {to_str}")
-        print(f"🌐 Fetching {ticker} from {start_str} to {to_str}")
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         hist = data.get("historical", [])
         if not hist:
-            logging.info(f"{ticker}: no data returned by FMP.")
-            print(f"{ticker}: no data returned by FMP.")
+            logging.warning(f"{ticker}: No historical data returned from API for date range {start_str} to {end_str}.")
             return pd.DataFrame()
-        df = process_fmp_data(hist, ticker)
-        logging.info(f"{ticker}: fetched {len(df)} new rows.")
-        print(f"✅ {ticker}: {len(df)} new rows fetched.")
+
+        df = pd.DataFrame(hist)
+        df = df.rename(columns={"adjClose": "adj_close"})
+        df["ticker"] = ticker
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None).dt.date
+        
+        required_cols = ["ticker", "date", "open", "high", "low", "adj_close", "volume"]
+        df = df[[col for col in required_cols if col in df.columns]]
+
+        for col in ["open", "high", "low", "adj_close", "volume"]:
+             if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna()
+
+        logging.info(f"{ticker}: Fetched {len(df)} new rows from {start_str} to {end_str}.")
         return df
     except requests.HTTPError as http_err:
-        logging.error(f"{ticker}: HTTP error → {http_err}")
-        print(f"{ticker}: HTTP error → {http_err}")
+        logging.error(f"{ticker}: HTTP error fetching data: {http_err}")
     except Exception as e:
-        logging.error(f"{ticker}: fetch failed → {e}")
-        print(f"{ticker}: fetch failed → {e}")
+        logging.error(f"{ticker}: An unexpected error occurred: {e}")
+        
     return pd.DataFrame()
 
-def update_prices_for_ticker(ticker: str) -> pd.DataFrame:
-    logging.info(f"▶ Updating {ticker} …")
-    print(f"▶ Updating {ticker} …")
+
+# ==============================================================================
+# MAIN CLOUD FUNCTION ENTRYPOINT
+# ==============================================================================
+def populate_price_data(request) -> tuple[str, int]:
+    """
+    HTTP-triggered Cloud Function to update the BigQuery price table.
+    Orchestrates the entire batch update process.
+    """
+    if not FMP_API_KEY:
+        logging.critical("FMP_API_KEY secret is not configured. Terminating function.")
+        return "Server configuration error.", 500
+
+    logging.info("=== Starting Daily Price Update Batch Job ===")
     
-    start_date = DEFAULT_START_DATE  # Default to the earliest desired date
+    all_tickers = get_tickers()
+    if not all_tickers:
+        logging.error("No tickers found. Exiting job.")
+        return "No tickers found in tickerlist.txt.", 200
 
-    if not INITIAL_LOAD:
-        max_date = get_max_date(ticker)
-        if max_date:
-            # If we have data, start from the next day
-            start_date = max_date + datetime.timedelta(days=1)
-        # If no max_date is found, we keep the original DEFAULT_START_DATE
-        # to ensure a full backfill for new tickers.
+    today = datetime.date.today()
+    start_dates = get_start_dates(all_tickers)
 
-    end_date = TODAY
-    df_prices = fetch_prices_for_ticker(ticker, start_date, end_date)
-    return df_prices
-
-# ---------- MULTITHREADING WRAPPER ----------
-def process_ticker_threadsafe(tk):
-    try:
-        df_new = update_prices_for_ticker(tk)
-        if not df_new.empty:
-            logging.info(f"{tk}: processed {len(df_new)} new rows.")
-            print(f"✅ {tk}: processed {len(df_new)} new rows.")
-            return df_new
-        else:
-            logging.info(f"{tk}: no new data.")
-            print(f"{tk}: no new data.")
-    except Exception as e:
-        logging.error(f"Failure on {tk}: {e}")
-        print(f"❌ Failure on {tk}: {e}")
-    return None
-
-# ───────────────────────────────────────────────────────────────────────────
-# PRODUCER –  HTTP; publishes one Pub/Sub message per ticker
-# ───────────────────────────────────────────────────────────────────────────
-def produce(request):
-    tickers = get_tickers()
-    if not tickers:
-        return "No tickers", 200
-
-    publisher  = pubsub_v1.PublisherClient()
-    topic_path = publisher.topic_path(os.getenv("PROJECT_ID"), "fmp-price-sync")
-
-    for t in tickers:
-        publisher.publish(topic_path, json.dumps({"ticker": t}).encode())
-
-    return f"Queued {len(tickers)} tickers", 200
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# WORKER –  Pub/Sub; handles exactly ONE ticker
-# ───────────────────────────────────────────────────────────────────────────
-def worker(event, context):
-    try:
-        payload = json.loads(base64.b64decode(event["data"]).decode())
-        ticker  = payload["ticker"].upper()
-
-        df_new = update_prices_for_ticker(ticker)
-        if df_new.empty:
-            logging.info(f"{ticker}: no new rows")
-            return f"0 rows for {ticker}"
-
-        # ---- write to BigQuery (WRITE_APPEND) ----
-        job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_APPEND",
-            schema=[
-                bigquery.SchemaField("ticker", "STRING"),
-                bigquery.SchemaField("date", "TIMESTAMP"),
-                bigquery.SchemaField("open", "FLOAT"),
-                bigquery.SchemaField("high", "FLOAT"),
-                bigquery.SchemaField("low", "FLOAT"),
-                bigquery.SchemaField("adj_close", "FLOAT"),
-                bigquery.SchemaField("volume", "INTEGER"),
-            ],
-        )
-        job = bq_client.load_table_from_dataframe(
-            df_new,
-            f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}",
-            job_config=job_config,
-        )
-        job.result(timeout=300)
-        logging.info(f"{ticker}: loaded {job.output_rows} rows")
-        return f"{job.output_rows} rows for {ticker}"
-
-    except Exception as e:
-        logging.exception(f"Worker failure for {payload if 'payload' in locals() else 'unknown'}")
-        raise e          # Pub/Sub triggers retry
-
-# ---------- MAIN ----------
-def main(request, context=None):
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    print("🚀 Starting price data updater ...")
-    tickers = get_tickers()
-    if not tickers:
-        print("❌ No tickers loaded. Exiting.")
-        return
-
-    print(f"⏩ Processing {len(tickers)} tickers with 24 threads ...")
-    all_data = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=24) as executor:
-        future_to_ticker = {executor.submit(process_ticker_threadsafe, tk): tk for tk in tickers}
-        for i, future in enumerate(concurrent.futures.as_completed(future_to_ticker), 1):
-            tk = future_to_ticker[future]
+    all_dataframes = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_ticker = {
+            executor.submit(fetch_prices_for_ticker, ticker, start_dates.get(ticker, DEFAULT_START_DATE), today): ticker
+            for ticker in all_tickers
+        }
+        for future in concurrent.futures.as_completed(future_to_ticker):
             try:
-                result = future.result()
-                if result is not None and not result.empty:
-                    all_data.append(result)
-                print(f"Progress: {i}/{len(tickers)} tickers processed")
-            except Exception as exc:
-                logging.error(f"Ticker {tk} generated an exception: {exc}")
-                print(f"❌ Ticker {tk} generated an exception: {exc}")
+                result_df = future.result()
+                if not result_df.empty:
+                    all_dataframes.append(result_df)
+            except Exception as e:
+                ticker = future_to_ticker[future]
+                logging.error(f"An exception was raised for ticker {ticker} during fetch: {e}")
 
-    if not all_data:
-        logging.info("No new data to write; exiting.")
-        print("ℹ️ No new data to write; exiting.")
-        return
+    if not all_dataframes:
+        logging.info("No new price data to load. Job complete.")
+        return "No new price data to load.", 200
 
-    final_df = pd.concat(all_data, ignore_index=True)
-    logging.info(f"Prepared {len(final_df)} rows to load")
-    print(f"📦 Prepared {len(final_df)} rows to load into BigQuery.")
+    final_df = pd.concat(all_dataframes, ignore_index=True)
+    logging.info(f"Prepared a total of {len(final_df)} new rows to load into BigQuery.")
 
-    disposition = "WRITE_TRUNCATE" if INITIAL_LOAD else "WRITE_APPEND"
     job_config = bigquery.LoadJobConfig(
-        write_disposition=disposition,
+        write_disposition="WRITE_APPEND",
         schema=[
-            bigquery.SchemaField("ticker", "STRING"),
-            bigquery.SchemaField("date", "TIMESTAMP"),
+            bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
             bigquery.SchemaField("open", "FLOAT"),
             bigquery.SchemaField("high", "FLOAT"),
             bigquery.SchemaField("low", "FLOAT"),
@@ -302,12 +224,18 @@ def main(request, context=None):
             bigquery.SchemaField("volume", "INTEGER"),
         ],
     )
-    logging.info(f"Loading data with {disposition} …")
-    print(f"⬆️ Loading data into BigQuery with disposition={disposition} ...")
-    job = bq_client.load_table_from_dataframe(
-        final_df, f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}", job_config=job_config
-    )
-    job.result(timeout=300)
-    logging.info(f"✅ Loaded {job.output_rows} rows.")
-    print(f"✅ Loaded {job.output_rows} rows into BigQuery.")
-    print("🎉 === Price update complete ===")
+
+    try:
+        table_id = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
+        load_job = bq_client.load_table_from_dataframe(
+            final_df, table_id, job_config=job_config
+        )
+        load_job.result()
+        
+        logging.info(f"Successfully loaded {load_job.output_rows} rows into {table_id}.")
+        logging.info("=== Daily Price Update Batch Job Complete ===")
+        return f"Successfully loaded {load_job.output_rows} rows.", 200
+        
+    except Exception as e:
+        logging.error(f"FATAL: Failed to load data into BigQuery: {e}")
+        return "Failed to load data into BigQuery.", 500
