@@ -1,0 +1,6 @@
+google-cloud-storage
+pandas
+requests
+python-dateutil
+tenacity
+openpyxl

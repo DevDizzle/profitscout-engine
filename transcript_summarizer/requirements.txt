@@ -1,0 +1,7 @@
+google-genai
+google-cloud-storage
+google-auth
+pandas
+tenacity
+openpyxl
+requests

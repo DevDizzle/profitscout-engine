@@ -1,0 +1,7 @@
+google-cloud-pubsub
+google-cloud-storage
+pandas
+requests
+python-dateutil
+tenacity
+openpyxl
