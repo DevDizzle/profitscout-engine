@@ -41,9 +41,6 @@ graph TD
         D2 --> E[fa:fa-database GCS Buckets];
     end
 ```
-### **Part 3 of 3: The Bottom Section**
-
-```markdown
 ## 4. Technology Stack
 
 * **Cloud Provider**: Google Cloud Platform (GCP)
