@@ -1,5 +1,0 @@
-pandas
-google-cloud-storage
-requests
-openpyxl
-google-cloud-pubsub

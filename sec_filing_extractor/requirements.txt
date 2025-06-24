@@ -1,6 +1,6 @@
-# technicals_collector/requirements.txt
+# sec_filing_extractor/requirements.txt
 google-cloud-storage
-requests
+sec-api
 tenacity
 functions-framework
 python-dateutil

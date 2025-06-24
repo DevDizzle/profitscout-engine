@@ -1,7 +1,5 @@
-google-genai
+# transcript_summarizer/requirements.txt
 google-cloud-storage
-google-auth
-pandas
+google-genai
 tenacity
-openpyxl
-requests
+functions-framework
