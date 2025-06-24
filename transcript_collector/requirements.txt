@@ -1,6 +1,7 @@
+# transcript_collector/requirements.txt
 google-cloud-storage
-pandas
 requests
-python-dateutil
 tenacity
-openpyxl
+functions-framework
+python-dateutil
+pandas

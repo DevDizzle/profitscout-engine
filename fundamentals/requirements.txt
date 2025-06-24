@@ -1,0 +1,6 @@
+# fundamentals/requirements.txt
+functions-framework
+google-cloud-storage
+requests
+tenacity
+python-dateutil

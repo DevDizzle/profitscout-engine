@@ -1,4 +1,4 @@
-# statement_loader/main.py
+# fundamentals/main.py
 import logging
 from google.cloud import storage
 from config import PROJECT_ID, FMP_API_KEY_SECRET
@@ -20,6 +20,7 @@ def get_api_key_from_secret() -> str | None:
         logging.critical(f"Could not read secret from {secret_path}: {e}")
         return None
 
+# Initialize clients globally for reuse
 try:
     api_key = get_api_key_from_secret()
     storage_client = storage.Client(project=PROJECT_ID)
@@ -28,11 +29,11 @@ except Exception as e:
     logging.critical(f"A critical error occurred during client initialization: {e}")
     storage_client = fmp_client = None
 
-def load_statements(request):
+def refresh_fundamentals(request):
     """HTTP-triggered Google Cloud Function entry point."""
     if not all([storage_client, fmp_client]):
         logging.error("One or more clients are not initialized. Aborting.")
         return "Server configuration error: clients not initialized.", 500
 
     run_pipeline(fmp_client=fmp_client, storage_client=storage_client)
-    return "Statement loader pipeline started.", 202
+    return "Fundamentals refresh pipeline started.", 202
