@@ -16,7 +16,7 @@ GCS_OUTPUT_FOLDER = "earnings-call-summaries/"
 MAX_WORKERS = 3
 
 # --- Generative AI Model Configuration ---
-MODEL_NAME = "models/gemini-2.0-flash-001"
+MODEL_NAME = "models/gemini-2.0-flash"
 TEMPERATURE = 0.1
 MAX_TOKENS = 8192
 
