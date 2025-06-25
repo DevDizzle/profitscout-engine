@@ -5,7 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import (
     MAX_WORKERS, GCS_BUCKET_NAME, GCS_INPUT_FOLDER, GCS_OUTPUT_FOLDER,
-    TRANSCRIPT_SUMMARY_PROMPT, MODEL_NAME, TEMPERATURE, MAX_TOKENS
+    TRANSCRIPT_SUMMARY_PROMPT, TEMPERATURE, MAX_TOKENS
 )
 from core.gcs import list_input_blobs, blob_exists, download_transcript_text, upload_summary
 from core.client import GeminiClient
@@ -17,14 +17,12 @@ def process_transcript(blob: storage.Blob, gemini_client: GeminiClient, storage_
     if not filename.endswith(".json"):
         return f"Skipping non-JSON file: {filename}"
 
-    # Construct the expected output path
     output_filename = filename.replace(".json", ".txt")
     output_path = os.path.join(GCS_OUTPUT_FOLDER, output_filename)
 
     if blob_exists(storage_client, GCS_BUCKET_NAME, output_path):
         return f"Summary already exists for {filename}, skipping."
 
-    # Parse metadata from the filename (e.g., 'AAPL_2025-04-23.json')
     match = re.search(r"([A-Z]+)_(\d{4})-(\d{2})-(\d{2})\.json$", filename)
     if not match:
         return f"Could not parse ticker/date from filename: {filename}"
@@ -38,7 +36,6 @@ def process_transcript(blob: storage.Blob, gemini_client: GeminiClient, storage_
     if not transcript_text:
         return f"No content found in transcript: {filename}"
 
-    # Format the final prompt
     prompt = TRANSCRIPT_SUMMARY_PROMPT.format(
         ticker=ticker,
         quarter=quarter,
@@ -46,7 +43,7 @@ def process_transcript(blob: storage.Blob, gemini_client: GeminiClient, storage_
         transcript_text=transcript_text
     )
 
-    summary = gemini_client.summarize(prompt, MODEL_NAME, TEMPERATURE, MAX_TOKENS)
+    summary = gemini_client.summarize(prompt, TEMPERATURE, MAX_TOKENS)
 
     if not summary:
         return f"Failed to generate summary for {filename}."

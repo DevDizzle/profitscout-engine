@@ -24,22 +24,26 @@ main:
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
                   auth:
-                    type: OIDC        # ID token for Cloud Run/Functions :contentReference[oaicite:1]{index=1}
+                    type: OIDC
+                timeout: 900
             - call_fundamentals:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
                   auth: {type: OIDC}
+                timeout: 900
             - call_technicals:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
                   auth: {type: OIDC}
+                timeout: 900
             - call_sec_extractor:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
                   auth: {type: OIDC}
+                timeout: 900
 
         # ── Sequential transcript pipeline ──
         - transcript_pipeline:
@@ -47,15 +51,21 @@ main:
             - call_transcript_collector:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_collector_name}
+                  url: ${"https:" + "//" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_collector_name}
                   auth: {type: OIDC}
-                result: transcript_result       # holds collector response
+                result: transcript_result
+                timeout: 900
             - call_transcript_summarizer:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
+                  url: ${"https:" + "//" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
                   auth: {type: OIDC}
                 result: summarizer_result
+                timeout: 900
 
+  - log_finish:
+      call: sys.log
+      args:
+          text: "Pipeline finished successfully."
   - done:
       return: "Pipeline finished successfully."
