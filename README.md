@@ -28,7 +28,7 @@ graph TD
 
         B -->|Invokes in Parallel| C1[Function: extract-sec-filings];
         B -->|Invokes in Parallel| C2[Function: refresh-fundamentals];
-        B -->|Invokes in Parallel| C3[Function: update-prices];
+        B -->|Invokes in Parallel| C3[Function: refresh-prices];
         B -->|Invokes in Parallel| C4[Function: refresh-technicals];
 
         B -->|Invokes Sequentially| D1[Function: refresh-transcripts];
@@ -52,7 +52,7 @@ graph TD
 * **Language**: Python
 * **Key Libraries**: `google-cloud-storage`, `requests`, `tenacity`, `google-genai`
 * **Data Source APIs**: Financial Modeling Prep (FMP), SEC EDGAR (via `sec-api.io`)
-* **AI Model**: Google Gemini 1.5 Flash
+* **AI Model**: Google Gemini 2.0 Flash
 
 ## 5. Key Design & Engineering Decisions
 
