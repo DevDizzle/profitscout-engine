@@ -16,11 +16,10 @@ def generate_summary_with_retry(model, prompt: str, config: dict) -> str:
     return response.text
 
 class GeminiClient:
-    """A client for summarizing text using the Gemini API."""
-    def __init__(self, api_key: str):
-        if not api_key:
-            raise ValueError("Gemini API key is required.")
-        genai.configure(api_key=api_key)
+    """A client for summarizing text using the Gemini API via ADC."""
+    def __init__(self):
+        # No API key needed! The library will use Application Default Credentials.
+        pass
 
     def summarize(self, prompt: str, model_name: str, temp: float, max_tokens: int) -> str | None:
         """Generates a summary for a given prompt using the specified model."""

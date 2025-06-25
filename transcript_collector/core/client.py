@@ -1,64 +1,67 @@
-# transcript_collector/core/gcs.py
+# transcript_collector/core/client.py
 import logging
-import json
-import re
-import datetime
-from dateutil.relativedelta import relativedelta
-from google.cloud import storage
-from config import TICKER_LIST_PATH, RETENTION_MONTHS
+import time
+from threading import Lock
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-def get_tickers(storage_client: storage.Client, bucket_name: str) -> list[str]:
-    """Load ticker list from a GCS text file."""
-    try:
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(TICKER_LIST_PATH)
-        if not blob.exists():
-            logging.error(f"Ticker file not found: {TICKER_LIST_PATH}")
-            return []
+class RateLimiter:
+    """A simple thread-safe rate limiter."""
+    def __init__(self, max_calls: int, period: float):
+        self.max_calls = max_calls
+        self.period = period
+        self.timestamps = []
+        self.lock = Lock()
 
-        # Download content as text and split by lines
-        content = blob.download_as_text(encoding="utf-8")
-        tickers = [
-            line.strip().upper() for line in content.splitlines() if line.strip()
-        ]
-        logging.info(f"Loaded {len(tickers)} tickers from {TICKER_LIST_PATH}.")
-        return tickers
-    except Exception as e:
-        logging.error(f"Failed to load tickers from GCS: {e}")
-        return []
+    def acquire(self):
+        with self.lock:
+            now = time.time()
+            self.timestamps = [ts for ts in self.timestamps if now - ts < self.period]
+            if len(self.timestamps) >= self.max_calls:
+                sleep_time = (self.timestamps[0] + self.period) - now
+                if sleep_time > 0:
+                    logging.info(f"Rate limit reached. Sleeping for {sleep_time:.2f}s")
+                    time.sleep(sleep_time)
+            self.timestamps.append(time.time())
 
-def blob_exists(storage_client: storage.Client, bucket_name: str, blob_path: str) -> bool:
-    """Checks if a blob exists in GCS."""
-    bucket = storage_client.bucket(bucket_name)
-    return storage.Blob(bucket=bucket, name=blob_path).exists(storage_client)
+class FMPClient:
+    """A client for fetching transcript data from FMP."""
+    BASE_URL = "https://financialmodelingprep.com/api/v3"
 
-def upload_json_to_gcs(storage_client: storage.Client, bucket_name: str, data: dict, blob_path: str):
-    """Uploads a dictionary as a JSON object to GCS."""
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
-    blob.upload_from_string(json.dumps(data, indent=2), content_type="application/json")
-    logging.info(f"Successfully uploaded to gs://{bucket_name}/{blob_path}")
+    def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError("FMP API key is required.")
+        self.api_key = api_key
+        self.rate_limiter = RateLimiter(max_calls=45, period=1.0)
 
-def archive_old_files(storage_client: storage.Client, bucket_name: str, hot_folder: str, cold_folder: str, ticker: str):
-    """Moves transcripts older than RETENTION_MONTHS to a cold folder."""
-    bucket = storage_client.bucket(bucket_name)
-    cutoff_date = datetime.date.today() - relativedelta(months=RETENTION_MONTHS)
-    prefix = f"{hot_folder}{ticker}_"
-    
-    # Regex to extract date from filenames like 'AAPL_2023-09-30.json'
-    pattern = re.compile(rf"{ticker}_(\d{{4}}-\d{{2}}-\d{{2}})\.json$")
-
-    for blob in bucket.list_blobs(prefix=prefix):
-        match = pattern.search(blob.name)
-        if not match:
-            continue
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10), reraise=True)
+    def _make_request(self, endpoint: str, params: dict) -> list:
+        """Makes a rate-limited and retriable request to the FMP API."""
+        self.rate_limiter.acquire()
+        url = f"{self.BASE_URL}/{endpoint}"
         try:
-            file_date = datetime.date.fromisoformat(match.group(1))
-            if file_date < cutoff_date:
-                destination_path = blob.name.replace(hot_folder, cold_folder)
-                logging.info(f"Archiving {blob.name} to {destination_path}")
-                bucket.copy_blob(blob, bucket, destination_path)
-                blob.delete()
-        except (ValueError, IndexError):
-            logging.warning(f"Could not parse date from blob name: {blob.name}")
-            continue
+            response = requests.get(url, params=params, timeout=20)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logging.error(f"Request failed for {url}: {e}")
+            raise
+
+    def get_latest_quarter_end_date(self, ticker: str) -> str | None:
+        """Gets the most recent quarter-end date string for a ticker."""
+        params = {"period": "quarter", "limit": 1, "apikey": self.api_key}
+        try:
+            data = self._make_request(f"income-statement/{ticker}", params)
+            if isinstance(data, list) and data and data[0].get("date"):
+                return data[0]["date"]
+            return None
+        except Exception as e:
+            logging.warning(f"{ticker}: Could not fetch latest quarter date: {e}")
+            return None
+
+    def fetch_transcript(self, ticker: str, year: int, quarter: int) -> dict | None:
+        """Fetches an earnings call transcript for a specific year and quarter."""
+        params = {"year": year, "quarter": quarter, "apikey": self.api_key}
+        data = self._make_request(f"earning_call_transcript/{ticker}", params)
+        # The API returns a list, we want the first element if it exists
+        return data[0] if isinstance(data, list) and data else None
