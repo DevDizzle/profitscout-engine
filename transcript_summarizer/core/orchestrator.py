@@ -1,72 +1,84 @@
-# transcript_summarizer/core/orchestrator.py
 import logging
 import re
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import (
-    MAX_WORKERS, GCS_BUCKET_NAME, GCS_INPUT_FOLDER, GCS_OUTPUT_FOLDER,
-    TRANSCRIPT_SUMMARY_PROMPT, TEMPERATURE, MAX_TOKENS
-)
-from core.gcs import list_input_blobs, blob_exists, download_transcript_text, upload_summary
+from config import MAX_THREADS, GCS_BUCKET_NAME, GCS_INPUT_PREFIX, GCS_OUTPUT_PREFIX, TICKER_LIST_PATH, TRANSCRIPT_SUMMARY_PROMPT
+from core.gcs import get_tickers, list_blobs_for_tickers, blob_exists, download_transcript_text
 from core.client import GeminiClient
 from google.cloud import storage
 
-def process_transcript(blob: storage.Blob, gemini_client: GeminiClient, storage_client: storage.Client):
-    """Orchestrates the summarization for a single transcript blob."""
-    filename = os.path.basename(blob.name)
-    if not filename.endswith(".json"):
-        return f"Skipping non-JSON file: {filename}"
+def summarize_transcript(ticker: str, blob_name: str, genai_client: GeminiClient, bucket: storage.Bucket):
+    """Processes a single transcript file."""
+    try:
+        blob = bucket.blob(blob_name)
+        text = download_transcript_text(blob)
 
-    output_filename = filename.replace(".json", ".txt")
-    output_path = os.path.join(GCS_OUTPUT_FOLDER, output_filename)
+        filename = os.path.basename(blob_name)
+        m = re.search(r"_(\d{4})-(\d{2})-(\d{2})\.json$", filename)
+        if not m:
+            logging.error(f"Could not parse date from filename: {filename}")
+            return
+        year, month = int(m.group(1)), int(m.group(2))
+        quarter = (month - 1) // 3 + 1
 
-    if blob_exists(storage_client, GCS_BUCKET_NAME, output_path):
-        return f"Summary already exists for {filename}, skipping."
+        prompt = (
+            TRANSCRIPT_SUMMARY_PROMPT.format(ticker=ticker, quarter=quarter, year=year)
+            + text
+        )
 
-    match = re.search(r"([A-Z]+)_(\d{4})-(\d{2})-(\d{2})\.json$", filename)
-    if not match:
-        return f"Could not parse ticker/date from filename: {filename}"
-    
-    ticker, year_str, month_str, _ = match.groups()
-    year, month = int(year_str), int(month_str)
-    quarter = (month - 1) // 3 + 1
+        summary = genai_client.summarize(prompt)
+        if not summary:
+            logging.error(f"Failed to generate summary for {filename}")
+            return
 
-    logging.info(f"Processing transcript for {ticker} Q{quarter} {year}...")
-    transcript_text = download_transcript_text(blob)
-    if not transcript_text:
-        return f"No content found in transcript: {filename}"
+        target_blob_name = f"{GCS_OUTPUT_PREFIX}{filename.replace('.json', '.txt')}"
+        target_blob = bucket.blob(target_blob_name)
+        
+        with tempfile.NamedTemporaryFile(mode="w", delete=True, encoding="utf-8") as tmp:
+            tmp.write(summary)
+            tmp.flush()
+            target_blob.upload_from_filename(tmp.name)
 
-    prompt = TRANSCRIPT_SUMMARY_PROMPT.format(
-        ticker=ticker,
-        quarter=quarter,
-        year=year,
-        transcript_text=transcript_text
-    )
+        logging.info(f"Uploaded summary → {target_blob_name}")
+    except Exception as exc:
+        logging.error(f"{ticker}: summarization failed – {exc}", exc_info=True)
 
-    summary = gemini_client.summarize(prompt, TEMPERATURE, MAX_TOKENS)
-
-    if not summary:
-        return f"Failed to generate summary for {filename}."
-
-    upload_summary(storage_client, GCS_BUCKET_NAME, summary, output_path)
-    return f"Successfully created and uploaded summary for {filename}."
-
-def run_pipeline(gemini_client: GeminiClient, storage_client: storage.Client):
+def run_pipeline(genai_client: GeminiClient, storage_client: storage.Client, bucket: storage.Bucket) -> str:
     """Runs the full transcript summarization pipeline."""
-    input_blobs = list_input_blobs(storage_client, GCS_BUCKET_NAME, GCS_INPUT_FOLDER)
-    if not input_blobs:
-        logging.info("No transcripts found to summarize.")
-        return
+    tickers_to_process = get_tickers(bucket)
+    if not tickers_to_process:
+        logging.warning("No tickers found in tickerlist.txt. Exiting.")
+        return "No tickers to process"
 
-    logging.info(f"Found {len(input_blobs)} transcripts to process.")
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_transcript, blob, gemini_client, storage_client): blob.name for blob in input_blobs}
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                logging.info(result)
-            except Exception as e:
-                blob_name = futures[future]
-                logging.error(f"An error occurred processing {blob_name}: {e}", exc_info=True)
+    all_blobs = list_blobs_for_tickers(storage_client, bucket)
+    logging.info(f"Found {len(all_blobs)} total transcripts in GCS. Filtering based on tickerlist.txt.")
     
-    logging.info("Transcript summarization pipeline complete.")
+    tasks = []
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool:
+        for b in all_blobs:
+            if not b.name.endswith(".json"):
+                continue
+
+            try:
+                ticker = os.path.basename(b.name).split("_")[0].upper()
+            except IndexError:
+                continue
+
+            if ticker not in tickers_to_process:
+                continue
+            
+            out_blob_name = b.name.replace(GCS_INPUT_PREFIX, GCS_OUTPUT_PREFIX).replace(".json", ".txt")
+            if blob_exists(bucket, out_blob_name):
+                logging.info(f"{ticker}: summary already exists; skipping")
+                continue
+
+            logging.info(f"Queueing summarization for {ticker} from {b.name}")
+            tasks.append(pool.submit(summarize_transcript, ticker, b.name, genai_client, bucket))
+
+        logging.info(f"Processing {len(tasks)} new summaries.")
+        for f in as_completed(tasks):
+            f.result()
+
+    logging.info("All transcripts processed.")
+    return "Summaries refreshed"

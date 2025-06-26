@@ -1,6 +1,10 @@
 # technicals_collector/requirements.txt
-google-cloud-storage
-requests
-tenacity
 functions-framework
-python-dateutil
+google-cloud-storage
+google-cloud-bigquery
+pandas
+pandas-ta
+pandas-gbq
+pyarrow
+tenacity
+numpy==1.26.4

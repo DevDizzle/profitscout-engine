@@ -1,5 +1,6 @@
 # transcript_summarizer/requirements.txt
 google-cloud-storage
 google-genai
+google-auth
 tenacity
-functions-framework
+requests

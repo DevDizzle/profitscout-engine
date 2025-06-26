@@ -1,25 +1,41 @@
-# transcript_summarizer/main.py
 import logging
 from google.cloud import storage
-from config import PROJECT_ID, MODEL_NAME  # Add MODEL_NAME to the import
+from config import PROJECT_ID, GCS_BUCKET_NAME, GEMINI_API_KEY_SECRET_PATH
 from core.client import GeminiClient
 from core.orchestrator import run_pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Initialize clients globally. No secret-fetching logic needed as we use ADC.
-try:
-    storage_client = storage.Client(project=PROJECT_ID)
-    gemini_client = GeminiClient(model_name=MODEL_NAME)
-except Exception as e:
-    logging.critical(f"A critical error occurred during client initialization: {e}")
-    storage_client = gemini_client = None
+def get_api_key_from_secret() -> str | None:
+    """Reads the API key from the file path mounted by Secret Manager."""
+    secret_path = GEMINI_API_KEY_SECRET_PATH
+    try:
+        with open(secret_path, "r") as f:
+            return f.read().strip()
+    except Exception as e:
+        logging.critical(f"CRITICAL: Could not read secret from {secret_path}: {e}")
+        return None
 
 def create_summaries(request):
     """HTTP-triggered Google Cloud Function entry point."""
-    if not all([storage_client, gemini_client]):
-        logging.error("One or more clients are not initialized. Aborting.")
-        return "Server configuration error: clients not initialized.", 500
+    logging.info("Function triggered. Initializing clients.")
+    
+    try:
+        # Securely get the API key from the mounted secret
+        GEMINI_API_KEY = get_api_key_from_secret()
+        if not all([PROJECT_ID, GCS_BUCKET_NAME, GEMINI_API_KEY]):
+            logging.critical("Missing required environment variables or secrets.")
+            return "Server configuration error", 500
 
-    run_pipeline(gemini_client=gemini_client, storage_client=storage_client)
-    return "Transcript summarization pipeline started.", 202
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        genai_client = GeminiClient(GEMINI_API_KEY)
+        
+        logging.info("Clients initialized successfully.")
+    except Exception as e:
+        logging.critical(f"Failed to initialize clients: {e}", exc_info=True)
+        return "Client initialization failed", 500
+
+    # Run the pipeline
+    result = run_pipeline(genai_client, storage_client, bucket)
+    return result, 200

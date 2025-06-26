@@ -1,41 +1,39 @@
 import logging
 from google import genai
-from google.genai import types  # Import types for GenerationConfig
+from google.genai.types import GenerateContentConfig
 from google.api_core import exceptions as core_exc
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-
-@retry(
-    retry=retry_if_exception_type((core_exc.InternalServerError, core_exc.ServiceUnavailable, core_exc.DeadlineExceeded)),
-    wait=wait_exponential(multiplier=2, max=60),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
-def generate_summary_with_retry(model, prompt: str, config: types.GenerationConfig) -> str:
-    """Generates content with an exponential backoff retry mechanism."""
-    response = model.generate_content(prompt, generation_config=config)
-    return response.text
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from config import MODEL_NAME, TEMPERATURE, MAX_TOKENS
 
 class GeminiClient:
-    """A client for summarizing text using the Gemini API via ADC."""
-    def __init__(self, model_name: str):
-        # Initialize the model directly. This is the correct pattern.
-        # The library will automatically use Application Default Credentials.
-        self.model = genai.GenerativeModel(model_name)
+    """A client for summarizing text using the Gemini API."""
+    def __init__(self, api_key: str):
+        self.client = genai.Client(api_key=api_key)
+        logging.info(f"GeminiClient initialized for model: {MODEL_NAME}")
 
-    def summarize(self, prompt: str, temp: float, max_tokens: int) -> str | None:
-        """Generates a summary for a given prompt using the specified model."""
-        config = types.GenerationConfig(  # Use types.GenerationConfig
-            temperature=temp,
-            max_output_tokens=max_tokens,
+    @retry(
+        retry=retry_if_exception_type((core_exc.InternalServerError, core_exc.ServiceUnavailable)),
+        wait=wait_exponential(multiplier=1, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    def generate_with_retry(self, prompt: str) -> str:
+        """Makes a retriable call to the Gemini API."""
+        response = self.client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=GenerateContentConfig(
+                temperature=TEMPERATURE,
+                max_output_tokens=MAX_TOKENS,
+            ),
         )
+        return response.text or "No response"
+
+    def summarize(self, prompt: str) -> str | None:
+        """Generates a summary using the Gemini API."""
         try:
-            # Pass the initialized model to the retry function
-            summary = generate_summary_with_retry(self.model, prompt, config)
-            return summary or "No response from model."
+            summary = self.generate_with_retry(prompt)
+            return summary
         except Exception as e:
-            # Catch the AttributeError specifically if it occurs
-            if "has no attribute 'GenerationConfig'" in str(e) or "has no attribute 'GenerativeModel'" in str(e):
-                logging.error(f"FATAL: The 'google-genai' library version is incompatible or not installed correctly. {e}", exc_info=True)
-            else:
-                logging.error(f"Failed to generate summary after retries: {e}", exc_info=True)
+            logging.error(f"Failed to generate summary after all retries: {e}", exc_info=True)
             return None

@@ -8,7 +8,7 @@ main:
       - fundamentals_name: "refresh-fundamentals"
       - technicals_name: "refresh-technicals"
       - sec_extractor_name: "extract-sec-filings"
-      - statement_loader_name: "load-statements"
+      - refresh_financials_name: "refresh-financials"
       - price_data_populator_name: "populate-price-data"
       - transcript_collector_name: "refresh-transcripts"
       - transcript_summarizer_name: "create-transcript-summaries"
@@ -40,10 +40,10 @@ main:
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
                   auth: {type: OIDC}
-            - call_statement_loader:
+            - call_refresh_financials:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + statement_loader_name}
+                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
                   auth: {type: OIDC}
             - call_price_data_populator:
                 call: http.post
