@@ -8,6 +8,8 @@ main:
       - fundamentals_name: "refresh-fundamentals"
       - technicals_name: "refresh-technicals"
       - sec_extractor_name: "extract-sec-filings"
+      - statement_loader_name: "load-statements"
+      - price_data_populator_name: "populate-price-data"
       - transcript_collector_name: "refresh-transcripts"
       - transcript_summarizer_name: "create-transcript-summaries"
 
@@ -15,7 +17,6 @@ main:
       parallel:
         shared: [project_id, region]
         branches:
-
         # ── Independent data-collection tasks ──
         - data_collection:
             steps:
@@ -23,46 +24,47 @@ main:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
-                  auth:
-                    type: OIDC
-                timeout: 900
+                  auth: {type: OIDC}
             - call_fundamentals:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
                   auth: {type: OIDC}
-                timeout: 900
             - call_technicals:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
                   auth: {type: OIDC}
-                timeout: 900
             - call_sec_extractor:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
                   auth: {type: OIDC}
-                timeout: 900
-
+            - call_statement_loader:
+                call: http.post
+                args:
+                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + statement_loader_name}
+                  auth: {type: OIDC}
+            - call_price_data_populator:
+                call: http.post
+                args:
+                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
+                  auth: {type: OIDC}
         # ── Sequential transcript pipeline ──
         - transcript_pipeline:
             steps:
             - call_transcript_collector:
                 call: http.post
                 args:
-                  url: ${"https:" + "//" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_collector_name}
+                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_collector_name}
                   auth: {type: OIDC}
                 result: transcript_result
-                timeout: 900
             - call_transcript_summarizer:
                 call: http.post
                 args:
-                  url: ${"https:" + "//" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
+                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
                   auth: {type: OIDC}
                 result: summarizer_result
-                timeout: 900
-
   - log_finish:
       call: sys.log
       args:
