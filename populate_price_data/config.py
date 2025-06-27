@@ -12,7 +12,7 @@ BIGQUERY_TABLE = os.getenv("BIGQUERY_TABLE", "price_data")
 BIGQUERY_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
 
 # --- API Keys ---
-FMP_API_KEY = os.getenv("FMP_API_KEY")
+FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 
 # --- Job Parameters ---
 TICKER_FILE_PATH = "tickerlist.txt"

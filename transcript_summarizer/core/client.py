@@ -1,39 +1,39 @@
+# transcript_summarizer/core/client.py
 import logging
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from google import genai
-from google.genai.types import GenerateContentConfig
-from google.api_core import exceptions as core_exc
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from config import MODEL_NAME, TEMPERATURE, MAX_TOKENS
+from google.genai import types
+from . import config
 
-class GeminiClient:
-    """A client for summarizing text using the Gemini API."""
-    def __init__(self, api_key: str):
-        self.client = genai.Client(api_key=api_key)
-        logging.info(f"GeminiClient initialized for model: {MODEL_NAME}")
+logging.basicConfig(level=logging.INFO)
+_log = logging.getLogger(__name__)
 
-    @retry(
-        retry=retry_if_exception_type((core_exc.InternalServerError, core_exc.ServiceUnavailable)),
-        wait=wait_exponential(multiplier=1, max=60),
-        stop=stop_after_attempt(5),
-        reraise=True,
+def _init() -> genai.Client:
+    _log.info("Initialising Vertex AI GenAI client …")
+    return genai.Client(
+        vertexai=True,
+        project=config.PROJECT_ID,
+        location=config.LOCATION,
+        http_options=types.HttpOptions(api_version="v1"),
     )
-    def generate_with_retry(self, prompt: str) -> str:
-        """Makes a retriable call to the Gemini API."""
-        response = self.client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=GenerateContentConfig(
-                temperature=TEMPERATURE,
-                max_output_tokens=MAX_TOKENS,
-            ),
-        )
-        return response.text or "No response"
 
-    def summarize(self, prompt: str) -> str | None:
-        """Generates a summary using the Gemini API."""
-        try:
-            summary = self.generate_with_retry(prompt)
-            return summary
-        except Exception as e:
-            logging.error(f"Failed to generate summary after all retries: {e}", exc_info=True)
-            return None
+_client = _init()
+
+@retry(
+    retry=retry_if_exception_type(Exception),
+    wait=wait_exponential(multiplier=2, max=60),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
+def generate(prompt: str) -> str:
+    cfg = types.GenerateContentConfig(
+        temperature=config.TEMPERATURE,
+        max_output_tokens=config.MAX_OUTPUT_TOKENS,
+        candidate_count=config.CANDIDATE_COUNT,
+    )
+    resp = _client.models.generate_content(
+        model=config.MODEL_NAME,
+        contents=prompt,
+        config=cfg,
+    )
+    return resp.text.strip()
