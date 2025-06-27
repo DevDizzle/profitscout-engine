@@ -53,10 +53,29 @@ class FMPClient:
                 return pd.DataFrame()
 
             df = pd.DataFrame(data)
+            
+            # Rename adjClose to match BigQuery schema
             df = df.rename(columns={"adjClose": "adj_close"})
+            
+            # Add the ticker and format the date
             df["ticker"] = ticker
             df["date"] = pd.to_datetime(df["date"]).dt.date
-            return df
+
+            # Define the columns that match the BigQuery schema
+            schema_columns = [
+                "ticker", 
+                "date", 
+                "open", 
+                "high", 
+                "low", 
+                "adj_close", 
+                "volume"
+            ]
+            
+            # Return a DataFrame with only the columns that are in the schema
+            return df[schema_columns]
+            
+
         except requests.RequestException as e:
             logging.error(f"Failed to fetch prices for {ticker}: {e}")
             return pd.DataFrame()
