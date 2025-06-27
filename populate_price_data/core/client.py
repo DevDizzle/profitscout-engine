@@ -5,7 +5,6 @@ import datetime
 from threading import Lock
 import pandas as pd
 import requests
-from config import FMP_API_KEY
 
 class RateLimiter:
     """A simple thread-safe rate limiter."""
