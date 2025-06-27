@@ -1,5 +1,6 @@
 # technicals_collector/requirements.txt
 functions-framework
+google-cloud-bigquery-storage
 google-cloud-storage
 google-cloud-bigquery
 pandas

@@ -37,7 +37,7 @@ def get_price_history(ticker: str) -> pd.DataFrame:
     logging.info(f"[{ticker}] Cache miss. Fetching price history from BigQuery.")
     # Fetch an extra 100 days to ensure enough data for long-period indicators like SMA-200
     query = f"""
-        SELECT date, open, high, low, close, volume
+        SELECT date, open, high, low, adj_close as close, volume
         FROM `{BIGQUERY_TABLE_ID}`
         WHERE ticker = @ticker
         AND date >= DATE_SUB(CURRENT_DATE(), INTERVAL {ROLLING_52_WEEK_WINDOW + 100} DAY)
