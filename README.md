@@ -77,6 +77,7 @@ This project was built with professional-grade engineering practices in mind. Th
 | **`sec_filing_extractor`** | `extract_sec_filings` | HTTP | Extracts Business, MD&A, and Risk Factors from the latest SEC filings. |
 | **`fundamentals`** | `refresh_fundamentals`| HTTP | Fetches and stores 8 quarters of financial fundamentals and ratios. |
 | **`price_updater`** | `update_prices`| HTTP | Fetches a 90-day snapshot of historical price data. |
+| **`populate_price_data`** | `populate_price_data` | HTTP | Loads historical price data for tracked tickers into BigQuery. |
 | **`technicals_collector`** | `refresh_technicals` | HTTP | Collects a suite of daily technical indicators (SMA, EMA, RSI, etc.). |
 | **`transcript_collector`**| `refresh_transcripts`| HTTP | Fetches the latest quarterly earnings call transcript. |
 | **`transcript_summarizer`**| `create_summaries` | HTTP | Generates an AI-powered summary of new transcripts using the Gemini API. |
