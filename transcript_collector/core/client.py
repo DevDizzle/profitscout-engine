@@ -47,16 +47,17 @@ class FMPClient:
             logging.error(f"Request failed for {url}: {e}")
             raise
 
-    def get_latest_quarter_end_date(self, ticker: str) -> str | None:
-        """Gets the most recent quarter-end date string for a ticker."""
+    def get_latest_period_info(self, ticker: str) -> dict | None:
+        """Gets the most recent period info (date, year, quarter) for a ticker."""
         params = {"period": "quarter", "limit": 1, "apikey": self.api_key}
         try:
             data = self._make_request(f"income-statement/{ticker}", params)
-            if isinstance(data, list) and data and data[0].get("date"):
-                return data[0]["date"]
+            # Return the entire first dictionary, which contains date, year, quarter, etc.
+            if isinstance(data, list) and data:
+                return data[0]
             return None
         except Exception as e:
-            logging.warning(f"{ticker}: Could not fetch latest quarter date: {e}")
+            logging.warning(f"{ticker}: Could not fetch latest period info: {e}")
             return None
 
     def fetch_transcript(self, ticker: str, year: int, quarter: int) -> dict | None:

@@ -1,56 +1,44 @@
 # transcript_summarizer/core/utils.py
 """
-Helper functions used by main.py
-- load_ticker_set : read optional tickerlist.txt for filtering
-- parse_filename  : extract ticker & date from "<TICKER>_YYYY-MM-DD.json"
-- read_transcript : return transcript text from JSON blob
+Helper functions for parsing filenames and transcript data.
 """
 import json
 import os
 import re
-from . import config, gcs
 
-# -------- ticker filter ------------------------------------------
-def load_ticker_set(bucket: str) -> set[str]:
+def parse_filename(blob_name: str) -> tuple[str | None, str | None]:
     """
-    If config.TICKER_LIST_PATH exists in GCS, return the set of tickers inside.
-    Otherwise return an empty set (meaning no filtering).
+    Returns (ticker, date) if filename matches the expected pattern,
+    otherwise (None, None). Example: 'AAPL_2023-10-27.json'
     """
-    path = config.TICKER_LIST_PATH
-    if not path:
-        return set()
+    # Regex to capture TICKER and YYYY-MM-DD from the base filename
+    pattern = re.compile(r"([A-Z]+)_(\d{4}-\d{2}-\d{2})\.json$")
+    match = pattern.search(os.path.basename(blob_name))
+    return (match.group(1), match.group(2)) if match else (None, None)
 
+def read_transcript_data(raw_json: str) -> tuple[str | None, int | None, int | None]:
+    """
+    Parses raw JSON text to extract the transcript content, year, and quarter.
+    
+    Returns:
+        A tuple containing (content, year, quarter).
+        Returns (None, None, None) if essential data cannot be found.
+    """
     try:
-        content = gcs.read_blob(bucket, path)
-        return {t.strip().upper() for t in content.splitlines() if t.strip()}
-    except Exception:
-        # file missing or unreadable → treat as "no filter"
-        return set()
+        data = json.loads(raw_json)
+        # The FMP API returns a list with one object
+        if isinstance(data, list) and data:
+            data = data[0]
 
-# -------- filename parsing ---------------------------------------
-_RE = re.compile(r"^([A-Z]+)_(\d{4}-\d{2}-\d{2})\.json$")
+        content = data.get("content")
+        year = data.get("year")
+        quarter = data.get("quarter")
 
-def parse_filename(blob_name: str):
-    """
-    Return (ticker, date) if filename matches the expected pattern,
-    otherwise (None, None).
-    """
-    m = _RE.search(os.path.basename(blob_name))
-    return (m.group(1), m.group(2)) if m else (None, None)
+        if not all([content, year, quarter]):
+            return None, None, None
+            
+        return str(content), int(year), int(quarter)
 
-# -------- transcript extraction ----------------------------------
-def read_transcript(bucket: str, blob_name: str) -> str:
-    """
-    Download the JSON transcript blob and return the raw text inside.
-    Supports several common key names.
-    """
-    raw = gcs.read_blob(bucket, blob_name)
-    try:
-        data = json.loads(raw)
-        for key in ("content", "transcript", "text", "body"):
-            if isinstance(data, dict) and key in data and data[key]:
-                return data[key]
-    except json.JSONDecodeError:
-        pass
-    # fallback: treat raw file text as the transcript
-    return raw
+    except (json.JSONDecodeError, TypeError, ValueError, IndexError):
+        # If JSON is malformed or data types are wrong, return None
+        return None, None, None

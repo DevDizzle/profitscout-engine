@@ -3,7 +3,7 @@ import logging
 import datetime
 import pandas as pd
 import pandas_ta as ta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 from google.cloud import storage, bigquery
 from config import (
@@ -11,20 +11,16 @@ from config import (
     GCS_BUCKET_NAME,
     GCS_OUTPUT_FOLDER,
     INDICATORS,
-    PROJECT_ID,
-    BIGQUERY_TABLE_ID,
     ROLLING_52_WEEK_WINDOW,
+    BIGQUERY_TABLE_ID,
 )
 from core.gcs import get_tickers, upload_json_to_gcs
 
-# Initialize BigQuery client once
-try:
-    bq_client = bigquery.Client(project=PROJECT_ID)
-except Exception as e:
-    logging.critical(f"Failed to initialize BigQuery client: {e}")
-    bq_client = None
+# FIX: Remove the global BigQuery client initialization from this file.
+# bq_client = bigquery.Client(project=PROJECT_ID) # <-- THIS LINE IS REMOVED
 
-def get_all_price_histories(tickers: list[str]) -> pd.DataFrame:
+# FIX: Update function to receive the bq_client as an argument.
+def get_all_price_histories(tickers: list[str], bq_client: bigquery.Client) -> pd.DataFrame:
     """
     Fetches OHLCV data for ALL tickers in a single, efficient BigQuery query.
     """
@@ -57,24 +53,21 @@ def get_all_price_histories(tickers: list[str]) -> pd.DataFrame:
 
 def process_ticker_data(ticker: str, price_df: pd.DataFrame, storage_client: storage.Client) -> str:
     """
-    Cleans data, calculates indicators, and uploads the result for a single ticker.
-    This function receives a DataFrame, so it does no network I/O.
+    Cleans data, calculates indicators, trims the history, formats to a clean 
+    time-series, and uploads the result for a single ticker.
     """
     try:
         logging.info(f"[{ticker}] Starting data processing.")
         
-        # Data Cleaning Step
         core_columns = ['open', 'high', 'low', 'close', 'volume']
+        for col in core_columns:
+            price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
         price_df[core_columns] = price_df[core_columns].ffill().bfill()
         price_df.dropna(subset=core_columns, inplace=True)
 
         if price_df.empty:
             return f"[{ticker}] Skipped: No valid price data after cleaning."
-        logging.info(f"[{ticker}] Data cleaning complete. DataFrame shape: {price_df.shape}")
         
-        price_df = price_df.set_index("date")
-
-        # --- Calculate Indicators with Robust Error Handling ---
         try:
             strategy = ta.Strategy(
                 name="ProfitScout Standard",
@@ -83,90 +76,43 @@ def process_ticker_data(ticker: str, price_df: pd.DataFrame, storage_client: sto
             price_df.ta.strategy(strategy, append=True)
             logging.info(f"[{ticker}] Technical indicators calculated.")
         except Exception as e:
-            # If any error occurs during indicator calculation, skip this ticker
             logging.warning(f"[{ticker}] SKIPPING ticker due to indicator calculation error: {e}")
             return f"[{ticker}] Skipped due to indicator calculation error."
 
-        # Post-processing for custom indicators
         price_df["52w_high"] = price_df["high"].rolling(window=ROLLING_52_WEEK_WINDOW, min_periods=1).max()
         price_df["52w_low"] = price_df["low"].rolling(window=ROLLING_52_WEEK_WINDOW, min_periods=1).min()
         atr_col_name = f"ATRr_{INDICATORS['atr']['params']['length']}"
         if atr_col_name in price_df.columns:
             price_df["percent_atr"] = (price_df[atr_col_name] / price_df["close"]) * 100
-        logging.info(f"[{ticker}] Post-processing of indicators complete.")
 
-        # Format data for JSON output
-        price_df.index = price_df.index.strftime('%Y-%m-%d')
-        records = price_df.to_dict(orient="index")
-        technicals_data = {}
+        price_df.dropna(inplace=True)
+        recent_df = price_df.tail(90).copy()
+        
+        if recent_df.empty:
+            return f"[{ticker}] Skipped: No data left after cleaning and trimming."
 
-        def to_timeseries(keys_map):
-            results = []
-            for date, row in records.items():
-                point = {"date": date}
-                for out_key, in_key in keys_map.items():
-                    point[out_key] = row.get(in_key)
-                results.append(point)
-            return results
+        recent_df['date'] = recent_df['date'].dt.strftime('%Y-%m-%d')
+        output_data = recent_df.to_dict(orient="records")
 
-        for name, ind in INDICATORS.items():
-            params = ind['params']
-            kind = ind['kind']
-            if kind in ("sma", "ema", "rsi", "roc"):
-                technicals_data[name] = to_timeseries({"value": f"{kind.upper()}_{params['length']}"})
-            elif kind == "obv":
-                technicals_data[name] = to_timeseries({"value": "OBV"})
-            elif kind == "macd":
-                p = params
-                technicals_data[name] = to_timeseries({
-                    "line": f"MACD_{p['fast']}_{p['slow']}_{p['signal']}",
-                    "histogram": f"MACDh_{p['fast']}_{p['slow']}_{p['signal']}",
-                    "signal": f"MACDs_{p['fast']}_{p['slow']}_{p['signal']}",
-                })
-            elif kind == "stoch":
-                p = params
-                technicals_data[name] = to_timeseries({
-                    "k": f"STOCHk_{p['k']}_{p['d']}_{p['smooth_k']}",
-                    "d": f"STOCHd_{p['k']}_{p['d']}_{p['smooth_k']}",
-                })
-            elif kind == "bbands":
-                p = params
-                technicals_data[name] = to_timeseries({
-                    "lower": f"BBL_{p['length']}_{p['std']}",
-                    "middle": f"BBM_{p['length']}_{p['std']}",
-                    "upper": f"BBU_{p['length']}_{p['std']}",
-                })
-            elif kind == "atr":
-                p = params
-                technicals_data[name] = to_timeseries({
-                    "value": f"ATRr_{p['length']}",
-                    "percent_atr": "percent_atr",
-                })
-            elif kind == "adx":
-                p = params
-                technicals_data[name] = to_timeseries({
-                    "adx": f"ADX_{p['length']}",
-                    "dmp": f"DMP_{p['length']}",
-                    "dmn": f"DMN_{p['length']}",
-                })
-
-        technicals_data["52w_high_low"] = to_timeseries({"high": "52w_high", "low": "52w_low"})
-        logging.info(f"[{ticker}] JSON output structure created.")
-
-        output_doc = { "ticker": ticker, "as_of": datetime.date.today().isoformat(), "technicals": technicals_data }
+        output_doc = { 
+            "ticker": ticker, 
+            "as_of": datetime.date.today().isoformat(), 
+            "technicals_timeseries": output_data 
+        }
+        
         blob_path = f"{GCS_OUTPUT_FOLDER}{ticker}_technicals.json"
         
         upload_json_to_gcs(storage_client, GCS_BUCKET_NAME, output_doc, blob_path)
-        return f"[{ticker}] Technicals JSON uploaded successfully."
+        return f"[{ticker}] Technicals JSON uploaded successfully (Refactored)."
 
     except Exception as e:
         logging.error(f"[{ticker}] An unexpected error occurred during data processing: {e}", exc_info=True)
         return f"[{ticker}] Failed with error: {e}"
 
 
-def run_pipeline(storage_client: storage.Client):
+def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
     """
-    Runs the full technicals pipeline with enhanced logging and error handling.
+    Runs the full technicals pipeline with timeouts to prevent hanging.
     """
     logging.info("--- Technicals Pipeline Orchestrator: run_pipeline initiated. ---")
     if not bq_client:
@@ -179,7 +125,7 @@ def run_pipeline(storage_client: storage.Client):
         return
     logging.info(f"Found {len(tickers)} tickers in the source file.")
 
-    all_price_data = get_all_price_histories(tickers)
+    all_price_data = get_all_price_histories(tickers, bq_client=bq_client)
     if all_price_data.empty:
         logging.warning("Pipeline halting as no price data was returned from BigQuery.")
         return
@@ -190,15 +136,17 @@ def run_pipeline(storage_client: storage.Client):
     logging.info(f"Starting ThreadPoolExecutor with a max of {MAX_WORKERS} workers.")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(process_ticker_data, ticker, price_df, storage_client): ticker
+            executor.submit(process_ticker_data, ticker, price_df.copy(), storage_client): ticker
             for ticker, price_df in grouped_by_ticker.items()
         }
         for future in as_completed(futures):
+            ticker = futures[future]
             try:
-                result = future.result()
+                result = future.result(timeout=120)
                 logging.info(f"TASK_COMPLETE: {result}")
+            except TimeoutError:
+                logging.error(f"[{ticker}] Processing timed out after 120 seconds and was skipped.")
             except Exception as e:
-                ticker = futures[future]
                 logging.error(f"[{ticker}] A future completed with an unhandled exception: {e}", exc_info=True)
 
     logging.info("--- Technicals collection pipeline has finished all tasks. ---")

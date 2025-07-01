@@ -25,31 +25,37 @@ main:
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
                   auth: {type: OIDC}
+                  timeout: 900
             - call_fundamentals:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
                   auth: {type: OIDC}
+                  timeout: 900
             - call_technicals:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
                   auth: {type: OIDC}
+                  timeout: 900
             - call_sec_extractor:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
                   auth: {type: OIDC}
+                  timeout: 900
             - call_refresh_financials:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
                   auth: {type: OIDC}
+                  timeout: 900
             - call_price_data_populator:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
                   auth: {type: OIDC}
+                  timeout: 900
         # ── Sequential transcript pipeline ──
         - transcript_pipeline:
             steps:
@@ -58,16 +64,18 @@ main:
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_collector_name}
                   auth: {type: OIDC}
+                  timeout: 900
                 result: transcript_result
             - call_transcript_summarizer:
-                call: http.get
+                call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
                   auth: {type: OIDC}
+                  timeout: 900
                 result: summarizer_result
   - log_finish:
       call: sys.log
       args:
-          text: "Pipeline finished successfully."
+        text: "Pipeline finished successfully."
   - done:
       return: "Pipeline finished successfully."

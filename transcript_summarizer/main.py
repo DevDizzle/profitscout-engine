@@ -1,76 +1,91 @@
 # transcript_summarizer/main.py
 """
-HTTP-triggered Cloud Function (gen 2) that batch-processes every transcript
-JSON in `earnings-call-transcripts/`, generating any missing summaries.
+HTTP-triggered Cloud Function that processes transcripts from GCS,
+generating summaries for any that are missing.
 """
-import json
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from flask import Request
+from google.cloud.storage import Blob
 from .core import config, gcs, utils, orchestrator
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ── worker -----------------------------------------------------------
-def _process_blob(blob_name: str, ticker: str, date: str):
-    """Download → summarise → upload (skip if already exists)."""
-    out_blob = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.txt"
-    if gcs.blob_exists(config.GCS_BUCKET, out_blob):
-        log.info("✓ %s already summarised", out_blob)
-        return "skipped"
+def _process_blob(blob: Blob):
+    """
+    Worker function to process a single transcript blob. It checks for an
+    existing summary and creates one if it's missing.
+    """
+    blob_name = blob.name
+    ticker, date = utils.parse_filename(blob_name)
+    if not ticker or not date:
+        logging.warning(f"Skipping malformed filename: {blob_name}")
+        return "skipped_malformed"
+
+    # Check if summary already exists
+    summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.txt"
+    if gcs.blob_exists(config.GCS_BUCKET, summary_blob_path):
+        logging.info(f"Summary already exists for {blob_name}, skipping.")
+        return "skipped_exists"
 
     try:
-        text = utils.read_transcript(config.GCS_BUCKET, blob_name)
-        summary = orchestrator.summarise(text, ticker=ticker, date=date)
-        gcs.write_text(config.GCS_BUCKET, out_blob, summary)
-        log.info("✔ %s written", out_blob)
+        # Read and parse the transcript JSON
+        logging.info(f"Processing transcript: {blob_name}")
+        # --- FIX ---
+        # Changed gcs.read_text to gcs.read_blob to match the function name in your gcs.py
+        raw_json = gcs.read_blob(config.GCS_BUCKET, blob_name)
+        content, year, quarter = utils.read_transcript_data(raw_json)
+
+        if not content or not year or not quarter:
+            logging.error(f"Failed to extract required data from {blob_name}.")
+            return "error_parsing"
+
+        # Generate summary
+        summary_text = orchestrator.summarise(content, ticker=ticker, year=year, quarter=quarter)
+
+        # Upload the new summary
+        gcs.write_text(config.GCS_BUCKET, summary_blob_path, summary_text)
+        logging.info(f"Successfully created summary: {summary_blob_path}")
         return "processed"
+
     except Exception as e:
-        log.error("✗ %s failed – %s", blob_name, e, exc_info=True)
-        return "error"
+        logging.error(f"An unexpected error occurred processing {blob_name}: {e}", exc_info=True)
+        return "error_unexpected"
 
-# ── HTTP entry-point -------------------------------------------------
-def create_transcript_summaries(request: Request):
+def create_transcript_summaries(request):
     """
-    No request body needed.
-    Returns {processed, skipped, errors}.
+    Cloud Function entry point. Lists all transcripts and creates summaries for
+    any that are missing. The function is idempotent.
     """
-    log.info("Batch summariser triggered")
+    logging.info("Transcript summarizer function triggered.")
 
-    ticker_filter = utils.load_ticker_set(config.GCS_BUCKET)
-    if ticker_filter:
-        log.info("Ticker filter enabled (%d tickers)", len(ticker_filter))
+    # Get all transcript files from GCS
+    blobs_iterator = gcs.list_blobs(config.GCS_BUCKET, config.GCS_INPUT_PREFIX)
+    
+    # Convert the iterator to a list to get its length and to iterate over it multiple times if needed.
+    transcript_blobs = list(blobs_iterator)
+    
+    if not transcript_blobs:
+        return ("No transcripts found to process.", 200)
 
-    blobs = list(gcs.list_blobs(config.GCS_BUCKET, config.GCS_INPUT_PREFIX))
-    if not blobs:
-        return (json.dumps({"message": "no transcripts found"}), 200,
-                {"Content-Type": "application/json"})
+    # Now it is safe to call len() on the list
+    logging.info(f"Found {len(transcript_blobs)} transcripts to check.")
+    
+    # Process blobs in parallel
+    results = {"processed": 0, "skipped_exists": 0, "skipped_malformed": 0, "error_parsing": 0, "error_unexpected": 0}
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+        future_to_blob = {executor.submit(_process_blob, blob): blob for blob in transcript_blobs}
+        for future in as_completed(future_to_blob):
+            blob_name = future_to_blob[future].name
+            try:
+                result = future.result()
+                if result in results:
+                    results[result] += 1
+            except Exception as e:
+                logging.error(f"Future for blob {blob_name} failed: {e}", exc_info=True)
+                results["error_unexpected"] += 1
 
-    processed = skipped = errors = 0
-    with ThreadPoolExecutor(max_workers=config.MAX_THREADS) as pool:
-        futures = {}
-        for b in blobs:
-            if not b.name.endswith(".json"):
-                continue
-            ticker, date = utils.parse_filename(b.name)
-            if not ticker:
-                log.warning("skip malformed filename %s", b.name)
-                continue
-            if ticker_filter and ticker not in ticker_filter:
-                continue
-            futures[pool.submit(_process_blob, b.name, ticker, date)] = b.name
-
-        for fut in as_completed(futures):
-            result = fut.result()
-            if result == "processed":
-                processed += 1
-            elif result == "skipped":
-                skipped += 1
-            else:
-                errors += 1
-
-    payload = {"processed": processed, "skipped": skipped, "errors": errors}
-    log.info("Done – %s", payload)
-    return (json.dumps(payload), 200, {"Content-Type": "application/json"})
+    final_message = f"Processing complete. Results: {json.dumps(results)}"
+    logging.info(final_message)
+    return (final_message, 200)
