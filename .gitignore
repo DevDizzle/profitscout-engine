@@ -1,0 +1,37 @@
+# ----------------------------------------------------------------
+# .gitignore for a standard Python project
+# ----------------------------------------------------------------
+
+# Virtual Environments
+# Ignore the virtual environment folder. Common names are .venv, venv, or env.
+# The trailing slash ensures we only match directories.
+.venv/
+venv/
+env/
+
+# Python generated files
+# Ignore caches and compiled files that Python generates automatically.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+# Ignore build artifacts and distribution folders.
+.eggs/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment variables
+# Ignore files containing sensitive data like API keys or database passwords.
+# NEVER commit your environment variables!
+.env
+
+# IDE / Editor-specific files
+# Ignore configuration files from common editors.
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

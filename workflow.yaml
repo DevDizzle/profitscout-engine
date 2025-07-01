@@ -60,7 +60,7 @@ main:
                   auth: {type: OIDC}
                 result: transcript_result
             - call_transcript_summarizer:
-                call: http.post
+                call: http.get
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
                   auth: {type: OIDC}

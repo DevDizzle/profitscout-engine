@@ -13,7 +13,7 @@ BIGQUERY_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
 # --- Job Parameters ---
 TICKER_LIST_PATH = "tickerlist.txt"
 GCS_OUTPUT_FOLDER = "technicals/"
-MAX_WORKERS = 12 
+MAX_WORKERS = 8 
 ROLLING_52_WEEK_WINDOW = 252
 
 # --- Indicator Definitions ---
