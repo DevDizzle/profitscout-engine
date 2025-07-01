@@ -5,27 +5,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import (
     MAX_WORKERS, GCS_BUCKET_NAME, GCS_OUTPUT_FOLDER
 )
-from core.gcs import get_tickers, blob_exists, upload_json_to_gcs, cleanup_old_files
+from core.gcs import get_tickers, blob_exists, upload_json_to_gcs
 from core.client import FMPClient
 from google.cloud import storage
 
-def get_fiscal_quarter(ticker: str, end_date_str: str) -> tuple[int, int]:
-    """Calculates the fiscal quarter and year from a date string."""
-    d = pd.to_datetime(end_date_str)
-    # Special handling for Apple's fiscal calendar
-    if ticker == "AAPL":
-        if d.month >= 10: return d.year + 1, 1
-        if d.month <= 3: return d.year, 2
-        if d.month <= 6: return d.year, 3
-        return d.year, 4
-    # Standard calendar quarter
-    return d.year, (d.month - 1) // 3 + 1
-
 def process_ticker(ticker: str, fmp_client: FMPClient, storage_client: storage.Client):
     """Applies the hybrid update logic for a single ticker's transcript."""
-    latest_date = fmp_client.get_latest_quarter_end_date(ticker)
-    if not latest_date:
-        return f"{ticker}: No latest quarter date found, skipped."
+    # Fetch the entire period object from the API
+    latest_period = fmp_client.get_latest_period_info(ticker)
+    if not latest_period:
+        return f"{ticker}: No latest period info found, skipped."
+
+    # Extract date, year, and quarter directly from the API response
+    latest_date = latest_period.get("date")
+    year = latest_period.get("year")
+    quarter = latest_period.get("quarter")
+
+    if not all([latest_date, year, quarter]):
+         return f"{ticker}: API response was missing date, year, or quarter. Skipped."
 
     expected_filename = f"{GCS_OUTPUT_FOLDER}{ticker}_{latest_date}.json"
 
@@ -33,7 +30,6 @@ def process_ticker(ticker: str, fmp_client: FMPClient, storage_client: storage.C
         return f"{ticker}: Latest transcript ({latest_date}) already exists."
 
     logging.info(f"{ticker}: Transcript for {latest_date} is missing. Fetching...")
-    year, quarter = get_fiscal_quarter(ticker, latest_date)
     transcript_data = fmp_client.fetch_transcript(ticker, year, quarter)
 
     if not (transcript_data and transcript_data.get("content")):
@@ -41,8 +37,7 @@ def process_ticker(ticker: str, fmp_client: FMPClient, storage_client: storage.C
 
     upload_json_to_gcs(storage_client, GCS_BUCKET_NAME, transcript_data, expected_filename)
     
-    # Clean up old files after the new one is successfully uploaded
-    cleanup_old_files(storage_client, GCS_BUCKET_NAME, GCS_OUTPUT_FOLDER, ticker, expected_filename)
+    # The cleanup_old_files call was removed to ensure all data is preserved.
     
     return f"{ticker}: Transcript for {year} Q{quarter} uploaded."
 

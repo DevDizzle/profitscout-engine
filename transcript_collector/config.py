@@ -11,4 +11,4 @@ FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 # --- Job Parameters ---
 TICKER_LIST_PATH = "tickerlist.txt"
 GCS_OUTPUT_FOLDER = "earnings-call-transcripts/"
-MAX_WORKERS = 6
+MAX_WORKERS = 12
