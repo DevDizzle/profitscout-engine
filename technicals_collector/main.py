@@ -17,12 +17,21 @@ def refresh_technicals(request):
     """
     HTTP-triggered Google Cloud Function entry point for the refactored pipeline.
     """
+    logging.info("--- Technicals Collector Function Started ---")
+    
     if not storage_client:
         logging.error("Storage client is not initialized. Aborting.")
         return "Server configuration error: clients not initialized.", 500
 
-    # The orchestrator now only needs the storage_client, as the BigQuery client
-    # is initialized within the orchestrator module itself.
-    run_pipeline(storage_client=storage_client)
-    
-    return "Technicals collection pipeline (refactored) started.", 202
+    try:
+        # The orchestrator now only needs the storage_client, as the BigQuery client
+        # is initialized within the orchestrator module itself.
+        logging.info("Starting pipeline execution...")
+        run_pipeline(storage_client=storage_client)
+        logging.info("--- Technicals Collector Function Finished Successfully ---")
+        return "Technicals collection pipeline (refactored) started.", 202
+        
+    except Exception as e:
+        logging.critical(f"A critical unhandled exception occurred in the main handler: {e}", exc_info=True)
+        # The function will likely crash, but we log this in case it doesn't.
+        return f"An unexpected error occurred: {e}", 500

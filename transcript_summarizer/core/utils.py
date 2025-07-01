@@ -1,37 +1,56 @@
 # transcript_summarizer/core/utils.py
+"""
+Helper functions used by main.py
+- load_ticker_set : read optional tickerlist.txt for filtering
+- parse_filename  : extract ticker & date from "<TICKER>_YYYY-MM-DD.json"
+- read_transcript : return transcript text from JSON blob
+"""
 import json
 import os
 import re
-from . import gcs, config
+from . import config, gcs
 
-_TICKER_RE = re.compile(r"^([A-Z]+)_(\d{4}-\d{2}-\d{2})\.json$")
-
-def load_ticker_set(bucket_name: str) -> set[str]:
+# -------- ticker filter ------------------------------------------
+def load_ticker_set(bucket: str) -> set[str]:
     """
-    If TICKER_LIST_PATH exists return its tickers; otherwise return empty set
-    meaning "no filter".
+    If config.TICKER_LIST_PATH exists in GCS, return the set of tickers inside.
+    Otherwise return an empty set (meaning no filtering).
     """
-    if not config.TICKER_LIST_PATH:
+    path = config.TICKER_LIST_PATH
+    if not path:
         return set()
 
     try:
-        content = gcs.read_blob(bucket_name, config.TICKER_LIST_PATH)
+        content = gcs.read_blob(bucket, path)
         return {t.strip().upper() for t in content.splitlines() if t.strip()}
     except Exception:
-        # no file or unreadable → treat as no filter
+        # file missing or unreadable → treat as "no filter"
         return set()
 
+# -------- filename parsing ---------------------------------------
+_RE = re.compile(r"^([A-Z]+)_(\d{4}-\d{2}-\d{2})\.json$")
+
 def parse_filename(blob_name: str):
-    """Return (ticker, date) or (None, None) if filename is malformed."""
-    m = _TICKER_RE.search(os.path.basename(blob_name))
+    """
+    Return (ticker, date) if filename matches the expected pattern,
+    otherwise (None, None).
+    """
+    m = _RE.search(os.path.basename(blob_name))
     return (m.group(1), m.group(2)) if m else (None, None)
 
+# -------- transcript extraction ----------------------------------
 def read_transcript(bucket: str, blob_name: str) -> str:
-    """Extract the transcript text from JSON (supports several field names)."""
+    """
+    Download the JSON transcript blob and return the raw text inside.
+    Supports several common key names.
+    """
     raw = gcs.read_blob(bucket, blob_name)
-    data = json.loads(raw)
-    for key in ("content", "transcript", "text", "body"):
-        if isinstance(data, dict) and key in data and data[key]:
-            return data[key]
-    # Fallback – treat entire JSON as text
+    try:
+        data = json.loads(raw)
+        for key in ("content", "transcript", "text", "body"):
+            if isinstance(data, dict) and key in data and data[key]:
+                return data[key]
+    except json.JSONDecodeError:
+        pass
+    # fallback: treat raw file text as the transcript
     return raw
