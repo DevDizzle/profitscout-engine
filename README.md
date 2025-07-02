@@ -13,6 +13,7 @@ The ProfitScout Data Pipeline is a fully automated, serverless system built on G
 * **Automated SEC Filing Extraction**: Intelligently extracts the Business, Risk Factors, and MD&A sections from the latest annual and quarterly company filings.
 * **Comprehensive Financial Data Collection**: Fetches and stores the last 8 quarters of financial statements and fundamentals (key metrics, ratios).
 * **Daily Market Data Updates**: Collects a 90-day snapshot of historical price data and a suite of technical indicators (SMA, EMA, RSI, etc.).
+* **Bulk Historical Price Loading**: Populates BigQuery with full price history for all tracked tickers.
 * **AI-Powered Summarization**: Automates the fetching of earnings call transcripts and uses Google's Gemini API to generate structured, insightful summaries focused on financial signals.
 * **Declarative & Parallel Orchestration**: Utilizes Cloud Workflows to manage the entire pipeline, running independent data collection tasks in parallel for maximum efficiency.
 * **Fully Automated & Scheduled**: Triggered automatically by Cloud Scheduler for timely and consistent data freshness without manual intervention.
@@ -77,6 +78,7 @@ This project was built with professional-grade engineering practices in mind. Th
 | **`sec_filing_extractor`** | `extract_sec_filings` | HTTP | Extracts Business, MD&A, and Risk Factors from the latest SEC filings. |
 | **`fundamentals`** | `refresh_fundamentals`| HTTP | Fetches and stores 8 quarters of financial fundamentals and ratios. |
 | **`price_updater`** | `update_prices`| HTTP | Fetches a 90-day snapshot of historical price data. |
+| **`statement_loader`** | `load_statements` | HTTP | Retrieves and stores 8 quarters of income, balance sheet, and cash flow statements. |
 | **`populate_price_data`** | `populate_price_data` | HTTP | Loads historical price data for tracked tickers into BigQuery. |
 | **`technicals_collector`** | `refresh_technicals` | HTTP | Collects a suite of daily technical indicators (SMA, EMA, RSI, etc.). |
 | **`transcript_collector`**| `refresh_transcripts`| HTTP | Fetches the latest quarterly earnings call transcript. |

@@ -3,7 +3,6 @@ from datetime import datetime
 from google.cloud import storage
 
 # --- Configuration ---
-# Please confirm these values are correct before running.
 PROJECT_ID = "profitscout-lx6bb"
 GCS_BUCKET_NAME = "profit-scout-data"
 SUMMARIES_PREFIX = "earnings-call-summaries/"
@@ -26,8 +25,7 @@ def delete_summaries_by_date():
         # Parse the target date string into a date object
         target_date = datetime.strptime(DATE_TO_DELETE, "%Y-%m-%d").date()
 
-        # --- FIXED LOGIC ---
-        # Find all blobs and filter by their 'time_created' metadata attribute
+    # Find all blobs and filter by their 'time_created' metadata attribute
         all_blobs = bucket.list_blobs(prefix=SUMMARIES_PREFIX)
         blobs_to_delete = []
         for blob in all_blobs:
@@ -43,7 +41,7 @@ def delete_summaries_by_date():
         for blob in blobs_to_delete:
             print(f"  - {blob.name} (Created: {blob.time_created.date()})")
 
-        # --- SAFETY CONFIRMATION STEP ---
+        # Confirm deletion with the user
         confirm = input("\nAre you sure you want to permanently delete these files? (yes/no): ")
 
         if confirm.lower() == 'yes':

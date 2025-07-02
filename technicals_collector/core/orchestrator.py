@@ -16,10 +16,7 @@ from config import (
 )
 from core.gcs import get_tickers, upload_json_to_gcs
 
-# FIX: Remove the global BigQuery client initialization from this file.
-# bq_client = bigquery.Client(project=PROJECT_ID) # <-- THIS LINE IS REMOVED
-
-# FIX: Update function to receive the bq_client as an argument.
+# The BigQuery client is created in main.py and passed to these functions.
 def get_all_price_histories(tickers: list[str], bq_client: bigquery.Client) -> pd.DataFrame:
     """
     Fetches OHLCV data for ALL tickers in a single, efficient BigQuery query.
