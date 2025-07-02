@@ -12,6 +12,7 @@ main:
       - price_data_populator_name: "populate-price-data"
       - transcript_collector_name: "refresh-transcripts"
       - transcript_summarizer_name: "create-transcript-summaries"
+      - refresh_stock_metadata_name: "refresh-stock-metadata"
 
   - run_pipeline:
       parallel:
@@ -54,6 +55,12 @@ main:
                 call: http.post
                 args:
                   url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
+                  auth: {type: OIDC}
+                  timeout: 900
+            - call_refresh_stock_metadata:
+                call: http.post
+                args:
+                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
                   auth: {type: OIDC}
                   timeout: 900
         # ── Sequential transcript pipeline ──
