@@ -32,8 +32,6 @@ def _process_blob(blob: Blob):
     try:
         # Read and parse the transcript JSON
         logging.info(f"Processing transcript: {blob_name}")
-        # --- FIX ---
-        # Changed gcs.read_text to gcs.read_blob to match the function name in your gcs.py
         raw_json = gcs.read_blob(config.GCS_BUCKET, blob_name)
         content, year, quarter = utils.read_transcript_data(raw_json)
 
