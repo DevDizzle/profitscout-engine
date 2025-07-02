@@ -4,4 +4,3 @@ pandas
 requests
 tenacity
 pyarrow
-pandas-gbq
