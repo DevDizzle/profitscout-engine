@@ -3,7 +3,7 @@ import logging
 import datetime
 import pandas as pd
 import requests
-import json # <-- ADDED: Import Python's standard JSON library
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import time
@@ -12,7 +12,6 @@ from google.cloud import bigquery, storage
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # --- Configuration ---
-# ---!!!--- Make sure these values are correct ---!!!---
 PROJECT_ID = "profitscout-lx6bb"
 GCS_BUCKET_NAME = "profit-scout-data"
 BIGQUERY_TABLE_ID = "profitscout-lx6bb.profit_scout.stock_metadata"
@@ -122,7 +121,6 @@ def process_record(record, fmp_client: FMPClient, storage_client: storage.Client
             return f"NO_CONTENT: {ticker} for {year} Q{quarter}"
 
         # 3. Upload the fetched data to GCS
-        # <-- FIXED: Use the standard json.dumps() to convert the dict to a string
         blob.upload_from_string(json.dumps(transcript_data, indent=2), content_type="application/json")
         return f"SUCCESS: Fetched and uploaded for {ticker} on {quarter_end_date}"
 
