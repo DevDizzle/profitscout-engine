@@ -1,0 +1,7 @@
+google-cloud-bigquery
+google-cloud-storage
+pandas
+requests
+tenacity
+pyarrow
+pandas-gbq
