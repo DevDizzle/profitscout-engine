@@ -1,23 +1,29 @@
+# devdizzle/profitscout-data-pipeline/profitscout-data-pipeline-master/refresh_stock_metadata/main.py
 import os
 import time
 import logging
 import requests
 import pandas as pd
-from google.cloud import bigquery, storage
+import json
+from google.cloud import bigquery, storage, pubsub_v1
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Runtime configuration
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
 DATASET    = os.getenv("BQ_DATASET", "profit_scout")
 TABLE      = os.getenv("MASTER_TABLE", "stock_metadata")
-# --- CHANGED: Point to the .txt file in GCS ---
 TICKER_TXT_GCS = os.getenv("TICKER_TXT_GCS", "gs://profit-scout-data/tickerlist.txt")
 FMP_KEY    = os.environ["FMP_API_KEY"]
+PUB_SUB_TOPIC = "new-metadata-found"
 MAX_RETRIES  = 3
-REQUEST_DELAY = 0.02  # 3 000 req/min → 50 rps
+REQUEST_DELAY = 0.02
 
+# Initialize clients
 bq  = bigquery.Client(project=PROJECT_ID)
 gcs = storage.Client(project=PROJECT_ID)
+publisher = pubsub_v1.PublisherClient()
+topic_path = publisher.topic_path(PROJECT_ID, PUB_SUB_TOPIC)
+
 
 logging.basicConfig(level=logging.INFO,
                       format="%(asctime)s - %(levelname)s - %(message)s")
@@ -29,17 +35,16 @@ def get_json(url: str):
     resp.raise_for_status()
     return resp.json()
 
-# --- CHANGED: Replaced the Excel loading function with a text loading function ---
 def load_tickers_from_txt(path: str) -> list[str]:
     """Loads a list of tickers from a .txt file in GCS."""
     bucket_name, blob_name = path.replace("gs://", "").split("/", 1)
     bucket = gcs.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    
+
     if not blob.exists():
         logging.error(f"Ticker file not found at {path}")
         return []
-        
+
     ticker_data = blob.download_as_text(encoding="utf-8")
     tickers = [
         line.strip().upper()
@@ -94,7 +99,6 @@ def fetch_earnings_calls(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def refresh_stock_metadata(request):
-    # --- CHANGED: Simplified ticker loading logic ---
     tickers = load_tickers_from_txt(TICKER_TXT_GCS)
     if not tickers:
         return "Ticker list load failure", 500
@@ -172,6 +176,17 @@ def refresh_stock_metadata(request):
     """
     bq.query(merge_sql).result()
     bq.delete_table(temp_table, not_found_ok=True)
-
     logging.info("Refresh complete: %d tickers", len(tickers))
-    return f"Successfully refreshed {target_table}", 200
+
+    # --- Publish completion message to Pub/Sub ---
+    try:
+        message_data = {"status": "complete", "service": "refresh_stock_metadata"}
+        future = publisher.publish(topic_path, json.dumps(message_data).encode("utf-8"))
+        logging.info(f"Published completion message to {PUB_SUB_TOPIC} with ID: {future.result()}")
+    except Exception as e:
+        logging.error(f"Failed to publish to Pub/Sub topic {PUB_SUB_TOPIC}: {e}")
+        # Decide if this should be a critical error
+        return f"Process completed but failed to publish to Pub/Sub: {e}", 500
+
+
+    return f"Successfully refreshed {target_table} and published completion message.", 200

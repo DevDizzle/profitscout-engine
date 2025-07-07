@@ -8,17 +8,16 @@ main:
       - fundamentals_name: "refresh-fundamentals"
       - technicals_name: "refresh-technicals"
       - sec_extractor_name: "extract-sec-filings"
-      - refresh_financials_name: "refresh-financials"
+      - refresh_financials_name: "refresh-financials" # Assuming this is the name for statement_loader
       - price_data_populator_name: "populate-price-data"
-      - transcript_collector_name: "refresh-transcripts"
-      - transcript_summarizer_name: "create-transcript-summaries"
       - refresh_stock_metadata_name: "refresh-stock-metadata"
 
-  - run_pipeline:
+  - run_data_collection:
       parallel:
         shared: [project_id, region]
         branches:
-        # ── Independent data-collection tasks ──
+        # The main data collection branch now runs all HTTP-triggered functions.
+        # The sequential transcript pipeline has been removed.
         - data_collection:
             steps:
             - call_price_updater:
@@ -36,7 +35,7 @@ main:
             - call_technicals:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
+                  url: ${"https:///" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
                   auth: {type: OIDC}
                   timeout: 900
             - call_sec_extractor:
@@ -60,29 +59,13 @@ main:
             - call_refresh_stock_metadata:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
+                  url: ${"https:///" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
                   auth: {type: OIDC}
                   timeout: 900
-        # ── Sequential transcript pipeline ──
-        - transcript_pipeline:
-            steps:
-            - call_transcript_collector:
-                call: http.post
-                args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_collector_name}
-                  auth: {type: OIDC}
-                  timeout: 900
-                result: transcript_result
-            - call_transcript_summarizer:
-                call: http.post
-                args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
-                  auth: {type: OIDC}
-                  timeout: 900
-                result: summarizer_result
+
   - log_finish:
       call: sys.log
       args:
-        text: "Pipeline finished successfully."
+        text: "Main data collection workflow finished successfully. Transcript processing will continue via Pub/Sub."
   - done:
-      return: "Pipeline finished successfully."
+      return: "Workflow finished successfully."

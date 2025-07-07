@@ -4,3 +4,4 @@ pandas
 requests
 tenacity
 pyarrow
+google-cloud-pubsub

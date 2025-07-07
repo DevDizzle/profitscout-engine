@@ -1,62 +1,107 @@
 # transcript_collector/core/orchestrator.py
 import logging
 import pandas as pd
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import (
-    MAX_WORKERS, GCS_BUCKET_NAME, GCS_OUTPUT_FOLDER
-)
-from core.gcs import get_tickers, blob_exists, upload_json_to_gcs
-from core.client import FMPClient
-from google.cloud import storage
+from google.cloud import bigquery, storage, pubsub_v1
+from .. import config
+from .gcs import list_existing_transcripts, upload_json_to_gcs
+from .client import FMPClient
 
-def process_ticker(ticker: str, fmp_client: FMPClient, storage_client: storage.Client):
-    """Applies the hybrid update logic for a single ticker's transcript."""
-    # Fetch the entire period object from the API
-    latest_period = fmp_client.get_latest_period_info(ticker)
-    if not latest_period:
-        return f"{ticker}: No latest period info found, skipped."
+def get_required_transcripts_from_bq(bq_client: bigquery.Client) -> set:
+    """
+    Queries the master metadata table in BigQuery to get the full set of
+    (ticker, quarter_end_date) tuples that should exist.
+    """
+    logging.info(f"Querying BigQuery table: {config.BIGQUERY_TABLE_ID}")
+    query = f"""
+        SELECT ticker, quarter_end_date
+        FROM `{config.BIGQUERY_TABLE_ID}`
+        WHERE ticker IS NOT NULL AND quarter_end_date IS NOT NULL
+    """
+    try:
+        # .to_dataframe() is a convenient way to get results
+        df = bq_client.query(query).to_dataframe()
+        required_set = set()
+        for index, row in df.iterrows():
+            # Format date to string 'YYYY-MM-DD' to match GCS file names
+            date_str = row['quarter_end_date'].strftime('%Y-%m-%d')
+            required_set.add((row['ticker'], date_str))
 
-    # Extract date, year, and quarter directly from the API response
-    latest_date = latest_period.get("date")
-    year = latest_period.get("year")
-    quarter = latest_period.get("quarter")
+        logging.info(f"Found {len(required_set)} required transcripts in BigQuery.")
+        return required_set
+    except Exception as e:
+        logging.critical(f"Failed to query BigQuery for required transcripts: {e}")
+        return set()
 
-    if not all([latest_date, year, quarter]):
-         return f"{ticker}: API response was missing date, year, or quarter. Skipped."
+def process_missing_transcript(
+    item: tuple, fmp_client: FMPClient, storage_client: storage.Client, publisher_client: pubsub_v1.PublisherClient
+):
+    """
+    Fetches, uploads, and publishes a message for a single missing transcript.
+    """
+    ticker, date_str = item
+    dt = pd.to_datetime(date_str)
+    year, quarter = dt.year, dt.quarter
 
-    expected_filename = f"{GCS_OUTPUT_FOLDER}{ticker}_{latest_date}.json"
+    logging.info(f"Processing missing transcript for {ticker} Q{quarter} {year}")
 
-    if blob_exists(storage_client, GCS_BUCKET_NAME, expected_filename):
-        return f"{ticker}: Latest transcript ({latest_date}) already exists."
+    try:
+        transcript_data = fmp_client.fetch_transcript(ticker, year, quarter)
+        if not (transcript_data and transcript_data.get("content")):
+            return f"NO_CONTENT: {ticker} for {year} Q{quarter}. API returned no data."
 
-    logging.info(f"{ticker}: Transcript for {latest_date} is missing. Fetching...")
-    transcript_data = fmp_client.fetch_transcript(ticker, year, quarter)
+        blob_path = f"{config.GCS_OUTPUT_FOLDER}{ticker}_{date_str}.json"
 
-    if not (transcript_data and transcript_data.get("content")):
-        return f"{ticker}: No transcript content found for {year} Q{quarter}."
+        # Upload the fetched data to GCS
+        upload_json_to_gcs(storage_client, config.GCS_BUCKET_NAME, transcript_data, blob_path)
 
-    upload_json_to_gcs(storage_client, GCS_BUCKET_NAME, transcript_data, expected_filename)
-    
-    # The cleanup_old_files call was removed to ensure all data is preserved.
-    
-    return f"{ticker}: Transcript for {year} Q{quarter} uploaded."
+        # Publish a message to the next topic
+        topic_path = publisher_client.topic_path(config.PROJECT_ID, config.PUB_SUB_TOPIC_ID)
+        message_data = {"gcs_path": f"gs://{config.GCS_BUCKET_NAME}/{blob_path}"}
+        future = publisher_client.publish(topic_path, json.dumps(message_data).encode("utf-8"))
+        future.result() # Wait for publish to complete
 
-def run_pipeline(fmp_client: FMPClient, storage_client: storage.Client):
-    """Runs the full transcript collection pipeline."""
-    tickers = get_tickers(storage_client, GCS_BUCKET_NAME)
-    if not tickers:
-        logging.error("No tickers found. Exiting.")
+        return f"SUCCESS: Fetched, uploaded, and published for {ticker} on {date_str}"
+
+    except Exception as e:
+        logging.error(f"ERROR: Failed to process {ticker} for {date_str}: {e}", exc_info=True)
+        return f"ERROR: {ticker} on {date_str}"
+
+
+def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_client: storage.Client, publisher_client: pubsub_v1.PublisherClient):
+    """Runs the full transcript collection pipeline using a diff-based approach."""
+
+    # 1. Get the full list of required transcripts from our source of truth (BigQuery)
+    required_set = get_required_transcripts_from_bq(bq_client)
+    if not required_set:
+        logging.error("Could not retrieve list of required transcripts from BigQuery. Exiting.")
         return
 
-    logging.info(f"Starting transcript collection for {len(tickers)} tickers.")
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_ticker, t, fmp_client, storage_client): t for t in tickers}
+    # 2. Get the full list of transcripts that already exist in our destination (GCS)
+    existing_set = list_existing_transcripts(storage_client, config.GCS_BUCKET_NAME, config.GCS_OUTPUT_FOLDER)
+
+    # 3. Calculate the difference to find what work needs to be done
+    missing_items = required_set - existing_set
+
+    if not missing_items:
+        logging.info("Pipeline complete. No missing transcripts found.")
+        return
+
+    logging.info(f"Found {len(missing_items)} missing transcripts to process.")
+
+    # 4. Process all missing items in parallel
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(process_missing_transcript, item, fmp_client, storage_client, publisher_client): item 
+            for item in missing_items
+        }
         for future in as_completed(futures):
             try:
                 result = future.result()
                 logging.info(result)
             except Exception as e:
-                ticker = futures[future]
-                logging.error(f"{ticker}: An error occurred: {e}", exc_info=True)
+                item = futures[future]
+                logging.error(f"A future failed for item {item}: {e}", exc_info=True)
 
     logging.info("Transcript collection pipeline complete.")
