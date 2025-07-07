@@ -1,89 +1,80 @@
 # transcript_summarizer/main.py
 """
-HTTP-triggered Cloud Function that processes transcripts from GCS,
-generating summaries for any that are missing.
+Pub/Sub-triggered Cloud Function that receives a message containing a GCS path
+to a new transcript and generates a summary for it.
 """
 import logging
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.cloud.storage import Blob
+import base64
 from .core import config, gcs, utils, orchestrator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def _process_blob(blob: Blob):
+def create_transcript_summaries(event, context):
     """
-    Worker function to process a single transcript blob. It checks for an
-    existing summary and creates one if it's missing.
+    Cloud Function entry point triggered by a Pub/Sub message.
+    The message is expected to contain the GCS path of the new transcript.
     """
-    blob_name = blob.name
+    logging.info(f"Transcript summarizer triggered by messageId: {context.event_id}")
+
+    # 1. Decode the Pub/Sub message
+    try:
+        # The message data is base64-encoded
+        message_data_str = base64.b64decode(event['data']).decode('utf-8')
+        message_data = json.loads(message_data_str)
+        gcs_path = message_data.get("gcs_path")
+
+        if not gcs_path or not gcs_path.startswith("gs://"):
+            logging.error(f"Invalid GCS path in message: {message_data}")
+            return "Invalid message format: missing or invalid gcs_path.", 400
+            
+    except Exception as e:
+        logging.error(f"Failed to decode Pub/Sub message: {e}", exc_info=True)
+        return "Failed to decode message.", 400
+    
+    # Extract bucket and blob name from the GCS path
+    try:
+        bucket_name, blob_name = gcs_path.replace("gs://", "").split("/", 1)
+    except ValueError:
+        logging.error(f"Could not parse bucket and blob from GCS path: {gcs_path}")
+        return "Invalid GCS path format.", 400
+
+    logging.info(f"Processing transcript: {gcs_path}")
+
+    # 2. Check if summary already exists (as a safeguard)
     ticker, date = utils.parse_filename(blob_name)
     if not ticker or not date:
         logging.warning(f"Skipping malformed filename: {blob_name}")
-        return "skipped_malformed"
+        return "Skipped due to malformed filename.", 200
 
-    # Check if summary already exists
     summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.txt"
     if gcs.blob_exists(config.GCS_BUCKET, summary_blob_path):
         logging.info(f"Summary already exists for {blob_name}, skipping.")
-        return "skipped_exists"
+        return "Summary already exists.", 200
 
+    # 3. Process the transcript
     try:
-        # Read and parse the transcript JSON
-        logging.info(f"Processing transcript: {blob_name}")
-        raw_json = gcs.read_blob(config.GCS_BUCKET, blob_name)
+        # Read and parse the transcript JSON from the path received in the message
+        raw_json = gcs.read_blob(bucket_name, blob_name)
         content, year, quarter = utils.read_transcript_data(raw_json)
 
         if not content or not year or not quarter:
             logging.error(f"Failed to extract required data from {blob_name}.")
-            return "error_parsing"
+            # Acknowledge the message so it's not retried
+            return "Error parsing transcript data.", 200
 
-        # Generate summary
+        # Generate summary using the GenAI client
         summary_text = orchestrator.summarise(content, ticker=ticker, year=year, quarter=quarter)
 
-        # Upload the new summary
+        # Upload the new summary to GCS
         gcs.write_text(config.GCS_BUCKET, summary_blob_path, summary_text)
-        logging.info(f"Successfully created summary: {summary_blob_path}")
-        return "processed"
+        
+        final_message = f"Successfully created summary: {summary_blob_path}"
+        logging.info(final_message)
+        return final_message, 200
 
     except Exception as e:
         logging.error(f"An unexpected error occurred processing {blob_name}: {e}", exc_info=True)
-        return "error_unexpected"
-
-def create_transcript_summaries(request):
-    """
-    Cloud Function entry point. Lists all transcripts and creates summaries for
-    any that are missing. The function is idempotent.
-    """
-    logging.info("Transcript summarizer function triggered.")
-
-    # Get all transcript files from GCS
-    blobs_iterator = gcs.list_blobs(config.GCS_BUCKET, config.GCS_INPUT_PREFIX)
-    
-    # Convert the iterator to a list to get its length and to iterate over it multiple times if needed.
-    transcript_blobs = list(blobs_iterator)
-    
-    if not transcript_blobs:
-        return ("No transcripts found to process.", 200)
-
-    # Now it is safe to call len() on the list
-    logging.info(f"Found {len(transcript_blobs)} transcripts to check.")
-    
-    # Process blobs in parallel
-    results = {"processed": 0, "skipped_exists": 0, "skipped_malformed": 0, "error_parsing": 0, "error_unexpected": 0}
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-        future_to_blob = {executor.submit(_process_blob, blob): blob for blob in transcript_blobs}
-        for future in as_completed(future_to_blob):
-            blob_name = future_to_blob[future].name
-            try:
-                result = future.result()
-                if result in results:
-                    results[result] += 1
-            except Exception as e:
-                logging.error(f"Future for blob {blob_name} failed: {e}", exc_info=True)
-                results["error_unexpected"] += 1
-
-    final_message = f"Processing complete. Results: {json.dumps(results)}"
-    logging.info(final_message)
-    return (final_message, 200)
+        # Re-raise the exception to signal failure to Pub/Sub for potential retry
+        raise e

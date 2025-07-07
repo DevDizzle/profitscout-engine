@@ -1,5 +1,7 @@
 # transcript_collector/requirements.txt
 google-cloud-storage
+google-cloud-bigquery
+google-cloud-pubsub
 requests
 tenacity
 functions-framework
