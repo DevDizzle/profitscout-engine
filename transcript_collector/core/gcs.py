@@ -1,4 +1,3 @@
-# transcript_collector/core/gcs.py
 import logging
 import json
 import os
@@ -30,5 +29,4 @@ def upload_json_to_gcs(storage_client: storage.Client, bucket_name: str, data: d
     """Uploads a dictionary as a JSON object to GCS."""
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(blob_path)
-    blob.upload_from_string(json.dumps(data, indent=2), content_type="application/json")
-    logging.info(f"Successfully uploaded to gs://{bucket_name}/{blob_path}")
+    blob.upload_from_string(json.dumps(data, indent=2), content_type="application/json")    logging.info(f"Successfully uploaded to gs://{bucket_name}/{blob_path}")

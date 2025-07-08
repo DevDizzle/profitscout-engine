@@ -32,14 +32,15 @@ graph TD
         B -->|Invokes in Parallel| C3[Function: refresh-prices];
         B -->|Invokes in Parallel| C4[Function: refresh-technicals];
 
-        B -->|Invokes Sequentially| D1[Function: refresh-transcripts];
-        D1 -->|After Completion| D2[Function: create-transcript-summaries];
-
         C1 --> E[(Cloud Storage)];
         C2 --> E;
         C3 --> E;
         C4 --> E;
-        D2 --> E[fa:fa-database GCS Buckets];
+
+        F[Pub/Sub: transcripts-topic] --> G[Function: create-transcript-summaries];
+        D[Function: refresh-transcripts] --> F;
+        D --> E;
+        G --> E[fa:fa-database GCS Buckets];
     end
 ```
 ## 4. Technology Stack
@@ -69,6 +70,8 @@ This project was built with professional-grade engineering practices in mind. Th
 
 * **Declarative Orchestration with Cloud Workflows**: Instead of chaining functions together with brittle event-driven triggers, we used a declarative `workflow.yaml` file. This centralizes the entire pipeline's logic, making it easy to visualize, manage, and modify. It also provides robust error handling and allows for powerful parallel execution, significantly speeding up the total runtime.
 
+* **Event-Driven Transcript Processing**: Transcript collection now publishes a message to Pub/Sub after each upload. The summarization service is triggered by these events, decoupling the two functions and improving fault tolerance.
+
 * **Secure by Design**: All sensitive API keys are stored securely in Google Secret Manager. The Cloud Functions are granted permission to access these secrets at runtime. This practice prevents secrets from ever being exposed in source code or environment variables, adhering to security best practices.
 
 ## 6. Service Breakdown
@@ -81,8 +84,8 @@ This project was built with professional-grade engineering practices in mind. Th
 | **`statement_loader`** | `load_statements` | HTTP | Retrieves and stores 8 quarters of income, balance sheet, and cash flow statements. |
 | **`populate_price_data`** | `populate_price_data` | HTTP | Loads historical price data for tracked tickers into BigQuery. |
 | **`technicals_collector`** | `refresh_technicals` | HTTP | Collects a suite of daily technical indicators (SMA, EMA, RSI, etc.). |
-| **`transcript_collector`**| `refresh_transcripts`| HTTP | Fetches the latest quarterly earnings call transcript. |
-| **`transcript_summarizer`**| `create_summaries` | HTTP | Generates an AI-powered summary of new transcripts using the Gemini API. |
+| **`transcript_collector`**| `refresh_transcripts`| Pub/Sub | Fetches the latest quarterly earnings call transcript and publishes a message with its location. |
+| **`transcript_summarizer`**| `create_summaries` | Pub/Sub | Generates an AI-powered summary for each new transcript message. |
 
 ## 7. Setup and Deployment
 
@@ -107,5 +110,5 @@ This project was built with professional-grade engineering practices in mind. Th
 * **Automated Execution**: The pipeline is configured via Cloud Scheduler to run automatically every weekday at 5:00 AM Eastern Time.
 * **Manual Execution**: The pipeline can be triggered at any time by running the following `gcloud` command:
     ```bash
-    gcloud workflows run profitscout-pipeline
-    ```
+    gcloud workflows run profitscout-pipeline    ```
+

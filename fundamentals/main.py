@@ -1,4 +1,3 @@
-# fundamentals/main.py
 import logging
 from google.cloud import storage
 from config import PROJECT_ID, FMP_API_KEY_SECRET

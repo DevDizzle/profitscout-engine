@@ -1,4 +1,3 @@
-# populate_price_data/config.py
 import os
 import datetime
 
@@ -17,5 +16,4 @@ FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 # --- Job Parameters ---
 TICKER_FILE_PATH = "tickerlist.txt"
 DEFAULT_START_DATE = datetime.date(2020, 1, 1)
-MAX_WORKERS = 24
-BATCH_SIZE = 100
+MAX_WORKERS = 24BATCH_SIZE = 100

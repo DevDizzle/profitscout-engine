@@ -1,4 +1,3 @@
-# sec_filing_extractor/core/orchestrator.py
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import (

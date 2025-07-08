@@ -1,4 +1,3 @@
-# fundamentals/config.py
 import os
 
 # --- GCP Project ---
@@ -13,5 +12,4 @@ FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 TICKER_LIST_PATH = "tickerlist.txt" 
 KEY_METRICS_FOLDER = "key-metrics/"
 RATIOS_FOLDER = "ratios/"
-QUARTERS_TO_FETCH = 8
-MAX_WORKERS = 6
+QUARTERS_TO_FETCH = 8MAX_WORKERS = 6

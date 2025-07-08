@@ -1,4 +1,3 @@
-# sec_filing_extractor/core/client.py
 import logging
 from sec_api import QueryApi, ExtractorApi
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
