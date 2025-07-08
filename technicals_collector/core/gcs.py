@@ -1,4 +1,3 @@
-# technicals_collector/core/gcs.py
 import logging
 import json
 from google.cloud import storage

@@ -1,4 +1,3 @@
-# technicals_collector/core/orchestrator.py
 import logging
 import datetime
 import pandas as pd

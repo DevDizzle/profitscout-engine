@@ -1,4 +1,3 @@
-# transcript_summarizer/core/orchestrator.py
 """
 Builds the strict five-section prompt and calls the GenAI client.
 """
@@ -81,5 +80,4 @@ def summarise(transcript: str, ticker: str, year: int, quarter: int) -> str:
     if not all([transcript, ticker, year, quarter]):
         raise ValueError("Transcript, ticker, year, and quarter are all required.")
     
-    prompt = build_prompt(transcript, ticker=ticker, year=year, quarter=quarter)
-    return client.generate(prompt)
+    prompt = build_prompt(transcript, ticker=ticker, year=year, quarter=quarter)    return client.generate(prompt)

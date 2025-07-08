@@ -1,4 +1,3 @@
-# transcript_summarizer/core/config.py
 """
 Central configuration for the Transcript Summarizer.
 """
@@ -19,5 +18,4 @@ GCS_BUCKET          = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 GCS_INPUT_PREFIX    = "earnings-call-transcripts/"
 GCS_OUTPUT_PREFIX   = "earnings-call-summaries/"
 
-# --- Job Parameters ---
-MAX_WORKERS         = 12
+# --- Job Parameters ---MAX_WORKERS         = 12

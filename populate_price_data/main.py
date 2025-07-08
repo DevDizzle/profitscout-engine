@@ -1,4 +1,3 @@
-# populate_price_data/main.py
 import logging
 from google.cloud import bigquery, storage
 from config import PROJECT_ID, FMP_API_KEY_SECRET

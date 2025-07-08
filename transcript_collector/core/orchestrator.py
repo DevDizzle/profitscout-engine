@@ -1,4 +1,3 @@
-# transcript_collector/core/orchestrator.py
 import logging
 import pandas as pd
 import json
@@ -103,5 +102,4 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
             except Exception as e:
                 item = futures[future]
                 logging.error(f"A future failed for item {item}: {e}", exc_info=True)
-
     logging.info("Transcript collection pipeline complete.")

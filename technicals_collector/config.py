@@ -1,4 +1,3 @@
-# technicals_collector/config.py
 import os
 
 # --- GCP Project ---

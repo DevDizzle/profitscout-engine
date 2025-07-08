@@ -1,4 +1,3 @@
-# sec_filing_extractor/core/gcs.py
 import logging
 import json
 from google.cloud import storage

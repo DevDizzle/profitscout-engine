@@ -1,4 +1,3 @@
-# transcript_summarizer/core/client.py
 import logging
 import sys
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
@@ -56,5 +55,4 @@ def generate(prompt: str) -> str:
         model=config.MODEL_NAME,
         contents=prompt,
         config=cfg,
-    )
-    return resp.text.strip()
+    )    return resp.text.strip()
