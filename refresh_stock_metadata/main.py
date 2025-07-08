@@ -31,6 +31,14 @@ logging.basicConfig(level=logging.INFO,
 @retry(stop=stop_after_attempt(MAX_RETRIES),
        wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_json(url: str):
+    """Fetch JSON data from an HTTP endpoint.
+
+    Parameters:
+        url: The URL to request.
+
+    Returns:
+        The parsed JSON response.
+    """
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     return resp.json()
@@ -55,6 +63,14 @@ def load_tickers_from_txt(path: str) -> list[str]:
     return tickers
 
 def fetch_profiles_bulk(symbols: list[str]) -> pd.DataFrame:
+    """Retrieve company profiles for a list of tickers.
+
+    Parameters:
+        symbols: List of ticker symbols.
+
+    Returns:
+        DataFrame with ticker, company name, industry and sector.
+    """
     frames = []
     for i in range(0, len(symbols), 100):
         batch = symbols[i:i + 100]
@@ -75,6 +91,14 @@ def fetch_profiles_bulk(symbols: list[str]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 def fetch_quarterly_ends(ticker: str) -> pd.DataFrame:
+    """Get recent quarter-end dates for a ticker.
+
+    Parameters:
+        ticker: Stock symbol to query.
+
+    Returns:
+        DataFrame containing a ``quarter_end_date`` column.
+    """
     url = (
         f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
         f"?period=quarter&limit=12&apikey={FMP_KEY}"
@@ -87,6 +111,14 @@ def fetch_quarterly_ends(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def fetch_earnings_calls(ticker: str) -> pd.DataFrame:
+    """Retrieve historical earnings call dates for a ticker.
+
+    Parameters:
+        ticker: Stock symbol to query.
+
+    Returns:
+        DataFrame containing an ``earnings_call_date`` column.
+    """
     url = (
         f"https://financialmodelingprep.com/api/v3/historical/earning_calendar/{ticker}"
         f"?limit=12&apikey={FMP_KEY}"
@@ -99,6 +131,14 @@ def fetch_earnings_calls(ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def refresh_stock_metadata(request):
+    """HTTP Cloud Function to refresh the stock metadata table.
+
+    Parameters:
+        request: The triggering HTTP request (unused).
+
+    Returns:
+        A tuple containing a status message and HTTP status code.
+    """
     tickers = load_tickers_from_txt(TICKER_TXT_GCS)
     if not tickers:
         return "Ticker list load failure", 500
