@@ -25,7 +25,7 @@ The entire pipeline is orchestrated by Cloud Workflows, which ensures tasks are 
 ```mermaid
 graph TD
     subgraph "Google Cloud Project"
-        A[Cloud Scheduler] -->|Every Weekday at 5 AM ET| B(Cloud Workflow: profitscout-pipeline);
+        A[Cloud Scheduler] -->|Every Weekday at 5 PM ET| B(Cloud Workflow: profitscout-pipeline);
 
         B -->|Invokes in Parallel| C1[Function: extract-sec-filings];
         B -->|Invokes in Parallel| C2[Function: refresh-fundamentals];
