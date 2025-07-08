@@ -1,4 +1,3 @@
-# statement_loader/config.py
 import os
 
 # --- GCP Project ---
@@ -11,5 +10,4 @@ FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 # --- Job Parameters ---
 TICKER_LIST_PATH = "tickerlist.txt"
 GCS_OUTPUT_FOLDER = "financial-statements/"
-QUARTERS_TO_FETCH = 8
-MAX_WORKERS = 5
+QUARTERS_TO_FETCH = 8MAX_WORKERS = 5

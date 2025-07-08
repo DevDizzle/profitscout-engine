@@ -1,4 +1,3 @@
-# transcript_collector/main.py
 import logging
 from google.cloud import storage, bigquery, pubsub_v1
 
@@ -51,5 +50,4 @@ def refresh_transcripts(event, context):
         )
         return "Transcript collection pipeline finished successfully.", 200
     except Exception as e:
-        logging.critical(f"An unhandled exception occurred in the pipeline: {e}", exc_info=True)
-        raise
+        logging.critical(f"An unhandled exception occurred in the pipeline: {e}", exc_info=True)        raise

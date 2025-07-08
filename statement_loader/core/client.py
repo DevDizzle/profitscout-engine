@@ -1,4 +1,3 @@
-# statement_loader/core/client.py
 import logging
 import time
 from threading import Lock

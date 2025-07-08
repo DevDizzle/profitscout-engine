@@ -1,4 +1,3 @@
-# sec_filing_extractor/main.py
 import logging
 from google.cloud import storage
 from config import PROJECT_ID, SEC_API_KEY_SECRET
