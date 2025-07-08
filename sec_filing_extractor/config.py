@@ -1,4 +1,3 @@
-# sec_filing_extractor/config.py
 import os
 
 # --- GCP Project ---

@@ -1,4 +1,3 @@
-# technicals_collector/main.py
 import logging
 from google.cloud import storage, bigquery
 from config import PROJECT_ID

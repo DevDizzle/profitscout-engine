@@ -1,4 +1,3 @@
-# transcript_collector/core/client.py
 import logging
 import time
 from threading import Lock
@@ -64,5 +63,4 @@ class FMPClient:
         """Fetches an earnings call transcript for a specific year and quarter."""
         params = {"year": year, "quarter": quarter, "apikey": self.api_key}
         data = self._make_request(f"earning_call_transcript/{ticker}", params)
-        # The API returns a list, we want the first element if it exists
-        return data[0] if isinstance(data, list) and data else None
+        # The API returns a list, we want the first element if it exists        return data[0] if isinstance(data, list) and data else None

@@ -1,4 +1,3 @@
-# populate_price_data/core/bq.py
 import logging
 import datetime
 import pandas as pd
