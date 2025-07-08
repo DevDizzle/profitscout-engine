@@ -1,4 +1,3 @@
-# populate_price_data/core/client.py
 import logging
 import time
 import datetime

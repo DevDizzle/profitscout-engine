@@ -1,4 +1,3 @@
-# devdizzle/profitscout-data-pipeline/profitscout-data-pipeline-master/refresh_stock_metadata/main.py
 import os
 import time
 import logging

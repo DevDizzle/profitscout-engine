@@ -1,4 +1,3 @@
-# transcript_summarizer/main.py
 """
 Pub/Sub-triggered Cloud Function that receives a message containing a GCS path
 to a new transcript and generates a summary for it.
@@ -76,5 +75,4 @@ def create_transcript_summaries(event, context):
 
     except Exception as e:
         logging.error(f"An unexpected error occurred processing {blob_name}: {e}", exc_info=True)
-        # Re-raise the exception to signal failure to Pub/Sub for potential retry
-        raise e
+        # Re-raise the exception to signal failure to Pub/Sub for potential retry        raise e

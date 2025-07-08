@@ -1,4 +1,3 @@
-# transcript_summarizer/core/gcs.py
 """Helper functions for reading and writing text blobs in GCS."""
 from google.cloud import storage
 

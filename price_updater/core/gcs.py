@@ -1,4 +1,3 @@
-# price_updater/core/gcs.py
 import logging
 import json
 from google.cloud import storage
