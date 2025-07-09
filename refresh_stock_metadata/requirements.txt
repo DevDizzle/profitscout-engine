@@ -5,3 +5,4 @@ requests
 tenacity
 pyarrow
 google-cloud-pubsub
+pandas-gbq

@@ -12,7 +12,8 @@ BIGQUERY_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
 # --- Job Parameters ---
 TICKER_LIST_PATH = "tickerlist.txt"
 GCS_OUTPUT_FOLDER = "technicals/"
-MAX_WORKERS = 16
+MAX_WORKERS = 8  # Match to vCPU count for best performance
+CHUNK_SIZE = 100 # Process 100 tickers at a time to manage memory
 ROLLING_52_WEEK_WINDOW = 252
 
 # --- Indicator Definitions ---
