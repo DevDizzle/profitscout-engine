@@ -1,8 +1,9 @@
 google-cloud-bigquery
 google-cloud-storage
+google-cloud-pubsub
+google-cloud-logging
 pandas
 requests
 tenacity
 pyarrow
-google-cloud-pubsub
 pandas-gbq
