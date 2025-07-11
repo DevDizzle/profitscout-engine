@@ -16,4 +16,5 @@ PUB_SUB_TOPIC_ID = "new-transcript-created"
 FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 
 # --- Job Parameters ---
-GCS_OUTPUT_FOLDER = "earnings-call-transcripts/"MAX_WORKERS = 12
+GCS_OUTPUT_FOLDER = "earnings-call-transcripts/"
+MAX_WORKERS = 6

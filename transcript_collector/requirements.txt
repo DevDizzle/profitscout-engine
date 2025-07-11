@@ -7,3 +7,6 @@ tenacity
 functions-framework
 python-dateutil
 pandas
+db-dtypes
+google-cloud-bigquery-storage
+google-cloud-logging
