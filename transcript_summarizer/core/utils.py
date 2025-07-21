@@ -39,4 +39,5 @@ def read_transcript_data(raw_json: str) -> tuple[str | None, int | None, int | N
         return str(content), int(year), int(quarter)
 
     except (json.JSONDecodeError, TypeError, ValueError, IndexError):
-        # If JSON is malformed or data types are wrong, return None        return None, None, None
+        # If JSON is malformed or data types are wrong, return None        
+        return None, None, None
