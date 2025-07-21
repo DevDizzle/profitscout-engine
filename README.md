@@ -24,31 +24,30 @@ The entire pipeline is orchestrated by Cloud Workflows, which ensures tasks are 
 
 ```mermaid
 graph TD
-    subgraph "Google Cloud Project"
-        A[Cloud Scheduler] -->|Every Weekday at 5 PM ET| B(Cloud Workflow: profitscout-pipeline)
+    subgraph "Google Cloud Project"
+        A[Cloud Scheduler] -->|Every Weekday at 5 PM ET| B(Cloud Workflow: profitscout-pipeline)
 
-        B -->|Invokes in Parallel| C1[Function: sec_filing_extractor]
-        B -->|Invokes in Parallel| C2[Function: statement_loader]
-        B -->|Invokes in Parallel| C3[Function: fundamentals_collector]
-        B -->|Invokes in Parallel| C4[Function: transcript_collector]
-        B -->|Invokes in Parallel| C5[Function: populate_price_data]
-        B -->|Invokes in Parallel| C6[Function: price_updater]
-        B -->|Invokes in Parallel| C7[Function: technicals_collector]
-
-        C1 --> S[(Cloud Storage)]
-        C2 --> S
-        C3 --> S
-        C4 --> S
-        C6 --> S
-        C7 --> S
-        C5 --> Q[(BigQuery)]
-    end
+        B -->|Invokes in Parallel| C1[Function: sec_filing_extractor]
+        B -->|Invokes in Parallel| C2[Function: statement_loader]
+        B -->|Invokes in Parallel| C3[Function: fundamentals]
+        B -->|Invokes in Parallel| C4[Function: populate_price_data]
+        B -->|Invokes in Parallel| C5[Function: price_updater]
+        B -->|Invokes in Parallel| C6[Function: technicals_collector]
+        B -->|Invokes in Parallel| C7[Function: refresh_stock_metadata]
+        C1 --> S[(Cloud Storage)]
+        C2 --> S
+        C3 --> S
+        C5 --> S
+        C6 --> S
+        C4 --> Q[(BigQuery)]
+        C7 --> Q
+    end
 ```
 
 ```mermaid
 graph LR
-    TC[transcript_collector] --> P[Pub/Sub]
-    P --> TS[transcript_summarizer]
+    TC[transcript_collector] --> P[Pub/Sub]
+    P --> TS[transcript_summarizer]
 ```
 ## 4. Technology Stack
 
@@ -93,31 +92,32 @@ This project was built with professional-grade engineering practices in mind. Th
 | **`statement_loader`** | `load_statements` | HTTP | Retrieves and stores 8 quarters of income, balance sheet, and cash flow statements. |
 | **`populate_price_data`** | `populate_price_data` | HTTP | Loads historical price data for tracked tickers into BigQuery. |
 | **`technicals_collector`** | `refresh_technicals` | HTTP | Collects a suite of daily technical indicators (SMA, EMA, RSI, etc.). |
+| **`refresh_stock_metadata`** | `refresh_stock_metadata` | HTTP | Builds a BigQuery table of earnings call dates and publishes a completion event. |
 | **`transcript_collector`**| `refresh_transcripts`| Pub/Sub | Fetches the latest quarterly earnings call transcript and publishes a message with its location. |
 | **`transcript_summarizer`**| `create_transcript_summaries` | Pub/Sub | Generates an AI-powered summary for each new transcript message. |
 
 ## 7. Setup and Deployment
 
-1.  **Prerequisites**: Google Cloud SDK (`gcloud`) installed and configured with a GCP project.
-2.  **Clone Repository**: `git clone [your-repo-url]`
-3.  **Secrets**: Ensure API keys for FMP, SEC-API, and Gemini are created and stored in Google Secret Manager.
-4.  **Deploy a Service**:
-    ```bash
-    # Navigate into a service directory, e.g., price_updater
-    cd price_updater
-    # Deploy the function (example)
-    gcloud functions deploy price_updater --gen2 --runtime python312 ...
-    ```
-5.  **Deploy the Workflow**:
-    ```bash
-    # From the project root
-    gcloud workflows deploy profitscout-pipeline --source=workflow.yaml
-    ```
+1.  **Prerequisites**: Google Cloud SDK (`gcloud`) installed and configured with a GCP project.
+2.  **Clone Repository**: `git clone [your-repo-url]`
+3.  **Secrets**: Ensure API keys for FMP, SEC-API, and Gemini are created and stored in Google Secret Manager.
+4.  **Deploy a Service**:
+    ```bash
+    # Navigate into a service directory, e.g., price_updater
+    cd price_updater
+    # Deploy the function (example)
+    gcloud functions deploy price_updater --gen2 --runtime python312 ...
+    ```
+5.  **Deploy the Workflow**:
+    ```bash
+    # From the project root
+    gcloud workflows deploy profitscout-pipeline --source=workflow.yaml
+    ```
 
 ## 8. How to Run the Pipeline
 
 * **Automated Execution**: The pipeline is configured via Cloud Scheduler to run automatically every weekday at 5:00 AM Eastern Time.
 * **Manual Execution**: The pipeline can be triggered at any time by running the following `gcloud` command:
-    ```bash
-    gcloud workflows run profitscout-pipeline    ```
-
+    ```bash
+    gcloud workflows run profitscout-pipeline
+    ```
