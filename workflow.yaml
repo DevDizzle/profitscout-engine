@@ -8,7 +8,7 @@ main:
       - fundamentals_name: "refresh-fundamentals"
       - technicals_name: "refresh-technicals"
       - sec_extractor_name: "extract-sec-filings"
-      - refresh_financials_name: "refresh-financials" # Assuming this is the name for statement_loader
+      - refresh_financials_name: "refresh-financials"
       - price_data_populator_name: "populate-price-data"
       - refresh_stock_metadata_name: "refresh-stock-metadata"
 
@@ -23,49 +23,62 @@ main:
             - call_price_updater:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
+                    auth: {type: OIDC}
+                    timeout: 900
             - call_fundamentals:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
+                    auth: {type: OIDC}
+                    timeout: 900
             - call_technicals:
                 call: http.post
                 args:
-                  url: ${"https:///" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
+                    auth: {type: OIDC}
+                    timeout: 900
             - call_sec_extractor:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
+                    auth: {type: OIDC}
+                    timeout: 900
             - call_refresh_financials:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
+                    auth: {type: OIDC}
+                    timeout: 900
             - call_price_data_populator:
                 call: http.post
                 args:
-                  url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
+                    auth: {type: OIDC}
+                    timeout: 900
             - call_refresh_stock_metadata:
                 call: http.post
                 args:
-                  url: ${"https:///" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
-                  auth: {type: OIDC}
-                  timeout: 900
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
+                    auth: {type: OIDC}
+                    timeout: 900
+
+  # This is the new step to publish a completion message
+  - publish_completion_message:
+      call: googleapis.pubsub.v1.projects.topics.publish
+      args:
+          topic: "projects/profitscout-lx6bb/topics/workflow-completed"
+          body:
+              messages:
+              - attributes:
+                  source: "main-data-pipeline"
+                  status: "success"
+                data: ${base64.encode(json.encode("Workflow finished successfully."))}
+      result: publishResult
 
   - log_finish:
       call: sys.log
       args:
-        text: "Main data collection workflow finished successfully. Transcript processing will continue via Pub/Sub."
+        text: "Main data collection workflow finished successfully. A message has been sent to trigger the data bundler."
   - done:
       return: "Workflow finished successfully."
