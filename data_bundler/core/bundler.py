@@ -30,6 +30,23 @@ from config import (
 
 DATE_PAT = re.compile(r"_(\d{4}-\d{2}-\d{2})")
 
+def get_ticker_list(bucket: storage.Bucket) -> List[str]:
+    """Loads a list of tickers from a text file in GCS."""
+    blob = bucket.blob(TICKER_LIST_PATH)
+    if not blob.exists():
+        print(f"[ERROR] Ticker file not found at: {TICKER_LIST_PATH}")
+        return []
+    try:
+        content = blob.download_as_text(encoding="utf-8")
+        tickers = [
+            line.strip().upper() for line in content.splitlines() if line.strip()
+        ]
+        print(f"[INFO] Loaded {len(tickers)} tickers from gs://{BUCKET_NAME}/{TICKER_LIST_PATH}")
+        return tickers
+    except Exception as e:
+        print(f"[ERROR] Failed to load or parse tickers from GCS: {e}")
+        return []
+
 # --- Data Curation Helpers ---
 
 def _publish_completion_message(ticker: str):
@@ -94,14 +111,41 @@ def _extract_date_from_name(blob_name: str) -> str:
     return m.group(1) if m else "0000-00-00"
 
 def _load_json_blob(bucket: storage.Bucket, blob_name: str) -> Optional[Any]:
+    """
+    Loads a JSON blob from GCS.
+    Includes a fallback for malformed MD&A files to load them as raw text.
+    """
     blob = bucket.blob(blob_name)
     if not blob.exists():
         print(f"[WARN] Blob does not exist, skipping: {blob_name}")
         return None
+
     try:
+        # First, try to download and parse as standard JSON
         return json.loads(blob.download_as_bytes())
+
+    except json.JSONDecodeError as json_exc:
+        print(f"[ERROR] Failed to parse JSON from {blob_name}: {json_exc}.")
+
+        # If parsing fails, check if it's an MD&A file and try the fallback.
+        if "sec-mda" in blob_name:
+            print(f"[INFO] Attempting fallback for MD&A file: {blob_name}")
+            try:
+                # Re-download as raw text
+                raw_text = blob.download_as_text(encoding="utf-8")
+                # Wrap the raw text into the expected JSON structure
+                return {"MD&A": raw_text}
+            except Exception as text_exc:
+                print(f"[ERROR] Fallback failed. Could not read {blob_name} as raw text: {text_exc}")
+                return None
+        else:
+            # For other file types, the error is likely more critical.
+            print(f"[ERROR] No fallback available for this file type. Skipping {blob_name}.")
+            return None
+
     except Exception as exc:
-        print(f"[ERROR] Failed to load/parse JSON from {blob_name}: {exc}")
+        # Catch any other unexpected errors (e.g., network or permission issues)
+        print(f"[FATAL] An unexpected error occurred loading {blob_name}: {exc}")
         return None
 
 def _get_latest_date_for_ticker(bucket: storage.Bucket, prefix: str, ticker: str) -> Optional[str]:
