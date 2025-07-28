@@ -96,12 +96,31 @@ def _curate_key_metrics(metrics_data: List[Dict], ratios_data: List[Dict]) -> Li
     return curated_metrics
 
 def _curate_technicals(raw_data: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(raw_data, dict): return {}
+    """
+    Extracts the most recent technical indicators from the timeseries data.
+    """
+    if not isinstance(raw_data, dict):
+        return {}
+
+    # The technicals data is a list of daily records. We only need the latest one.
+    technicals_timeseries = raw_data.get("technicals_timeseries")
+    if not technicals_timeseries or not isinstance(technicals_timeseries, list):
+        return {}
+
+    # The list is sorted with the most recent data point at the end.
+    latest_technicals = technicals_timeseries[-1]
+
+    # Map the verbose names from the file to the desired keys in the bundle
     return {
-        "symbol": raw_data.get("symbol"), "fiftyTwoWeekHigh": raw_data.get("fiftyTwoWeekHigh"),
-        "fiftyTwoWeekLow": raw_data.get("fiftyTwoWeekLow"),
-        "movingAverage": {"50_day": raw_data.get("priceAvg50"), "200_day": raw_data.get("priceAvg200")},
-        "rsi": raw_data.get("rsi"), "macd": raw_data.get("macd"),
+        "symbol": raw_data.get("ticker"),
+        "fiftyTwoWeekHigh": latest_technicals.get("52w_high"),
+        "fiftyTwoWeekLow": latest_technicals.get("52w_low"),
+        "movingAverage": {
+            "50_day": latest_technicals.get("SMA_50"),
+            "200_day": latest_technicals.get("SMA_200"),
+        },
+        "rsi": latest_technicals.get("RSI_14"),
+        "macd": latest_technicals.get("MACD_12_26_9"),
     }
 
 # --- GCS & BQ Helpers ---
