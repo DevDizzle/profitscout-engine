@@ -2,3 +2,4 @@ functions-framework
 google-cloud-bigquery
 google-cloud-firestore
 pandas
+db-dtypes
