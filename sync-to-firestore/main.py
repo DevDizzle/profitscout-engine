@@ -1,63 +1,69 @@
-#!/usr/bin/env python3
-"""
-Cloud Function to sync asset metadata from BigQuery to Firestore.
+# sync-to-firestore/main.py
 
-Triggered by a Pub/Sub message from the 'bundle-updated' topic, which
-contains the ticker symbol of the newly processed asset.
-"""
-import base64
-import json
-from google.cloud import bigquery, firestore
+import logging
+import os
 import functions_framework
-from cloudevents.http import CloudEvent
+from google.cloud import bigquery, firestore
 
-from config import BQ_DATASET, BQ_PROJECT_ID, BQ_TABLE, FIRESTORE_COLLECTION
+# --- Configuration from Environment Variables ---
+# Use a specific variable for the project containing the BQ table and Firestore
+DESTINATION_PROJECT_ID = os.environ.get("DESTINATION_PROJECT_ID")
+BQ_METADATA_TABLE = os.environ.get("BQ_METADATA_TABLE")
+FIRESTORE_COLLECTION = os.environ.get("FIRESTORE_COLLECTION", "stocks")
+
+# Initialize clients, specifying the project for Firestore
+db = firestore.Client(project=DESTINATION_PROJECT_ID)
+bq_client = bigquery.Client(project=DESTINATION_PROJECT_ID)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @functions_framework.cloud_event
-def run(cloud_event: CloudEvent) -> None:
+def run(cloud_event):
     """
-    Main entry point for the Cloud Function.
+    Triggered by the data-bundler-complete topic.
+    Queries the asset_metadata table to get all bundle paths and syncs them to Firestore.
     """
+    logging.info("Sync-to-firestore job triggered. Fetching all asset metadata from BigQuery.")
+    
+    # Query the BigQuery table in the correct destination project
+    query = f"""
+        SELECT
+            ticker,
+            bundle_gcs_path
+        FROM
+            `{DESTINATION_PROJECT_ID}.{BQ_METADATA_TABLE}`
+        WHERE
+            bundle_gcs_path IS NOT NULL
+    """
+    
     try:
-        # 1. Decode the ticker from the Pub/Sub message
-        message_data = base64.b64decode(cloud_event.data["message"]["data"]).decode("utf-8")
-        payload = json.loads(message_data)
-        ticker = payload.get("ticker")
+        query_job = bq_client.query(query)
+        rows = query_job.result()
 
-        if not ticker:
-            print("[ERROR] No ticker found in Pub/Sub message.")
-            return
-
-        print(f"Firestore sync triggered for ticker: {ticker}")
-
-        # 2. Fetch the metadata from BigQuery
-        client = bigquery.Client(project=BQ_PROJECT_ID)
-        table_id = f"{BQ_PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
-        
-        query = f"SELECT * FROM `{table_id}` WHERE ticker = @ticker LIMIT 1"
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("ticker", "STRING", ticker)]
-        )
-        
-        query_job = client.query(query, job_config=job_config)
-        rows = list(query_job.result())
-
-        if not rows:
-            print(f"[ERROR] No metadata found in BigQuery for ticker: {ticker}")
-            return
+        batch = db.batch()
+        count = 0
+        for row in rows:
+            ticker = row.ticker
+            doc_ref = db.collection(FIRESTORE_COLLECTION).document(ticker)
+            batch.set(doc_ref, {
+                "bundle_gcs_path": row.bundle_gcs_path,
+                "last_synced": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            count += 1
             
-        # Convert the BigQuery Row to a dictionary, handling data types
-        data_to_sync = dict(rows[0])
-        for key, value in data_to_sync.items():
-            if hasattr(value, 'isoformat'): # Handles DATE, DATETIME, TIMESTAMP
-                data_to_sync[key] = value.isoformat()
+            # Commit the batch every 500 documents
+            if count % 500 == 0:
+                logging.info(f"Committing batch of {count} documents...")
+                batch.commit()
+                batch = db.batch()
+        
+        # Commit any remaining documents
+        if count > 0 and count % 500 != 0:
+            logging.info(f"Committing final batch of {count % 500} documents...")
+            batch.commit()
 
-        # 3. Write the data to Firestore
-        fs = firestore.Client()
-        doc_ref = fs.collection(FIRESTORE_COLLECTION).document(ticker.upper())
-        doc_ref.set(data_to_sync)
-
-        print(f"[SUCCESS] Successfully synced metadata for {ticker} to Firestore.")
+        logging.info(f"Successfully synced {count} documents to Firestore collection '{FIRESTORE_COLLECTION}'.")
 
     except Exception as e:
-        print(f"[FATAL] An unexpected error occurred: {e}")
+        logging.error(f"An error occurred during Firestore sync: {e}")
+        raise
