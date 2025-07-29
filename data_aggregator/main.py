@@ -5,8 +5,9 @@ import os
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from google.cloud import bigquery, storage
-import datetime
 from google.cloud import pubsub_v1
+from google.api_core import retry
+import datetime
 
 # ─── Configuration ──────────────────────────────────────────────────────────────
 SOURCE_PROJECT_ID       = os.environ.get("PROJECT_ID")              # Function + topic
@@ -76,18 +77,28 @@ def download_and_clean_bundle(bundle_info):
         logging.error("Failed to process %s: %s", gcs_path, exc)
         return None
 
+def upload_json_to_gcs(bucket_name, blob_name, data):
+    """Upload JSON data to GCS and return the URI."""
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_string(json.dumps(data), content_type="application/json")
+    return f"gs://{bucket_name}/{blob_name}"
+
 def aggregate_and_save_to_bq(df: pd.DataFrame, group_by_col: str, table_id: str):
-    """Aggregate by column and load results into BigQuery."""
+    """Aggregate by column, save JSON to GCS, and load URI into BigQuery."""
     logging.info("Aggregating by %s …", group_by_col)
     results = []
     for name, group in df.groupby(group_by_col):
         ticker_count = len(group)
-        ticker_data_json = group.to_json(orient="records")
+        ticker_data = group.to_dict(orient="records")
+        # Upload to GCS
+        blob_name = f"aggregated/{group_by_col}/{name.replace(' ', '_').lower()}/{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        ticker_data_uri = upload_json_to_gcs(BUNDLE_BUCKET_NAME, blob_name, ticker_data)
         results.append(
             {
                 group_by_col: name,
                 "ticker_count": ticker_count,
-                "ticker_data": ticker_data_json,  # stored as STRING
+                "ticker_data": ticker_data_uri,  # URI to JSON
                 "last_updated": datetime.datetime.utcnow(),
             }
         )
@@ -101,14 +112,13 @@ def aggregate_and_save_to_bq(df: pd.DataFrame, group_by_col: str, table_id: str)
     schema = [
         bigquery.SchemaField(group_by_col, "STRING"),
         bigquery.SchemaField("ticker_count", "INTEGER"),
-        bigquery.SchemaField("ticker_data", "STRING"),  # Parquet ⇒ STRING
+        bigquery.SchemaField("ticker_data", "STRING"),  # URI as STRING
         bigquery.SchemaField("last_updated", "TIMESTAMP"),
     ]
 
     job_config = bigquery.LoadJobConfig(
         schema=schema,
         write_disposition="WRITE_TRUNCATE",
-        # source_format removed; Parquet is used by default
     )
 
     full_table_id = f"{DESTINATION_PROJECT_ID}.{table_id}"
