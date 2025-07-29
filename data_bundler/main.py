@@ -1,77 +1,58 @@
-#!/usr/bin/env python3
-"""
-Cloud Function entry point for the Data Bundler service.
-This function is triggered by a Pub/Sub message, typically from Cloud Scheduler.
-It fetches a list of tickers, and for each ticker, it creates and uploads
-a data bundle to Google Cloud Storage using multiple threads.
-"""
+# data_bundler/main.py
+
+import logging
 import functions_framework
-from google.cloud import storage
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
-
-from core.bundler import create_and_upload_bundle, get_ticker_list
-from config import BUCKET_NAME
-
-# --- Client Initialization ---
-# Initialize clients once globally to be reused across function invocations.
-try:
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(BUCKET_NAME)
-except Exception as e:
-    print(f"[FATAL] Could not initialize GCS client: {e}")
-    bucket = None
+from concurrent.futures import ThreadPoolExecutor
+from core import bundler  # <-- CORRECTED IMPORT
 
 # --- Configuration ---
-MAX_WORKERS = 4
+MAX_WORKERS = 16 # Increased for I/O-bound tasks
 
-def process_single_ticker(ticker: str):
-    """
-    Wrapper function to process one ticker and handle its exceptions.
-    This is the target function for each thread.
-    """
-    try:
-        print(f"--- Starting processing for ticker: {ticker} ---")
-        # The bucket object is passed from the global scope
-        create_and_upload_bundle(bucket, ticker)
-        return f"SUCCESS: {ticker}"
-    except Exception as e:
-        # Log the error but don't crash the entire process.
-        print(f"[ERROR] An unexpected error occurred while processing {ticker}: {e}")
-        return f"ERROR: {ticker} - {e}"
+# Setup basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @functions_framework.cloud_event
 def run(cloud_event):
     """
-    Main function triggered by Pub/Sub.
-    Processes all tickers from the ticker list file in GCS using a thread pool.
+    Main entry point for the Cloud Function.
+    Orchestrates the entire data bundling process.
     """
-    start_time = time.time()
-    print("[INFO] Data Bundler function triggered.")
+    logging.info("Data Bundler function triggered.")
+    
+    # 1. Get the master work list from BigQuery
+    work_list = bundler.get_ticker_work_list_from_bq()
+    if not work_list:
+        logging.warning("No tickers to process. Shutting down.")
+        return "No tickers to process."
 
-    if not bucket:
-        print("[FATAL] GCS bucket is not initialized. Exiting.")
-        return "GCS client not initialized.", 500
-
-    tickers = get_ticker_list(bucket)
-    if not tickers:
-        print("[ERROR] No tickers found. Exiting function.")
-        return "No tickers processed.", 200
-
-    print(f"[INFO] Found {len(tickers)} tickers. Starting processing with {MAX_WORKERS} workers.")
-
-    results = []
-    # Using ThreadPoolExecutor to process tickers in parallel
+    # 2. Process tickers in parallel using a thread pool
+    logging.info(f"Starting parallel processing for {len(work_list)} tickers with {MAX_WORKERS} workers.")
+    all_results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Create a future for each ticker
-        future_to_ticker = {executor.submit(process_single_ticker, ticker): ticker for ticker in tickers}
+        # The map function will automatically handle the iteration and collect results
+        all_results = list(executor.map(bundler.create_and_upload_bundle, work_list))
 
-        # As each future completes, process the result
-        for future in as_completed(future_to_ticker):
-            result = future.result()
-            print(f"[COMPLETED] {result}")
-            results.append(result)
+    # 3. Filter out any failed tasks (which return None)
+    successful_metadata = [res for res in all_results if res is not None]
+    
+    total_tasks = len(work_list)
+    successful_tasks = len(successful_metadata)
+    failed_tasks = total_tasks - successful_tasks
+    logging.info(f"Processing complete. Success: {successful_tasks}, Failed: {failed_tasks}")
+    
+    # 4. Perform a single batch update to BigQuery
+    if successful_metadata:
+        try:
+            bundler.batch_update_asset_metadata_in_bq(successful_metadata)
+        except Exception as e:
+            # If the BQ update fails, we stop to avoid sending a false "success" signal
+            logging.critical(f"CRITICAL: BigQuery batch update failed. Downstream processes will not be triggered. Error: {e}")
+            return "BigQuery batch update failed.", 500
+    else:
+        logging.warning("No bundles were created, so no BigQuery update is necessary.")
 
-    end_time = time.time()
-    print(f"[SUCCESS] Finished processing all {len(tickers)} tickers in {end_time - start_time:.2f} seconds.")
+    # 5. Publish a single "job complete" message
+    bundler.publish_job_complete_message()
+    
+    logging.info("Data Bundler job finished successfully.")
     return "OK", 200

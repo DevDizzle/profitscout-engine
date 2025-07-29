@@ -1,300 +1,254 @@
-#!/usr/bin/env python3
-"""
-Core logic for the Data Bundler service.
-- Fetches artifacts from GCS.
-- Curates and combines them into a clean, token-efficient JSON file.
-- Uploads the result to a destination GCS bucket.
-- Updates a metadata table in BigQuery with the bundle's location.
-"""
 import json
-import re
-from datetime import datetime
+import logging
+import os
+import pandas as pd
+from datetime import date
 from typing import Any, Dict, List, Optional
 
-from google.cloud import bigquery, storage
-from google.cloud import pubsub_v1
+from google.api_core import exceptions
+from google.cloud import bigquery, pubsub_v1, storage
 
-from config import (
-    BUCKET_NAME,
-    BUNDLE_OUTPUT_BUCKET,
-    BUNDLE_OUTPUT_FOLDER,
-    DESTINATION_BQ_DATASET,
-    DESTINATION_BQ_PROJECT,
-    DESTINATION_BQ_TABLE,
-    SECTION_GCS_PATHS,
-    SOURCE_BQ_DATASET,
-    SOURCE_BQ_PROJECT,
-    SOURCE_BQ_TABLE,
-    TICKER_LIST_PATH,
-)
+# --- Configuration from Environment Variables ---
+SOURCE_PROJECT_ID = os.environ.get("PROJECT_ID")
+DESTINATION_PROJECT_ID = os.environ.get("DESTINATION_PROJECT_ID")
 
-DATE_PAT = re.compile(r"_(\d{4}-\d{2}-\d{2})")
+LOCATION = os.environ.get("LOCATION", "US")
+DATA_BUCKET_NAME = os.environ.get("DATA_BUCKET_NAME")
+BUNDLE_BUCKET_NAME = os.environ.get("BUNDLE_BUCKET_NAME")
+BQ_METADATA_TABLE = os.environ.get("BQ_METADATA_TABLE")
+BQ_SOURCE_TABLE = os.environ.get("BQ_SOURCE_TABLE")
+JOB_COMPLETE_TOPIC_NAME = os.environ.get("JOB_COMPLETE_TOPIC")
+JOB_COMPLETE_TOPIC = f"projects/{SOURCE_PROJECT_ID}/topics/{JOB_COMPLETE_TOPIC_NAME}"
 
-def get_ticker_list(bucket: storage.Bucket) -> List[str]:
-    """Loads a list of tickers from a text file in GCS."""
-    blob = bucket.blob(TICKER_LIST_PATH)
-    if not blob.exists():
-        print(f"[ERROR] Ticker file not found at: {TICKER_LIST_PATH}")
-        return []
-    try:
-        content = blob.download_as_text(encoding="utf-8")
-        tickers = [
-            line.strip().upper() for line in content.splitlines() if line.strip()
-        ]
-        print(f"[INFO] Loaded {len(tickers)} tickers from gs://{BUCKET_NAME}/{TICKER_LIST_PATH}")
-        return tickers
-    except Exception as e:
-        print(f"[ERROR] Failed to load or parse tickers from GCS: {e}")
-        return []
 
-# --- Data Curation Helpers ---
+# Initialize clients
+storage_client = storage.Client()
+bq_client = bigquery.Client(project=SOURCE_PROJECT_ID)
+publisher = pubsub_v1.PublisherClient()
 
-def _publish_completion_message(ticker: str):
-    """Publishes a message to the bundle-updated topic."""
-    try:
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(DESTINATION_BQ_PROJECT, "bundle-updated")
-        message_data = json.dumps({"ticker": ticker}).encode("utf-8")
-        future = publisher.publish(topic_path, message_data)
-        future.result() # Wait for publish to complete
-        print(f"[INFO] Published completion message for {ticker} to 'bundle-updated' topic.")
-    except Exception as e:
-        print(f"[ERROR] Failed to publish completion message for {ticker}: {e}")
+# --- Main Functions ---
 
-def _curate_financial_statements(raw_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Extracts key fields from the raw financial statements JSON."""
-    curated_statements = []
-    reports = raw_data.get("quarterly_reports", raw_data if isinstance(raw_data, list) else [])
-    for report in reports:
-        income_statement = report.get("income_statement", {})
-        balance_sheet = report.get("balance_sheet", {})
-        cash_flow = report.get("cash_flow_statement", {})
-        curated_statements.append({
-            "date": report.get("date"), "period": income_statement.get("period"),
-            "revenue": income_statement.get("revenue"), "netIncome": income_statement.get("netIncome"),
-            "eps": income_statement.get("eps"), "totalAssets": balance_sheet.get("totalAssets"),
-            "totalLiabilities": balance_sheet.get("totalLiabilities"), "totalDebt": balance_sheet.get("totalDebt"),
-            "operatingCashFlow": cash_flow.get("operatingCashFlow"), "freeCashFlow": cash_flow.get("freeCashFlow"),
-        })
-    return curated_statements
-
-def _curate_key_metrics(metrics_data: List[Dict], ratios_data: List[Dict]) -> List[Dict[str, Any]]:
-    """Merges and extracts key fields from metrics and ratios data."""
-    ratios_by_date = {item.get('date'): item for item in ratios_data}
-    curated_metrics = []
-    for metrics_item in metrics_data:
-        date = metrics_item.get("date")
-        ratios_item = ratios_by_date.get(date, {})
-        curated_metrics.append({
-            "date": date, "period": metrics_item.get("period"),
-            "marketCap": metrics_item.get("marketCap"), "peRatio": metrics_item.get("peRatio"),
-            "priceToSalesRatio": metrics_item.get("priceToSalesRatio"), "pbRatio": metrics_item.get("pbRatio"),
-            "debtToEquity": metrics_item.get("debtToEquity"), "roe": metrics_item.get("roe"),
-            "grossProfitMargin": ratios_item.get("grossProfitMargin"), "netProfitMargin": ratios_item.get("netProfitMargin"),
-            "freeCashFlowPerShare": metrics_item.get("freeCashFlowPerShare"),
-        })
-    return curated_metrics
-
-def _curate_technicals(raw_data: Dict[str, Any]) -> Dict[str, Any]:
+def get_ticker_work_list_from_bq() -> List[Dict[str, Any]]:
     """
-    Extracts the most recent technical indicators from the timeseries data.
+    Queries BigQuery to get the full record for the latest quarter for each ticker.
     """
-    if not isinstance(raw_data, dict):
-        return {}
+    logging.info(f"Fetching master work list from BigQuery table: {BQ_SOURCE_TABLE}")
+    query = f"""
+        SELECT
+            ticker, company_name, industry, sector, quarter_end_date,
+            earnings_call_date, earnings_year, earnings_quarter
+        FROM (
+            SELECT
+                *,
+                ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
+            FROM `{SOURCE_PROJECT_ID}.{BQ_SOURCE_TABLE}`
+            WHERE ticker IS NOT NULL AND quarter_end_date IS NOT NULL
+        )
+        WHERE rn = 1
+    """
+    try:
+        results = bq_client.query(query).to_dataframe()
+        work_list = results.to_dict('records')
+        logging.info(f"Successfully fetched {len(work_list)} tickers to process.")
+        return work_list
+    except Exception as e:
+        logging.error(f"Failed to fetch ticker list from BigQuery: {e}")
+        return []
 
-    # The technicals data is a list of daily records. We only need the latest one.
-    technicals_timeseries = raw_data.get("technicals_timeseries")
-    if not technicals_timeseries or not isinstance(technicals_timeseries, list):
-        return {}
 
-    # The list is sorted with the most recent data point at the end.
-    latest_technicals = technicals_timeseries[-1]
+def create_and_upload_bundle(work_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Main worker function. Passes all metadata through to the final dictionary.
+    """
+    ticker = work_item.get("ticker")
+    max_date = work_item.get("quarter_end_date")
 
-    # Map the verbose names from the file to the desired keys in the bundle
-    return {
-        "symbol": raw_data.get("ticker"),
-        "fiftyTwoWeekHigh": latest_technicals.get("52w_high"),
-        "fiftyTwoWeekLow": latest_technicals.get("52w_low"),
-        "movingAverage": {
-            "50_day": latest_technicals.get("SMA_50"),
-            "200_day": latest_technicals.get("SMA_200"),
-        },
-        "rsi": latest_technicals.get("RSI_14"),
-        "macd": latest_technicals.get("MACD_12_26_9"),
+    if not ticker or not max_date:
+        logging.warning(f"Work item is missing ticker or quarter_end_date: {work_item}")
+        return None
+
+    logging.info(f"Processing ticker: {ticker} for date: {max_date}")
+
+    date_str = max_date.strftime('%Y-%m-%d')
+    bundle_data: Dict[str, Any] = {}
+
+    data_sources = {
+        "earnings_call_summary": f"earnings-call-transcripts/{ticker}_{date_str}.json",
+        "financial_statements": f"financial-statements/{ticker}_{date_str}.json",
+        "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
+        "ratios": f"ratios/{ticker}_{date_str}.json",
+        "technicals": f"technicals/{ticker}_technicals.json",
+        "business_profile": f"sec-business/{ticker}_business_profile.json",
+        "prices": f"prices/{ticker}_90_day_prices.json",
     }
 
-# --- GCS & BQ Helpers ---
-
-def _extract_date_from_name(blob_name: str) -> str:
-    m = DATE_PAT.search(blob_name)
-    return m.group(1) if m else "0000-00-00"
-
-def _load_json_blob(bucket: storage.Bucket, blob_name: str) -> Optional[Any]:
-    """
-    Loads a JSON blob from GCS.
-    Includes a fallback for malformed MD&A files to load them as raw text.
-    """
-    blob = bucket.blob(blob_name)
-    if not blob.exists():
-        print(f"[WARN] Blob does not exist, skipping: {blob_name}")
-        return None
-
-    try:
-        # First, try to download and parse as standard JSON
-        return json.loads(blob.download_as_bytes())
-
-    except json.JSONDecodeError as json_exc:
-        print(f"[ERROR] Failed to parse JSON from {blob_name}: {json_exc}.")
-
-        # If parsing fails, check if it's an MD&A file and try the fallback.
-        if "sec-mda" in blob_name:
-            print(f"[INFO] Attempting fallback for MD&A file: {blob_name}")
-            try:
-                # Re-download as raw text
-                raw_text = blob.download_as_text(encoding="utf-8")
-                # Wrap the raw text into the expected JSON structure
-                return {"MD&A": raw_text}
-            except Exception as text_exc:
-                print(f"[ERROR] Fallback failed. Could not read {blob_name} as raw text: {text_exc}")
-                return None
+    for key, path in data_sources.items():
+        content = _load_blob_as_string(path)
+        if content is not None:
+            bundle_data[key] = content
         else:
-            # For other file types, the error is likely more critical.
-            print(f"[ERROR] No fallback available for this file type. Skipping {blob_name}.")
-            return None
+            logging.warning(f"[{ticker}] Missing data for '{key}' at path: {path}")
 
-    except Exception as exc:
-        # Catch any other unexpected errors (e.g., network or permission issues)
-        print(f"[FATAL] An unexpected error occurred loading {blob_name}: {exc}")
+    mda_content = _load_sec_mda(ticker, date_str)
+    if mda_content is not None:
+        bundle_data["sec_mda"] = mda_content
+
+    if not bundle_data:
+        logging.info(f"[{ticker}] No source data found. Skipping bundle creation.")
         return None
 
-def _get_latest_date_for_ticker(bucket: storage.Bucket, prefix: str, ticker: str) -> Optional[str]:
-    """Finds the latest date string by scanning filenames in a GCS prefix."""
-    blobs = [b for b in bucket.list_blobs(prefix=prefix) if ticker.upper() in b.name.upper()]
-    if not blobs:
-        print(f"[WARN] No blobs found in '{prefix}' to determine date for {ticker}.")
-        return None
-    latest_blob = max(blobs, key=lambda b: _extract_date_from_name(b.name))
-    return _extract_date_from_name(latest_blob.name)
+    bundle_data["ticker"] = ticker
+    bundle_data["bundle_creation_date"] = date.today().isoformat()
 
-def _update_asset_metadata_in_bq(ticker: str, latest_date: str, gcs_path: str):
-    """Fetches latest metadata and MERGES it into the destination BQ table."""
     try:
-        client = bigquery.Client()
-        
-        # 1. Fetch the latest metadata from the source table
-        source_table = f"`{SOURCE_BQ_PROJECT}.{SOURCE_BQ_DATASET}.{SOURCE_BQ_TABLE}`"
-        query = f"""
-            SELECT *
-            FROM {source_table}
-            WHERE ticker = @ticker AND quarter_end_date = @latest_date
-            LIMIT 1
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
-                bigquery.ScalarQueryParameter("latest_date", "DATE", latest_date),
-            ]
+        bundle_name = f"bundles/{ticker}_{date_str}_bundle.json"
+        dest_bucket = storage_client.bucket(BUNDLE_BUCKET_NAME)
+        blob = dest_bucket.blob(bundle_name)
+
+        def json_serializer(obj):
+            return str(obj)
+
+        blob.upload_from_string(
+            data=json.dumps(bundle_data, indent=2, default=json_serializer),
+            content_type="application/json",
         )
-        source_data = client.query(query, job_config=job_config).to_dataframe()
+        bundle_gcs_path = f"gs://{BUNDLE_BUCKET_NAME}/{bundle_name}"
+        logging.info(f"[{ticker}] Successfully uploaded bundle to {bundle_gcs_path}")
 
-        if source_data.empty:
-            print(f"[ERROR] Could not find source metadata for {ticker} on {latest_date}.")
-            return
-
-        metadata = source_data.iloc[0].to_dict()
-
-        # 2. Use MERGE to insert or update the destination table
-        dest_table = f"`{DESTINATION_BQ_PROJECT}.{DESTINATION_BQ_DATASET}.{DESTINATION_BQ_TABLE}`"
-        merge_sql = f"""
-            MERGE {dest_table} T
-            USING (SELECT @ticker AS ticker) S
-            ON T.ticker = S.ticker
-            WHEN MATCHED THEN
-                UPDATE SET
-                    company_name = @company_name,
-                    industry = @industry,
-                    sector = @sector,
-                    quarter_end_date = @quarter_end_date,
-                    earnings_call_date = @earnings_call_date,
-                    earnings_year = @earnings_year,
-                    earnings_quarter = @earnings_quarter,
-                    bundle_gcs_path = @bundle_gcs_path,
-                    last_updated = @last_updated
-            WHEN NOT MATCHED THEN
-                INSERT (ticker, company_name, industry, sector, quarter_end_date, earnings_call_date, earnings_year, earnings_quarter, bundle_gcs_path, last_updated)
-                VALUES (@ticker, @company_name, @industry, @sector, @quarter_end_date, @earnings_call_date, @earnings_year, @earnings_quarter, @bundle_gcs_path, @last_updated)
-        """
-        
-        params = [
-            bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
-            bigquery.ScalarQueryParameter("company_name", "STRING", metadata.get("company_name")),
-            bigquery.ScalarQueryParameter("industry", "STRING", metadata.get("industry")),
-            bigquery.ScalarQueryParameter("sector", "STRING", metadata.get("sector")),
-            bigquery.ScalarQueryParameter("quarter_end_date", "DATE", metadata.get("quarter_end_date")),
-            bigquery.ScalarQueryParameter("earnings_call_date", "DATE", metadata.get("earnings_call_date")),
-            bigquery.ScalarQueryParameter("earnings_year", "INT64", metadata.get("earnings_year")),
-            bigquery.ScalarQueryParameter("earnings_quarter", "INT64", metadata.get("earnings_quarter")),
-            bigquery.ScalarQueryParameter("bundle_gcs_path", "STRING", gcs_path),
-            bigquery.ScalarQueryParameter("last_updated", "TIMESTAMP", datetime.utcnow()),
-        ]
-        
-        merge_job = client.query(merge_sql, job_config=bigquery.QueryJobConfig(query_parameters=params))
-        merge_job.result() # Wait for the job to complete
-        print(f"[SUCCESS] BigQuery metadata updated for {ticker}.")
+        final_record = work_item.copy()
+        final_record["bundle_gcs_path"] = bundle_gcs_path
+        return final_record
 
     except Exception as e:
-        print(f"[FATAL] Failed to update BigQuery metadata for {ticker}: {e}")
+        logging.error(f"[{ticker}] Failed to upload bundle: {e}")
+        return None
 
-# --- Main Orchestrator ---
 
-def create_and_upload_bundle(bucket: storage.Bucket, ticker: str) -> None:
-    print(f"\n{'='*20} Processing Ticker: {ticker} {'='*20}")
-    bundle: Dict[str, Any] = {"ticker": ticker.upper()}
-    
-    latest_date_str = _get_latest_date_for_ticker(bucket, SECTION_GCS_PATHS["earnings-call-transcripts"], ticker)
-    if not latest_date_str or latest_date_str == "0000-00-00":
-        print(f"[ERROR] Could not determine a valid latest date for {ticker}. Aborting.")
+def batch_update_asset_metadata_in_bq(metadata_list: List[Dict[str, Any]]):
+    """
+    Updates the BigQuery asset_metadata table, ensuring only one record per ticker.
+    """
+    if not metadata_list:
+        logging.info("No metadata to update in BigQuery. Skipping.")
         return
 
-    print(f"[INFO] Using latest date: {latest_date_str} for financial data.")
-
-    # Load data based on latest date
-    earnings_path = f"earnings-call-transcripts/{ticker}_{latest_date_str}.json"
-    mda_path = f"sec-mda/{ticker}_{latest_date_str}_10-Q.json"
-    statements_path = f"financial-statements/{ticker}_{latest_date_str}.json"
-    metrics_path = f"key-metrics/{ticker}_{latest_date_str}.json"
-    ratios_path = f"ratios/{ticker}_{latest_date_str}.json"
-    business_path = SECTION_GCS_PATHS["sec-business"].format(t=ticker)
-    technicals_path = SECTION_GCS_PATHS["technicals"].format(t=ticker)
-    prices_path = SECTION_GCS_PATHS["prices"].format(t=ticker)
-
-    bundle["earnings_call_summary"] = _load_json_blob(bucket, earnings_path)
-    bundle["management_discussion_and_analysis"] = _load_json_blob(bucket, mda_path)
-    bundle["business_profile"] = _load_json_blob(bucket, business_path) or ""
+    # --- FINAL FIX: De-duplicate the data before sending to BigQuery ---
+    # Convert to DataFrame to easily drop duplicates, keeping the last entry for each ticker
+    df = pd.DataFrame(metadata_list)
+    df.drop_duplicates(subset=['ticker'], keep='last', inplace=True)
+    # Convert back to a list of dictionaries for BigQuery
+    deduplicated_list = df.to_dict('records')
     
-    statements_data = _load_json_blob(bucket, statements_path)
-    if statements_data: bundle["financial_statements"] = _curate_financial_statements(statements_data)
+    logging.info(f"Starting batch update of {len(deduplicated_list)} unique records in BigQuery.")
 
-    metrics_data = _load_json_blob(bucket, metrics_path)
-    ratios_data = _load_json_blob(bucket, ratios_path)
-    if metrics_data and ratios_data: bundle["key_metrics"] = _curate_key_metrics(metrics_data, ratios_data)
+    temp_table_id = f"{DESTINATION_PROJECT_ID}.{BQ_METADATA_TABLE}_staging_{os.urandom(4).hex()}"
+    destination_table_ref = f"`{DESTINATION_PROJECT_ID}.{BQ_METADATA_TABLE}`"
 
-    technicals_data = _load_json_blob(bucket, technicals_path)
-    if technicals_data: bundle["technicals"] = _curate_technicals(technicals_data)
-        
-    prices_data = _load_json_blob(bucket, prices_path)
-    if prices_data and "prices" in prices_data: bundle["prices"] = prices_data["prices"]
+    try:
+        job_config = bigquery.LoadJobConfig(
+            schema=[
+                bigquery.SchemaField("ticker", "STRING"),
+                bigquery.SchemaField("company_name", "STRING"),
+                bigquery.SchemaField("industry", "STRING"),
+                bigquery.SchemaField("sector", "STRING"),
+                bigquery.SchemaField("quarter_end_date", "DATE"),
+                bigquery.SchemaField("earnings_call_date", "DATE"),
+                bigquery.SchemaField("earnings_year", "INTEGER"),
+                bigquery.SchemaField("earnings_quarter", "INTEGER"),
+                bigquery.SchemaField("bundle_gcs_path", "STRING"),
+            ],
+            write_disposition="WRITE_TRUNCATE",
+        )
 
-    # Upload final bundle
-    bundle_content = json.dumps(bundle, indent=2)
-    destination_bucket = storage.Client().bucket(BUNDLE_OUTPUT_BUCKET)
-    gcs_path = f"{BUNDLE_OUTPUT_FOLDER}/{ticker.lower()}_bundle.json"
-    blob = destination_bucket.blob(gcs_path)
-    blob.upload_from_string(bundle_content, content_type="application/json")
-    full_gcs_path = f"gs://{BUNDLE_OUTPUT_BUCKET}/{gcs_path}"
-    print(f"[SUCCESS] Bundle for {ticker} uploaded to {full_gcs_path}")
+        for row in deduplicated_list:
+            if isinstance(row.get('quarter_end_date'), date):
+                row['quarter_end_date'] = row['quarter_end_date'].isoformat()
+            if isinstance(row.get('earnings_call_date'), date):
+                row['earnings_call_date'] = row['earnings_call_date'].isoformat()
 
-    # Update BigQuery with the new metadata
-    _update_asset_metadata_in_bq(ticker, latest_date_str, full_gcs_path)
-    # Publish the completion message for the next service
-    _publish_completion_message(ticker)
+        load_job = bq_client.load_table_from_json(deduplicated_list, temp_table_id, job_config=job_config)
+        load_job.result()
+        logging.info(f"Staged {len(deduplicated_list)} records to temporary table {temp_table_id}")
+
+        merge_query = f"""
+            MERGE {destination_table_ref} AS T
+            USING `{temp_table_id}` AS S
+            ON T.ticker = S.ticker
+            WHEN MATCHED AND S.quarter_end_date >= T.quarter_end_date THEN
+              UPDATE SET
+                company_name = S.company_name,
+                industry = S.industry,
+                sector = S.sector,
+                quarter_end_date = S.quarter_end_date,
+                earnings_call_date = S.earnings_call_date,
+                earnings_year = S.earnings_year,
+                earnings_quarter = S.earnings_quarter,
+                bundle_gcs_path = S.bundle_gcs_path,
+                last_updated = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN
+              INSERT (
+                  ticker, company_name, industry, sector, quarter_end_date,
+                  earnings_call_date, earnings_year, earnings_quarter, bundle_gcs_path,
+                  created_at, last_updated
+              )
+              VALUES(
+                  S.ticker, S.company_name, S.industry, S.sector, S.quarter_end_date,
+                  S.earnings_call_date, S.earnings_year, S.earnings_quarter, S.bundle_gcs_path,
+                  CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+              )
+        """
+        merge_job = bq_client.query(merge_query)
+        merge_job.result()
+        logging.info("Successfully merged data into the main asset_metadata table.")
+
+    except Exception as e:
+        logging.error(f"An error occurred during the BigQuery batch update: {e}")
+        raise
+    finally:
+        bq_client.delete_table(temp_table_id, not_found_ok=True)
+        logging.info(f"Cleaned up temporary table: {temp_table_id}")
+
+
+def publish_job_complete_message():
+    """Publishes a single message to Pub/Sub to signal job completion."""
+    try:
+        message_data = b"Data bundler job completed successfully."
+        future = publisher.publish(JOB_COMPLETE_TOPIC, message_data)
+        future.result()
+        logging.info(f"Successfully published completion message to {JOB_COMPLETE_TOPIC}")
+    except Exception as e:
+        logging.error(f"Failed to publish completion message: {e}")
+
+
+# --- Helper Functions ---
+
+def _load_blob_as_string(gcs_path: str) -> Optional[str]:
+    """
+    Loads any file from GCS and returns its content as a raw string.
+    """
+    try:
+        bucket = storage_client.bucket(DATA_BUCKET_NAME)
+        blob = bucket.blob(gcs_path)
+        content = blob.download_as_string().decode('utf-8', 'replace')
+        return content
+    except exceptions.NotFound:
+        return None
+    except Exception as e:
+        logging.error(f"Failed to load GCS blob at '{gcs_path}': {e}")
+        return None
+
+def _load_sec_mda(ticker: str, date_str: str) -> Optional[str]:
+    """
+    Tries to load the 10-Q and then the 10-K for the given ticker and date.
+    """
+    path_10q = f"sec-mda/{ticker}_{date_str}_10-Q.json"
+    content = _load_blob_as_string(path_10q)
+    if content is not None:
+        return content
+
+    path_10k = f"sec-mda/{ticker}_{date_str}_10-K.json"
+    content = _load_blob_as_string(path_10k)
+    if content is None:
+        logging.warning(f"[{ticker}] No MD&A found (tried 10-Q and 10-K).")
+
+    return content
