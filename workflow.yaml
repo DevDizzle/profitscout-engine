@@ -61,7 +61,7 @@ main:
   - publish_completion_message:
       call: googleapis.pubsub.v1.projects.topics.publish
       args:
-          topic: "projects/profitscout-lx6bb/topics/run-data-bundler-job"
+          topic: "projects/profitscout-lx6bb/topics/workflow-completed"
           body:
               messages:
               - attributes:
