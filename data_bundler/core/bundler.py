@@ -59,6 +59,7 @@ def get_ticker_work_list_from_bq() -> List[Dict[str, Any]]:
 def create_and_upload_bundle(work_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Main worker function. Passes all metadata through to the final dictionary.
+    Builds a text file bundle with clear section headings for better LLM parsing.
     """
     ticker = work_item.get("ticker")
     max_date = work_item.get("quarter_end_date")
@@ -70,7 +71,9 @@ def create_and_upload_bundle(work_item: Dict[str, Any]) -> Optional[Dict[str, An
     logging.info(f"Processing ticker: {ticker} for date: {max_date}")
 
     date_str = max_date.strftime('%Y-%m-%d')
-    bundle_data: Dict[str, Any] = {}
+    text_bundle = f"=== TICKER METADATA ===\n\n" \
+                  f"Ticker: {ticker}\n" \
+                  f"Bundle Creation Date: {date.today().isoformat()}\n\n"
 
     data_sources = {
         "earnings_call_summary": f"earnings-call-transcripts/{ticker}_{date_str}.json",
@@ -85,35 +88,42 @@ def create_and_upload_bundle(work_item: Dict[str, Any]) -> Optional[Dict[str, An
     for key, path in data_sources.items():
         content = _load_blob_as_string(path)
         if content is not None:
-            bundle_data[key] = content
+            # If content looks like JSON, indent it for readability in text
+            try:
+                json_content = json.loads(content)
+                content = json.dumps(json_content, indent=4)  # Pretty-print JSON as text
+            except json.JSONDecodeError:
+                pass  # Not JSON; leave as-is
+            text_bundle += f"=== {key.upper().replace('_', ' ')} ===\n\n{content}\n\n"
         else:
             logging.warning(f"[{ticker}] Missing data for '{key}' at path: {path}")
+            text_bundle += f"=== {key.upper().replace('_', ' ')} ===\n\n[No data available]\n\n"
 
     mda_content = _load_sec_mda(ticker, date_str)
     if mda_content is not None:
-        bundle_data["sec_mda"] = mda_content
+        try:
+            json_content = json.loads(mda_content)
+            mda_content = json.dumps(json_content, indent=4)
+        except json.JSONDecodeError:
+            pass
+        text_bundle += f"=== SEC MDA ===\n\n{mda_content}\n\n"
+    else:
+        text_bundle += f"=== SEC MDA ===\n\n[No data available]\n\n"
 
-    if not bundle_data:
+    if len(text_bundle.splitlines()) <= 3:  # Rough check for empty-ish bundle
         logging.info(f"[{ticker}] No source data found. Skipping bundle creation.")
         return None
 
-    bundle_data["ticker"] = ticker
-    bundle_data["bundle_creation_date"] = date.today().isoformat()
-
     try:
-        bundle_name = f"bundles/{ticker}_{date_str}_bundle.json"
+        bundle_name = f"bundles/{ticker}_{date_str}_bundle.txt"
         dest_bucket = storage_client.bucket(BUNDLE_BUCKET_NAME)
         blob = dest_bucket.blob(bundle_name)
-
-        def json_serializer(obj):
-            return str(obj)
-
         blob.upload_from_string(
-            data=json.dumps(bundle_data, indent=2, default=json_serializer),
-            content_type="application/json",
+            data=text_bundle,
+            content_type="text/plain",
         )
         bundle_gcs_path = f"gs://{BUNDLE_BUCKET_NAME}/{bundle_name}"
-        logging.info(f"[{ticker}] Successfully uploaded bundle to {bundle_gcs_path}")
+        logging.info(f"[{ticker}] Successfully uploaded text bundle to {bundle_gcs_path}")
 
         final_record = work_item.copy()
         final_record["bundle_gcs_path"] = bundle_gcs_path
@@ -224,13 +234,16 @@ def publish_job_complete_message():
 
 def _load_blob_as_string(gcs_path: str) -> Optional[str]:
     """
-    Loads any file from GCS and returns its content as a raw string.
+    Loads any file from GCS and returns its content as a cleaned raw string.
     """
     try:
         bucket = storage_client.bucket(DATA_BUCKET_NAME)
         blob = bucket.blob(gcs_path)
         content = blob.download_as_string().decode('utf-8', 'replace')
-        return content
+        # Cleaning: Remove non-printable chars, excess newlines, and trim
+        content = ''.join(c for c in content if c.isprintable() or c in '\n\t\r')
+        content = '\n'.join(line.strip() for line in content.splitlines() if line.strip())
+        return content if content else None
     except exceptions.NotFound:
         return None
     except Exception as e:
