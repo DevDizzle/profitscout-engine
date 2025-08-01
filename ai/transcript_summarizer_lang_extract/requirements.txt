@@ -1,0 +1,6 @@
+# transcript_summarizer/requirements.txt
+google-genai>=1.22.0
+google-cloud-storage>=2.15.0
+tenacity>=8.2.0
+functions-framework
+langextract>=0.1.0
