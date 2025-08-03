@@ -1,6 +1,7 @@
 import logging
 import google.cloud.logging # Import the client library
-from google.cloud import storage, bigquery, pubsub_v1
+# REMOVED: No longer importing pubsub_v1
+from google.cloud import storage, bigquery
 
 from . import config
 from .core.client import FMPClient
@@ -29,11 +30,12 @@ try:
     api_key = get_api_key_from_secret()
     storage_client = storage.Client(project=config.PROJECT_ID)
     bq_client = bigquery.Client(project=config.PROJECT_ID)
-    publisher_client = pubsub_v1.PublisherClient()
+    # REMOVED: publisher_client is no longer initialized
     fmp_client = FMPClient(api_key=api_key) if api_key else None
 except Exception as e:
     logging.critical(f"A critical error occurred during client initialization: {e}", exc_info=True)
-    storage_client = bq_client = publisher_client = fmp_client = None
+    # REMOVED: publisher_client from this line
+    storage_client = bq_client = fmp_client = None
 
 def refresh_transcripts(event, context):
     """
@@ -41,7 +43,8 @@ def refresh_transcripts(event, context):
     """
     logging.info("Transcript collector function triggered by Pub/Sub message.")
 
-    if not all([storage_client, bq_client, publisher_client, fmp_client]):
+    # REMOVED: publisher_client from the check
+    if not all([storage_client, bq_client, fmp_client]):
         logging.error("One or more clients are not initialized. Aborting. Check for critical errors during startup.")
         # This is a server-side configuration error, so we raise an exception.
         raise ConnectionError("Server configuration error: clients not initialized.")
@@ -51,7 +54,7 @@ def refresh_transcripts(event, context):
             fmp_client=fmp_client, 
             bq_client=bq_client, 
             storage_client=storage_client,
-            publisher_client=publisher_client
+            # REMOVED: publisher_client is no longer passed to the pipeline
         )
         return "Transcript collection pipeline finished successfully.", 200
     except Exception as e:
