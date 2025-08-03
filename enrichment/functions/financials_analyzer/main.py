@@ -6,12 +6,12 @@ from .core import config, gcs, orchestrator, utils
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def analyze_financial_statement(event, context):
+def create_transcript_summaries(event, context):
     """
-    Cloud Function triggered by a Pub/Sub message to analyze financial statements.
-    It handles two possible message formats for maximum compatibility.
+    Cloud Function triggered by a Pub/Sub message that handles two
+    possible message formats for maximum compatibility.
     """
-    logging.info(f"Financials analyzer triggered by messageId: {context.event_id}")
+    logging.info(f"Transcript summarizer triggered by messageId: {context.event_id}")
     
     bucket_name = None
     blob_name = None
@@ -22,16 +22,16 @@ def analyze_financial_statement(event, context):
         message_data = json.loads(message_data_str)
 
         # --- SMART PAYLOAD HANDLING ---
-        # Check for the format from a live collector
+        # Check for the format from the live transcript_collector
         if "gcs_path" in message_data:
             gcs_path = message_data["gcs_path"]
             if gcs_path.startswith("gs://"):
                 bucket_name, blob_name = gcs_path.replace("gs://", "").split("/", 1)
             else:
-                logging.error(f"Invalid GCS path in message: {message_data}")
-                return "Invalid gcs_path format.", 400
+                 logging.error(f"Invalid GCS path in message: {message_data}")
+                 return "Invalid gcs_path format.", 400
 
-        # Check for the format from a backfill script
+        # Check for the format from the backfill.py script
         elif "bucket" in message_data and "name" in message_data:
             bucket_name = message_data["bucket"]
             blob_name = message_data["name"]
@@ -46,33 +46,30 @@ def analyze_financial_statement(event, context):
     
     logging.info(f"Processing gs://{bucket_name}/{blob_name}")
 
-    # 2. Check if analysis already exists
-    # Assumes utils.parse_filename is adapted for 'TICKER_YYYY-MM-DD.json'
+    # 2. Check if summary already exists
     ticker, date = utils.parse_filename(blob_name)
     if not ticker or not date:
         logging.warning(f"Skipping malformed filename: {blob_name}")
         return "Skipped due to malformed filename.", 200
 
-    analysis_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.txt"
-    if gcs.blob_exists(bucket_name, analysis_blob_path):
-        logging.info(f"Analysis already exists for {blob_name}, skipping.")
-        return "Analysis already exists.", 200
+    summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.txt"
+    if gcs.blob_exists(bucket_name, summary_blob_path):
+        logging.info(f"Summary already exists for {blob_name}, skipping.")
+        return "Summary already exists.", 200
 
-    # 3. Process the financial statement
+    # 3. Process the transcript
     try:
         raw_json = gcs.read_blob(bucket_name, blob_name)
-        # Assumes utils.read_financial_data simply returns the raw JSON content
-        content = utils.read_financial_data(raw_json)
+        content, year, quarter = utils.read_transcript_data(raw_json)
 
-        if not content:
+        if not content or not year or not quarter:
             logging.error(f"Failed to extract required data from {blob_name}.")
-            return "Error parsing financial data.", 200
+            return "Error parsing transcript data.", 200
 
-        # Assumes orchestrator.analyze takes content, ticker, and date
-        analysis_text = orchestrator.analyze(content, ticker=ticker, date=date)
-        gcs.write_text(config.GCS_BUCKET, analysis_blob_path, analysis_text)
+        summary_text = orchestrator.summarise(content, ticker=ticker, year=year, quarter=quarter)
+        gcs.write_text(config.GCS_BUCKET, summary_blob_path, summary_text)
         
-        final_message = f"Successfully created analysis: {analysis_blob_path}"
+        final_message = f"Successfully created summary: {summary_blob_path}"
         logging.info(final_message)
         return final_message, 200
 

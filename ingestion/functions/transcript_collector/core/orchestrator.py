@@ -2,7 +2,8 @@ import logging
 import pandas as pd
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.cloud import bigquery, storage, pubsub_v1
+# REMOVED: pubsub_v1 is no longer needed
+from google.cloud import bigquery, storage
 from .. import config
 from .gcs import list_existing_transcripts, upload_json_to_gcs
 from .client import FMPClient
@@ -45,10 +46,10 @@ def get_required_transcripts_from_bq(bq_client: bigquery.Client) -> set:
         return set()
 
 def process_missing_transcript(
-    item: tuple, fmp_client: FMPClient, storage_client: storage.Client, publisher_client: pubsub_v1.PublisherClient
-):
+    item: tuple, fmp_client: FMPClient, storage_client: storage.Client
+): # REMOVED: publisher_client parameter
     """
-    Fetches, uploads, and publishes a message for a single missing transcript.
+    Fetches and uploads a single missing transcript.
     """
     # --- NEW: Unpack the year and quarter directly from the item tuple ---
     ticker, date_str, year, quarter = item
@@ -64,19 +65,17 @@ def process_missing_transcript(
         blob_path = f"{config.GCS_OUTPUT_FOLDER}{ticker}_{date_str}.json"
         upload_json_to_gcs(storage_client, config.GCS_BUCKET_NAME, transcript_data, blob_path)
 
-        topic_path = publisher_client.topic_path(config.PROJECT_ID, config.PUB_SUB_TOPIC_ID)
-        message_data = {"gcs_path": f"gs://{config.GCS_BUCKET_NAME}/{blob_path}"}
-        future = publisher_client.publish(topic_path, json.dumps(message_data).encode("utf-8"))
-        future.result() 
-
-        return f"SUCCESS: Fetched, uploaded, and published for {ticker} on {date_str}"
+        # REMOVED: All lines related to publishing a Pub/Sub message
+        
+        # UPDATED: Return message no longer mentions publishing
+        return f"SUCCESS: Fetched and uploaded for {ticker} on {date_str}"
 
     except Exception as e:
         logging.error(f"ERROR: Failed to process {ticker} for {date_str}: {e}", exc_info=True)
         return f"ERROR: {ticker} on {date_str}"
 
 
-def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_client: storage.Client, publisher_client: pubsub_v1.PublisherClient):
+def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_client: storage.Client): # REMOVED: publisher_client parameter
     """Runs the full transcript collection pipeline using a diff-based approach."""
     required_set = get_required_transcripts_from_bq(bq_client)
     if not required_set:
@@ -105,7 +104,7 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = {
-            executor.submit(process_missing_transcript, item, fmp_client, storage_client, publisher_client): item 
+            executor.submit(process_missing_transcript, item, fmp_client, storage_client): item 
             for item in missing_items
         }
         for future in as_completed(futures):
