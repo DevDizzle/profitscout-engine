@@ -13,5 +13,7 @@ def write_text(bucket: str, blob: str, data: str) -> None:
 def blob_exists(bucket: str, blob: str) -> bool:
     return _client().bucket(bucket).blob(blob).exists()
 
-def list_blobs(bucket: str, prefix: str):
-    return _client().bucket(bucket).list_blobs(prefix=prefix)
+def list_blobs(bucket_name, prefix=None):
+    """Lists all the blob names in a GCS bucket with a given prefix."""
+    blobs = storage_client.list_blobs(bucket_name, prefix=prefix)
+    return [blob.name for blob in blobs]
