@@ -1,78 +1,78 @@
-import base64
-import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import functions_framework
 from .core import config, gcs, orchestrator, utils
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def create_transcript_summaries(event, context):
+def process_blob(blob_name):
     """
-    Cloud Function triggered by a Pub/Sub message that handles two
-    possible message formats for maximum compatibility.
+    Defines the complete analysis workflow for a single GCS blob.
     """
-    logging.info(f"Transcript summarizer triggered by messageId: {context.event_id}")
-    
-    bucket_name = None
-    blob_name = None
-
-    # 1. Decode the Pub/Sub message
     try:
-        message_data_str = base64.b64decode(event['data']).decode('utf-8')
-        message_data = json.loads(message_data_str)
+        # 1. Skip if summary already exists
+        ticker, date = utils.parse_filename(blob_name)
+        if not ticker or not date:
+            logging.warning(f"Skipping malformed filename: {blob_name}")
+            return None
 
-        # --- SMART PAYLOAD HANDLING ---
-        # Check for the format from the live transcript_collector
-        if "gcs_path" in message_data:
-            gcs_path = message_data["gcs_path"]
-            if gcs_path.startswith("gs://"):
-                bucket_name, blob_name = gcs_path.replace("gs://", "").split("/", 1)
-            else:
-                 logging.error(f"Invalid GCS path in message: {message_data}")
-                 return "Invalid gcs_path format.", 400
+        summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.json"
+        if gcs.blob_exists(config.GCS_BUCKET, summary_blob_path):
+            logging.info(f"Summary already exists for {blob_name}, skipping.")
+            return f"Skipped: {blob_name}"
 
-        # Check for the format from the backfill.py script
-        elif "bucket" in message_data and "name" in message_data:
-            bucket_name = message_data["bucket"]
-            blob_name = message_data["name"]
+        # 2. Read financial data from the source blob
+        logging.info(f"Processing: {blob_name}")
+        raw_content = gcs.read_blob(config.GCS_BUCKET, blob_name)
+        financial_data = utils.read_financial_data(raw_content)
 
-        else:
-            logging.error(f"Unrecognized message format: {message_data}")
-            return "Unrecognized message format.", 400
+        if not financial_data:
+            logging.error(f"Failed to read or validate data from {blob_name}.")
+            return None
 
-    except Exception as e:
-        logging.error(f"Failed to decode or parse Pub/Sub message: {e}", exc_info=True)
-        return "Failed to decode or parse message.", 400
-    
-    logging.info(f"Processing gs://{bucket_name}/{blob_name}")
-
-    # 2. Check if summary already exists
-    ticker, date = utils.parse_filename(blob_name)
-    if not ticker or not date:
-        logging.warning(f"Skipping malformed filename: {blob_name}")
-        return "Skipped due to malformed filename.", 200
-
-    summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_{date}.txt"
-    if gcs.blob_exists(bucket_name, summary_blob_path):
-        logging.info(f"Summary already exists for {blob_name}, skipping.")
-        return "Summary already exists.", 200
-
-    # 3. Process the transcript
-    try:
-        raw_json = gcs.read_blob(bucket_name, blob_name)
-        content, year, quarter = utils.read_transcript_data(raw_json)
-
-        if not content or not year or not quarter:
-            logging.error(f"Failed to extract required data from {blob_name}.")
-            return "Error parsing transcript data.", 200
-
-        summary_text = orchestrator.summarise(content, ticker=ticker, year=year, quarter=quarter)
-        gcs.write_text(config.GCS_BUCKET, summary_blob_path, summary_text)
+        # 3. Generate the analysis using the orchestrator
+        analysis_json = orchestrator.summarise(financial_data)
         
-        final_message = f"Successfully created summary: {summary_blob_path}"
-        logging.info(final_message)
-        return final_message, 200
+        # 4. Write the analysis to the output location
+        gcs.write_text(config.GCS_BUCKET, summary_blob_path, analysis_json)
+        
+        return f"Successfully processed {blob_name} -> {summary_blob_path}"
 
     except Exception as e:
         logging.error(f"An unexpected error occurred processing {blob_name}: {e}", exc_info=True)
-        raise e
+        return None
+
+def main():
+    """
+    Main function to run the financial analysis process.
+    """
+    logging.info("Starting financial analysis batch job...")
+    
+    blob_names = gcs.list_blobs(config.GCS_BUCKET, prefix=config.GCS_INPUT_PREFIX)
+    
+    if not blob_names:
+        logging.warning("No financial statements found to process.")
+        return
+
+    logging.info(f"Found {len(blob_names)} files to process in gs://{config.GCS_BUCKET}/{config.GCS_INPUT_PREFIX}")
+
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+        futures = [executor.submit(process_blob, name) for name in blob_names]
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                logging.info(result)
+
+    logging.info("Financial analysis batch job finished.")
+
+@functions_framework.http
+def financials_analyzer_function(request):
+    """
+    HTTP-triggered Cloud Function entry point.
+    """
+    # The HTTP request body is not used, but the function signature is required.
+    # This function will process all new financial statements when triggered.
+    main()
+    return "Financial analysis process started successfully.", 200

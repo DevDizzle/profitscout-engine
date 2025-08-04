@@ -1,59 +1,45 @@
 """
-Builds the strict five-section prompt and calls the GenAI client.
+Builds the prompt and calls the GenAI client for financial analysis.
 """
-from datetime import datetime
 from . import client
 
-# ── FIVE-SECTION PROMPT (unchanged) ────────────────────────────
+# FIX: Escaped the curly braces in the JSON example with double braces {{ }}
+# This prevents the .format() method from misinterpreting them.
 _BASE_PROMPT = """
-You are a financial analyst summarizing an earnings call transcript for **{ticker}** (Q{quarter} {year}). Use chain-of-thought reasoning to extract key information and words/phrases signaling short-term stock movements (30–90 days), producing a dense, narrative summary for ML embedding and NLP tasks (LDA, FinBERT). Generalize for Russell 1000 sectors. First, identify surprises (beats/misses), guidance changes, tone shifts vs. prior quarters, and Q&A dynamics (analyst questions, management responses). Second, extract 5-10 topic keywords per section (e.g., 'growth, risks, margins'). Third, condense into coherent paragraphs with metrics/quotes integrated naturally, maximizing density (no bullets, full sentences).
+You are a seasoned financial analyst and accountant tasked with evaluating a company's financial health based solely on the provided quarterly financial data in JSON format. Do not use any external knowledge, market data, or assumptions—base your analysis entirely on the trends observable in this data.
 
-**Key Financial Metrics**
-[Reason step-by-step: Scan for revenue/EPS/margins/FCF/segments, YoY %/vs. consensus, surprises. Condense into 1-2 dense paragraphs with exact figures and signal words (e.g., 'beat,' 'exceeded'). End with 'Topic keywords: keyword1, keyword2, ...'.]
+The data includes quarterly reports, each with sections like income_statement, balance_sheet, and cash_flow_statement. Key metrics may include (but are not limited to): revenue, costOfRevenue, grossProfit, grossProfitRatio, operatingIncome, netIncome, eps, ebitda, cashAndCashEquivalents, totalCurrentAssets, totalAssets, totalCurrentLiabilities, totalLiabilities, totalDebt, netDebt, operatingCashFlow, freeCashFlow, capitalExpenditure, and others as present.
 
-**Key Discussion Points**
-[Reason step-by-step: Pull 3-5 events/strategies/operations/Q&A insights with quotes (e.g., 'strong quarter'). Condense into narrative paragraph. End with 'Topic keywords: keyword1, keyword2, ...'.]
+Step-by-step reasoning:
+1. Identify and extract key financial metrics across quarters, focusing on the most recent quarters for trends (e.g., Q2 2025 back to earlier periods).
+2. Analyze trends for each major metric: Is it trending up or down over time? Is the trend favorable (e.g., increasing revenue or cash flow, decreasing debt) or unfavorable (e.g., rising costs eroding margins, growing liabilities)?
+3. Assess overall financial health: Consider profitability (e.g., margins, net income), liquidity (e.g., cash, current ratios), solvency (e.g., debt levels, equity), efficiency (e.g., cash flow generation), and growth (e.g., revenue trajectory). Highlight interconnections, like how operating cash flow supports debt reduction or how margins impact earnings.
+4. Reason like an accountant: Be precise, objective, and insightful—note anomalies, improvements, risks, or sustainability of trends. For example, if revenue is up but margins are down due to higher costs, discuss implications for future profitability.
 
-**Sentiment Tone**
-[Reason step-by-step: Assess overall tone (Positive/Neutral/Negative) from remarks/Q&A/signals, compare to prior quarter, list drivers. Condense into paragraph. End with 'Topic keywords: keyword1, keyword2, ...'.]
+Based on these trends alone, estimate the likelihood that the stock price will increase in the near term (next 6-12 months). Express this as a score between 0 and 1:
+- 0 = Definitely going down (e.g., deteriorating fundamentals across the board).
+- 1 = Definitely going up (e.g., strong positive trends in growth, profitability, and stability).
+Use a value like 0.7 for moderately positive trends. Anchor the score strictly to the financial data's implications for valuation and investor sentiment.
 
-**Short-Term Outlook**
-[Reason step-by-step: Infer impact from guidance/macro/positioning/signals. Condense into paragraph with projections. End with 'Topic keywords: keyword1, keyword2, ...'.]
+Output in this exact structured JSON format, with no additional text:
+{{
+  "score": <float between 0 and 1>,
+  "analysis": "<A single, dense paragraph (200-400 words) summarizing key insights, trends (up/down, favorable/unfavorable), interesting findings, and accountant-style reasoning on the company's financial health and trajectory.>"
+}}
 
-**Forward-Looking Signals**
-[Reason step-by-step: Extract 4-6 insights (guidance/liquidity/Q&A/macro) with values/quotes. Condense into paragraph. End with 'Topic keywords: keyword1, keyword2, ...'.]
-
-**Q&A Summary**
-[Reason step-by-step: Identify Q&A section (e.g., after 'Operator' or 'Q&A' marker, speaker changes). Extract 2-4 key analyst questions/responses, focusing on management tone (confident/defensive) and analyst reactions (e.g., 'great results'). Include 1-2 direct quotes. Condense into dense paragraph with signal words. End with 'Topic keywords: keyword1, keyword2, ...'.]
-
-**CRITICAL INSTRUCTIONS**:
-- Use only the transcript JSON for **{ticker}** Q{quarter} {year} (e.g., content arrays with speaker labels).
-- Do not invent facts; ground in evidence.
-- Output six sections as dense paragraphs (250-350 words total); no lists/bullets.
-- Integrate signal words/quotes naturally (e.g., 'Management noted "robust demand"').
-- If data missing, note briefly (e.g., 'No Q&A provided, but guidance strong').
-- Optimize for embeddings/LDA/FinBERT: Dense, signal-rich text.
-- For Q&A, prioritize unscripted management responses and analyst sentiment.
-
----
-**Transcript**:
-{transcript}
+Provided data:
+{financial_data}
 """
 
-def build_prompt(transcript: str, ticker: str, year: int, quarter: int) -> str:
+def build_prompt(financial_data: str) -> str:
     """Produces the final, formatted prompt for the AI model."""
-    return _BASE_PROMPT.format(
-        ticker=ticker,
-        quarter=quarter,
-        year=year,
-        transcript=transcript,
-    )
+    return _BASE_PROMPT.format(financial_data=financial_data)
 
-def summarise(transcript: str, ticker: str, year: int, quarter: int) -> str:
-    """Generates a summary by building a prompt and calling the AI client."""
-    if not all([transcript, ticker, year, quarter]):
-        raise ValueError("Transcript, ticker, year, and quarter are all required.")
+def summarise(financial_data: str) -> str:
+    """Generates a financial analysis by building a prompt and calling the AI client."""
+    if not financial_data:
+        raise ValueError("Financial data cannot be empty.")
     
-    prompt = build_prompt(transcript, ticker=ticker, year=year, quarter=quarter)
+    prompt = build_prompt(financial_data)
         
     return client.generate(prompt)
