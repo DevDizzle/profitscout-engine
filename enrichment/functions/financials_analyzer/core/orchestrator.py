@@ -3,23 +3,21 @@ Builds the prompt and calls the GenAI client for financial analysis.
 """
 from . import client
 
-# FIX: Escaped the curly braces in the JSON example with double braces {{ }}
-# This prevents the .format() method from misinterpreting them.
 _BASE_PROMPT = """
-You are a seasoned financial analyst and accountant tasked with evaluating a company's financial health based solely on the provided quarterly financial data in JSON format. Do not use any external knowledge, market data, or assumptions—base your analysis entirely on the trends observable in this data.
+You are a seasoned financial analyst and accountant tasked with evaluating a company's financial health based solely on the provided quarterly financial data in JSON format. Do not use any external knowledge, market data, or assumptions—base your analysis entirely on the trends observable in this data. If quantitative computations (e.g., growth rates, ratios, deltas) would enhance precision, use the code_execution tool to parse the JSON and calculate them.
 
 The data includes quarterly reports, each with sections like income_statement, balance_sheet, and cash_flow_statement. Key metrics may include (but are not limited to): revenue, costOfRevenue, grossProfit, grossProfitRatio, operatingIncome, netIncome, eps, ebitda, cashAndCashEquivalents, totalCurrentAssets, totalAssets, totalCurrentLiabilities, totalLiabilities, totalDebt, netDebt, operatingCashFlow, freeCashFlow, capitalExpenditure, and others as present.
 
 Step-by-step reasoning:
-1. Identify and extract key financial metrics across quarters, focusing on the most recent quarters for trends (e.g., Q2 2025 back to earlier periods).
-2. Analyze trends for each major metric: Is it trending up or down over time? Is the trend favorable (e.g., increasing revenue or cash flow, decreasing debt) or unfavorable (e.g., rising costs eroding margins, growing liabilities)?
+1. Identify and extract key financial metrics across quarters, focusing on the most recent quarters for trends (e.g., Q2 2025 back to earlier periods). Use code_execution if needed to compute deltas (e.g., % change from earliest to latest), aggregates (e.g., average margins), or ratios (e.g., debt-to-equity).
+2. Analyze trends for each major metric: Is it trending up or down over time? Is the trend favorable (e.g., increasing revenue or cash flow, decreasing debt) or unfavorable (e.g., rising costs eroding margins, growing liabilities)? Handle anomalies (e.g., zero values) objectively.
 3. Assess overall financial health: Consider profitability (e.g., margins, net income), liquidity (e.g., cash, current ratios), solvency (e.g., debt levels, equity), efficiency (e.g., cash flow generation), and growth (e.g., revenue trajectory). Highlight interconnections, like how operating cash flow supports debt reduction or how margins impact earnings.
-4. Reason like an accountant: Be precise, objective, and insightful—note anomalies, improvements, risks, or sustainability of trends. For example, if revenue is up but margins are down due to higher costs, discuss implications for future profitability.
+4. Reason like an accountant: Be precise, objective, and insightful—note anomalies, improvements, risks, or sustainability of trends. For example, if revenue is up but margins are down due to higher costs, discuss implications for future profitability. Vary your language to keep analysis fresh and engaging; avoid repetitive phrases like 'mixed picture.'
 
 Based on these trends alone, estimate the likelihood that the stock price will increase in the near term (next 6-12 months). Express this as a score between 0 and 1:
 - 0 = Definitely going down (e.g., deteriorating fundamentals across the board).
 - 1 = Definitely going up (e.g., strong positive trends in growth, profitability, and stability).
-Use a value like 0.7 for moderately positive trends. Anchor the score strictly to the financial data's implications for valuation and investor sentiment.
+Calibrate decisively: Strong multi-quarter improvements (e.g., consistent revenue growth >10%) could justify 0.8+, while persistent negatives pull toward 0.4-. Use a value like 0.7 for moderately positive trends. Anchor the score strictly to the financial data's implications for valuation and investor sentiment.
 
 Output in this exact structured JSON format, with no additional text:
 {{
