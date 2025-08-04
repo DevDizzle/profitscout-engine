@@ -21,4 +21,4 @@ GCS_INPUT_PREFIX   = "earnings-call-transcripts/"  # <-- Use this for transcript
 GCS_OUTPUT_PREFIX  = "earnings-call-summaries/"    # <-- Use this for summaries
 
 # --- Job Parameters ---
-MAX_WORKERS = 12
+MAX_WORKERS = 8
