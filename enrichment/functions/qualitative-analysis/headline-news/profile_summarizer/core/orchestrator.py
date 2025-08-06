@@ -1,25 +1,25 @@
 """
-Builds the prompt and calls the GenAI client to generate the FMP query string directly.
+Builds the prompt and calls the GenAI client to generate a keyword list for the FMP news API.
 """
 from . import client
 
 _BASE_PROMPT = """
-You are a financial news analyst bot. Your sole task is to read a company's business profile and generate a single, perfectly formatted boolean query string for the Financial Modeling Prep (FMP) news API.
+You are a financial news analyst bot. Your sole task is to read a company's business profile and generate a list of key topics for a news search.
 
 **Analysis Steps (Internal):**
-1.  Identify the company's full legal name.
-2.  Based on the business description, determine 4-6 key topics, themes, or economic factors that would directly impact this company's stock price (e.g., for an airline: "jet fuel prices", "passenger demand", "pilot union").
+1.  Read the business description to understand the company's core operations.
+2.  Identify 4-6 key topics, themes, or economic factors that would directly impact this company's stock price. For an airline, this might include "jet fuel prices," "passenger demand," or "pilot union."
 
 **Output Requirements:**
-- Your entire output must be ONLY the final query string.
+- Your entire output must be ONLY a comma-separated list of these key topics.
 - Do not include any other text, explanations, or markdown.
-- The format must be: `"Company Name" AND ("term1" OR "term2" OR "term3")`
+- Do not include the company's name in the topics.
 
 **Example:**
 - **Input:** (Business description for American Airlines)
-- **Output:** "American Airlines Group Inc." AND ("passenger demand" OR "jet fuel prices" OR "pilot contract" OR "international travel")
+- **Output:** passenger demand,jet fuel prices,pilot contract,international travel,airline safety,tourism trends
 
-Now, generate the query string for the following business profile.
+Now, generate the key topics for the following business profile.
 
 **Business Profile:**
 {business_profile}
@@ -34,4 +34,5 @@ def summarise(business_profile: str) -> str:
     if not business_profile:
         raise ValueError("Business profile cannot be empty.")
     prompt = build_prompt(business_profile)
+    # The result will be a simple string of comma-separated keywords
     return client.generate(prompt)
