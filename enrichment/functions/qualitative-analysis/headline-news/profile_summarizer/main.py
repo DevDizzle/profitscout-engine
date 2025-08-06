@@ -15,11 +15,13 @@ topic_path = publisher.topic_path(config.PROJECT_ID, config.OUTPUT_TOPIC_ID)
 
 def process_blob(blob_name: str):
     """
-    Defines the analysis workflow for a single business profile blob and publishes a message.
+    Generates a query from a business profile and publishes it for the news_fetcher.
     """
     try:
         logging.info(f"Processing: {blob_name}")
         ticker = utils.parse_filename(blob_name)
+        if not ticker:
+            return None
 
         raw_content = gcs.read_blob(config.GCS_BUCKET, blob_name)
         business_profile_data = utils.read_business_profile_data(raw_content)
@@ -28,17 +30,20 @@ def process_blob(blob_name: str):
             logging.error(f"Failed to read or validate data from {blob_name}.")
             return None
 
-        analysis_json = orchestrator.summarise(business_profile_data)
+        # Get the query string directly from the LLM.
+        boolean_query = orchestrator.summarise(business_profile_data)
 
-        summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_profile_summary.json"
-        gcs.write_text(config.GCS_BUCKET, summary_blob_path, analysis_json)
+        # Basic check to ensure the LLM didn't return an empty string.
+        if not boolean_query or not boolean_query.strip():
+            logging.warning(f"LLM returned an empty query for {ticker}. Using ticker as fallback.")
+            boolean_query = f'"{ticker}"'
 
-        # Publish a message to Pub/Sub
-        message_payload = json.dumps({"gcs_path": f"gs://{config.GCS_BUCKET}/{summary_blob_path}"}).encode("utf-8")
+        # Publish the message with the ticker and the generated query.
+        message_payload = json.dumps({"ticker": ticker, "query": boolean_query}).encode("utf-8")
         future = publisher.publish(topic_path, message_payload)
-        future.result()  # Wait for publish to complete
+        future.result()
 
-        return f"Successfully processed {blob_name} and published message."
+        return f"Successfully processed and published query for {ticker}."
 
     except Exception as e:
         logging.error(f"An unexpected error occurred processing {blob_name}: {e}", exc_info=True)
@@ -50,19 +55,13 @@ def profile_summarizer_function(request):
     HTTP-triggered Cloud Function entry point.
     """
     logging.info("Starting profile summarization batch job...")
-
     all_input_blobs = gcs.list_blobs(config.GCS_BUCKET, prefix=config.GCS_INPUT_PREFIX)
     all_output_blobs = set(gcs.list_blobs(config.GCS_BUCKET, prefix=config.GCS_OUTPUT_PREFIX))
-
-    work_items = []
-    for blob_name in all_input_blobs:
-        ticker = utils.parse_filename(blob_name)
-        if not ticker:
-            continue
-
-        summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_profile_summary.json"
-        if summary_blob_path not in all_output_blobs:
-            work_items.append(blob_name)
+    work_items = [
+        blob_name for blob_name in all_input_blobs
+        if f"{config.GCS_OUTPUT_PREFIX}{utils.parse_filename(blob_name)}_profile_summary.json" not in all_output_blobs
+        and utils.parse_filename(blob_name) is not None
+    ]
 
     if not work_items:
         logging.info("All profile summaries are already up-to-date.")
@@ -72,13 +71,7 @@ def profile_summarizer_function(request):
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = [executor.submit(process_blob, name) for name in work_items]
-
-        successful_count = 0
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                successful_count += 1
-                logging.info(result)
+        successful_count = sum(1 for future in as_completed(futures) if future.result())
 
     logging.info(f"Profile summarization batch job finished. Processed {successful_count} new files.")
     return f"Profile summarization process completed. Processed {successful_count} files.", 200

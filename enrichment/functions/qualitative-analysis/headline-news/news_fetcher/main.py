@@ -2,13 +2,12 @@ import base64
 import json
 import logging
 from .core import config, fetcher
-import functions_framework 
+import functions_framework
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # --- Global Initialization ---
-# Initialize the API Key once during cold start
 FMP_API_KEY = None
 try:
     with open(f"/secrets/{config.FMP_API_KEY_SECRET}", "r") as f:
@@ -17,7 +16,7 @@ except (FileNotFoundError, IOError) as e:
     logging.critical(f"Could not read FMP API Key from Secret Manager: {e}")
 
 @functions_framework.cloud_event
-def news_fetcher_function(event, context):
+def news_fetcher_function(cloud_event):
     """
     Cloud Function triggered by a Pub/Sub message to fetch and save news headlines.
     """
@@ -26,8 +25,7 @@ def news_fetcher_function(event, context):
         return "Server configuration error.", 500
 
     try:
-        # 1. Decode the message to get the query and ticker
-        message_data_str = base64.b64decode(event['data']).decode('utf-8')
+        message_data_str = base64.b64decode(cloud_event.data["message"]["data"]).decode('utf-8')
         message_data = json.loads(message_data_str)
         ticker = message_data.get("ticker")
         query = message_data.get("query")
@@ -38,7 +36,6 @@ def news_fetcher_function(event, context):
 
         logging.info(f"Fetching news for ticker: {ticker}")
 
-        # 2. Call the core logic to fetch and save headlines
         gcs_uri = fetcher.fetch_and_save_headlines(
             ticker=ticker,
             query_str=query,
