@@ -15,4 +15,4 @@ GCS_BUCKET          = os.getenv("DATA_BUCKET", "profit-scout-data")
 GCS_OUTPUT_PREFIX   = "headline-news/"
 
 # --- Job Parameters ---
-DOMAINS = 120  # Limit for each news endpoint
+DOMAINS = 25  # Limit for each news endpoint

@@ -22,7 +22,8 @@ GCS_INPUT_PREFIX   = "sec-business/"
 GCS_OUTPUT_PREFIX  = "profile-summaries/"
 
 # --- Pub/Sub ---
-OUTPUT_TOPIC_ID = "profile-summaries-created"
+# This now points to the topic the news_fetcher is subscribed to
+OUTPUT_TOPIC_ID = "queries-created"
 
 # --- Job Parameters ---
 MAX_WORKERS = 8

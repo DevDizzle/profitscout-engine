@@ -1,5 +1,6 @@
 from google.cloud import storage
 import datetime, json, urllib.parse, requests
+from . import config # Import the config module
 
 def fetch_and_save_headlines(ticker: str, query_str: str, api_key: str, bucket_name: str, output_prefix: str) -> str:
     """
@@ -11,13 +12,14 @@ def fetch_and_save_headlines(ticker: str, query_str: str, api_key: str, bucket_n
     Returns the GCS URI that was written.
     """
     today = datetime.date.today().strftime("%Y-%m-%d")
-    domains_limit = 120 # FMP limit per endpoint
+    # --- FIX: Use the new configurable limit from the config file ---
+    limit = config.HEADLINE_LIMIT
 
     # --- company-tagged feed -------------------------------------------------
     url_stock = (
         "https://financialmodelingprep.com/api/v3/stock_news"
         f"?tickers={ticker}"
-        f"&from={today}&to={today}&limit={domains_limit}&apikey={api_key}"
+        f"&from={today}&to={today}&limit={limit}&apikey={api_key}"
     )
     stock_news = requests.get(url_stock, timeout=20).json()
 
@@ -26,7 +28,7 @@ def fetch_and_save_headlines(ticker: str, query_str: str, api_key: str, bucket_n
     url_macro = (
         "https://financialmodelingprep.com/api/v3/search_stock_news"
         f"?query={encoded_q}"
-        f"&from={today}&to={today}&limit={domains_limit}&apikey={api_key}"
+        f"&from={today}&to={today}&limit={limit}&apikey={api_key}"
     )
     macro_news = requests.get(url_macro, timeout=20).json()
 

@@ -1,33 +1,28 @@
 """
-Builds the prompt and calls the GenAI client for profile summarization.
+Builds the prompt and calls the GenAI client to generate the FMP query string directly.
 """
 from . import client
 
 _BASE_PROMPT = """
-You are a financial-data extraction assistant.
+You are a financial news analyst bot. Your sole task is to read a company's business profile and generate a single, perfectly formatted boolean query string for the Financial Modeling Prep (FMP) news API.
 
-TASK
-Read {business_profile} (the full “Item 1 – Business” section from a U.S. Form 10-K)
-and return ONE valid JSON object that matches the schema below.
+**Analysis Steps (Internal):**
+1.  Identify the company's full legal name.
+2.  Based on the business description, determine 4-6 key topics, themes, or economic factors that would directly impact this company's stock price (e.g., for an airline: "jet fuel prices", "passenger demand", "pilot union").
 
-RULES
-1. Decode HTML entities (e.g., &#8220; → “).
-2. If a field is absent, output null (or [] for arrays); do **not** invent data.
-3. Keep all strings plain text—no line breaks, quotes, or markdown inside values.
-4. Do not add comments, keys, or text before/after the JSON.
-5. Make sure the JSON is syntactically valid (no trailing commas).
+**Output Requirements:**
+- Your entire output must be ONLY the final query string.
+- Do not include any other text, explanations, or markdown.
+- The format must be: `"Company Name" AND ("term1" OR "term2" OR "term3")`
 
-JSON SCHEMA
-───────────
-{{
-  "company_name": string,                 // e.g. "American Airlines Group Inc."
-  "industry": string | null,              // Short label, e.g. "Airlines"
-  "products_or_services": string[] | null,// ≤ 8 core offerings
-  "major_brands": string[] | null,        // Key brands/trademarks if named
-  "customer_segments": string[] | null    // e.g. ["Retail", "Enterprise"]
-}}
+**Example:**
+- **Input:** (Business description for American Airlines)
+- **Output:** "American Airlines Group Inc." AND ("passenger demand" OR "jet fuel prices" OR "pilot contract" OR "international travel")
 
-RETURN ONLY THE JSON OBJECT.
+Now, generate the query string for the following business profile.
+
+**Business Profile:**
+{business_profile}
 """
 
 def build_prompt(business_profile: str) -> str:
@@ -35,10 +30,8 @@ def build_prompt(business_profile: str) -> str:
     return _BASE_PROMPT.format(business_profile=business_profile)
 
 def summarise(business_profile: str) -> str:
-    """Generates a summary by building a prompt and calling the AI client."""
+    """Generates the FMP query string by building a prompt and calling the AI client."""
     if not business_profile:
         raise ValueError("Business profile cannot be empty.")
-
     prompt = build_prompt(business_profile)
-
     return client.generate(prompt)

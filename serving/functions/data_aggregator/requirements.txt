@@ -1,8 +1,0 @@
-functions-framework
-google-cloud-bigquery
-google-cloud-bigquery-storage
-pandas-gbq
-google-cloud-storage
-google-cloud-pubsub
-pandas
-db-dtypes
