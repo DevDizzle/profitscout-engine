@@ -1,20 +1,26 @@
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import functions_framework
+from google.cloud import pubsub_v1
 from .core import config, gcs, orchestrator, utils
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Initialize Publisher Client Globally
+publisher = pubsub_v1.PublisherClient()
+topic_path = publisher.topic_path(config.PROJECT_ID, config.OUTPUT_TOPIC_ID)
+
+
 def process_blob(blob_name: str):
     """
-    Defines the analysis workflow for a single business profile blob.
+    Defines the analysis workflow for a single business profile blob and publishes a message.
     """
     try:
         logging.info(f"Processing: {blob_name}")
         ticker = utils.parse_filename(blob_name)
 
-        # Read business profile data from the source blob
         raw_content = gcs.read_blob(config.GCS_BUCKET, blob_name)
         business_profile_data = utils.read_business_profile_data(raw_content)
 
@@ -22,14 +28,17 @@ def process_blob(blob_name: str):
             logging.error(f"Failed to read or validate data from {blob_name}.")
             return None
 
-        # Generate the analysis using the orchestrator
         analysis_json = orchestrator.summarise(business_profile_data)
 
-        # Write the analysis to the output location
         summary_blob_path = f"{config.GCS_OUTPUT_PREFIX}{ticker}_profile_summary.json"
         gcs.write_text(config.GCS_BUCKET, summary_blob_path, analysis_json)
 
-        return f"Successfully processed {blob_name} -> {summary_blob_path}"
+        # Publish a message to Pub/Sub
+        message_payload = json.dumps({"gcs_path": f"gs://{config.GCS_BUCKET}/{summary_blob_path}"}).encode("utf-8")
+        future = publisher.publish(topic_path, message_payload)
+        future.result()  # Wait for publish to complete
+
+        return f"Successfully processed {blob_name} and published message."
 
     except Exception as e:
         logging.error(f"An unexpected error occurred processing {blob_name}: {e}", exc_info=True)

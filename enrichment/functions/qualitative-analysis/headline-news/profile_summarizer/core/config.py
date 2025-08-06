@@ -21,5 +21,8 @@ GCS_BUCKET         = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 GCS_INPUT_PREFIX   = "sec-business/"
 GCS_OUTPUT_PREFIX  = "profile-summaries/"
 
+# --- Pub/Sub ---
+OUTPUT_TOPIC_ID = "profile-summaries-created"
+
 # --- Job Parameters ---
 MAX_WORKERS = 8
