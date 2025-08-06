@@ -6,15 +6,15 @@ from . import client
 _BASE_PROMPT = """
 You are a financial-data extraction assistant.
 
-TASK  
-Read {{business_profile}} (the full “Item 1 – Business” section from a U.S. Form 10-K)  
+TASK
+Read {business_profile} (the full “Item 1 – Business” section from a U.S. Form 10-K)
 and return ONE valid JSON object that matches the schema below.
 
-RULES  
-1. Decode HTML entities (e.g., &#8220; → “).  
-2. If a field is absent, output null (or [] for arrays); do **not** invent data.  
-3. Keep all strings plain text—no line breaks, quotes, or markdown inside values.  
-4. Do not add comments, keys, or text before/after the JSON.  
+RULES
+1. Decode HTML entities (e.g., &#8220; → “).
+2. If a field is absent, output null (or [] for arrays); do **not** invent data.
+3. Keep all strings plain text—no line breaks, quotes, or markdown inside values.
+4. Do not add comments, keys, or text before/after the JSON.
 5. Make sure the JSON is syntactically valid (no trailing commas).
 
 JSON SCHEMA

@@ -1,0 +1,6 @@
+# transcript_summarizer/requirements.txt
+functions-framework
+google-cloud-storage
+google-cloud-pubsub
+tenacity
+google-genai
