@@ -8,12 +8,7 @@ import functions_framework
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # --- Global Initialization ---
-FMP_API_KEY = None
-try:
-    with open(f"/secrets/{config.FMP_API_KEY_SECRET}", "r") as f:
-        FMP_API_KEY = f.read().strip()
-except (FileNotFoundError, IOError) as e:
-    logging.critical(f"Could not read FMP API Key from Secret Manager: {e}")
+FMP_API_KEY = config.FMP_API_SECRET_KEY
 
 @functions_framework.cloud_event
 def news_fetcher_function(cloud_event):

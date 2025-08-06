@@ -1,0 +1,17 @@
+# Combined requirements for all ingestion functions
+functions-framework
+google-cloud-storage
+google-cloud-bigquery
+google-cloud-bigquery-storage
+google-cloud-pubsub
+google-cloud-logging
+requests
+tenacity
+sec-api
+python-dateutil
+pandas
+pandas-ta
+pandas-gbq
+pyarrow
+db-dtypes
+numpy==1.26.4
