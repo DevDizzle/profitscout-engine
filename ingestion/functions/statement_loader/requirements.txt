@@ -1,7 +1,0 @@
-# statement_loader/requirements.txt
-google-cloud-storage
-requests
-tenacity
-functions-framework
-python-dateutil
-pandas

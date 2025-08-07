@@ -1,5 +1,0 @@
-# price_updater/requirements.txt
-google-cloud-storage
-requests
-tenacity
-functions-framework

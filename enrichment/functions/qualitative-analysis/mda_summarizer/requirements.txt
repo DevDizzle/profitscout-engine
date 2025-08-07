@@ -1,0 +1,4 @@
+google-genai>=1.22.0
+google-cloud-storage>=2.15.0
+tenacity>=8.2.0
+functions-framework
