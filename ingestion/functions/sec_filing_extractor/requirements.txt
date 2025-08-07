@@ -1,6 +1,0 @@
-# sec_filing_extractor/requirements.txt
-google-cloud-storage
-sec-api
-tenacity
-functions-framework
-python-dateutil
