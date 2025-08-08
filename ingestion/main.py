@@ -5,7 +5,7 @@ from google.cloud import storage, bigquery, pubsub_v1
 from core import config
 from core.clients.fmp_client import FMPClient
 from core.clients.sec_api_client import SecApiClient
-from core.orchestrators import (
+from core.pipelines import (
     fundamentals,
     price_updater,
     sec_filing_extractor,

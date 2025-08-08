@@ -11,7 +11,7 @@ def parse_filename(blob_name: str) -> tuple[str | None, str | None, str | None, 
     Parses filenames like 'AAL_2025-06-30_10-Q.json'.
     Returns (ticker, date_str, filing_type, year, quarter).
     """
-    pattern = re.compile(r"([A-Z]+)_(\d{4}-\d{2}-\d{2})_(10-[KQ]T?)\.json$")
+    pattern = re.compile(r"([A-Z]+)_(\d{4}-\d{2}-\d{2})_(10-[KQ]T?|20-F)\.json$")
     match = pattern.search(os.path.basename(blob_name))
     if not match:
         return None, None, None, None, None
