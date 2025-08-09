@@ -8,21 +8,31 @@ from datetime import datetime
 
 def parse_filename(blob_name: str) -> tuple[str | None, str | None, str | None, int | None, int | None]:
     """
-    Parses filenames like 'AAL_2025-06-30_10-Q.json'.
+    Parses filenames like 'AAL_2025-06-30.json' by inferring the filing type.
     Returns (ticker, date_str, filing_type, year, quarter).
     """
-    pattern = re.compile(r"([A-Z]+)_(\d{4}-\d{2}-\d{2})_(10-[KQ]T?|20-F)\.json$")
+    # This regex matches the new, simpler filename format (e.g., 'WTRG_2025-06-30.json')
+    pattern = re.compile(r"([A-Z]+)_(\d{4}-\d{2}-\d{2})\.json$")
     match = pattern.search(os.path.basename(blob_name))
+    
     if not match:
         return None, None, None, None, None
 
-    ticker, date_str, filing_type = match.groups()
+    ticker, date_str = match.groups()
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        # Estimate quarter from the period end date
         quarter = (date_obj.month - 1) // 3 + 1
         year = date_obj.year
+
+        # Infer filing type based on the quarter-end month.
+        # SEC filings for Q1, Q2, and Q3 are in a 10-Q. Year-end filings are in a 10-K.
+        if date_obj.month in [3, 6, 9]:
+            filing_type = "10-Q"
+        else:
+            filing_type = "10-K"
+            
         return ticker, date_str, filing_type, year, quarter
+        
     except ValueError:
         return None, None, None, None, None
 
