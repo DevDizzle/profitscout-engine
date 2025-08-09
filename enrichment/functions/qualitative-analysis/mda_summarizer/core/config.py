@@ -19,7 +19,7 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS","2048"))
 # --- Cloud Storage ---
 GCS_BUCKET         = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 GCS_INPUT_PREFIX   = "sec-mda/"
-GCS_OUTPUT_PREFIX  = "mda-summarizer/"
+GCS_OUTPUT_PREFIX  = "mda-summaries/"
 
 # --- Job Parameters ---
 MAX_WORKERS = 8

@@ -2,6 +2,7 @@
 
 """Helper functions for reading and writing text blobs in GCS."""
 from google.cloud import storage
+import logging
 
 def _client() -> storage.Client:
     """Initializes and returns a GCS client."""
@@ -21,7 +22,20 @@ def blob_exists(bucket: str, blob: str) -> bool:
 
 def list_blobs(bucket_name, prefix=None):
     """Lists all the blob names in a GCS bucket with a given prefix."""
-    # --- THIS IS THE FIX ---
-    # It now calls the _client() function to get an initialized client.
     blobs = _client().list_blobs(bucket_name, prefix=prefix)
     return [blob.name for blob in blobs]
+
+def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename: str):
+    """Deletes all files for a ticker in a folder except for the one to keep."""
+    client = _client()
+    bucket = client.bucket(bucket_name)
+    prefix = f"{folder}{ticker}_"
+    
+    blobs_to_delete = [
+        blob for blob in bucket.list_blobs(prefix=prefix)
+        if blob.name != keep_filename
+    ]
+    
+    for blob in blobs_to_delete:
+        logging.info(f"Deleting old file: {blob.name}")
+        blob.delete()
