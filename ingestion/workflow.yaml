@@ -13,66 +13,68 @@ main:
       - refresh_stock_metadata_name: "refresh-stock-metadata"
 
   - run_data_collection:
-      steps:
-      - call_price_updater:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_fundamentals:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_technicals:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_sec_extractor:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_refresh_financials:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_price_data_populator:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_refresh_stock_metadata:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
-              auth: {type: OIDC}
-              timeout: 900
-
-  # This is the new step to publish a completion message
-  - publish_completion_message:
-      call: googleapis.pubsub.v1.projects.topics.publish
-      args:
-          topic: "projects/profitscout-lx6bb/topics/workflow-completed"
-          body:
-              messages:
-              - attributes:
-                  source: "main-data-pipeline"
-                  status: "success"
-                data: ${base64.encode(json.encode("Workflow finished successfully."))}
-      result: publishResult
-
+      parallel:
+        branches:
+        - price_updater_branch:
+            steps:
+            - call_price_updater:
+                call: http.post
+                args:
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
+                    auth: {type: OIDC}
+                    timeout: 900
+        - fundamentals_branch:
+            steps:
+            - call_fundamentals:
+                call: http.post
+                args:
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
+                    auth: {type: OIDC}
+                    timeout: 900
+        - technicals_branch:
+            steps:
+            - call_technicals:
+                call: http.post
+                args:
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
+                    auth: {type: OIDC}
+                    timeout: 900
+        - sec_extractor_branch:
+            steps:
+            - call_sec_extractor:
+                call: http.post
+                args:
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
+                    auth: {type: OIDC}
+                    timeout: 900
+        - refresh_financials_branch:
+            steps:
+            - call_refresh_financials:
+                call: http.post
+                args:
+                    url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
+                    auth: {type: OIDC}
+                    timeout: 900
+        - price_data_populator_branch:
+            steps:
+            - call_price_data_populator:
+                call: http.post
+                args:
+                    url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/populate-price-data"}
+                    auth: {type: OIDC}
+                    timeout: 900
+        - refresh_stock_metadata_branch:
+            steps:
+            - call_refresh_stock_metadata:
+                call: http.post
+                args:
+                    url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/refresh-stock-metadata"}
+                    auth: {type: OIDC}
+                    timeout: 900
+  
   - log_finish:
       call: sys.log
       args:
-        text: "Main data collection workflow finished successfully. A message has been sent to trigger the data bundler."
+        text: "Main data collection workflow finished successfully."
   - done:
       return: "Workflow finished successfully."
