@@ -30,7 +30,9 @@ PREFIXES = {
     "metrics_analyzer": {"input": "key-metrics/", "output": "key-metrics-analysis/"},
     "ratios_analyzer": {"input": "ratios/", "output": "ratios-analysis/"},
     "technicals_analyzer": {"input": "technicals/", "output": "technicals-analysis/"},
-    "news_analyzer": {"input": "headline-news/", "output": "news-analysis/"}
+    "news_analyzer": {"input": "headline-news/", "output": "news-analysis/"},
+    # --- ADD THIS NEW ENTRY ---
+    "news_fetcher": {"query_cache": "news-queries/"}
 }
 
 # --- Job Parameters ---
