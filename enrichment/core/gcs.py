@@ -1,3 +1,4 @@
+# enrichment/core/gcs.py
 """
 Shared helper functions for reading and writing blobs in GCS for all Enrichment services.
 """
@@ -7,6 +8,16 @@ import logging
 def _client() -> storage.Client:
     """Initializes and returns a GCS client."""
     return storage.Client()
+
+def blob_exists(bucket_name: str, blob_name: str) -> bool:
+    """Checks if a blob exists in GCS."""
+    try:
+        bucket = _client().bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        return blob.exists()
+    except Exception as e:
+        logging.error(f"Failed to check existence for blob {blob_name}: {e}")
+        return False
 
 def read_blob(bucket_name: str, blob_name: str, encoding: str = "utf-8") -> str | None:
     """Reads a blob from GCS and returns its content as a string."""

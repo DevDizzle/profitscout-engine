@@ -2,7 +2,8 @@ import logging
 import functions_framework
 from core.pipelines import (
     mda_summarizer, mda_analyzer, transcript_summarizer, transcript_analyzer,
-    financials_analyzer, metrics_analyzer, ratios_analyzer, technicals_analyzer, news_analyzer
+    financials_analyzer, metrics_analyzer, ratios_analyzer, technicals_analyzer, 
+    news_analyzer, news_fetcher
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -19,14 +20,8 @@ def run_mda_analyzer(request):
 
 @functions_framework.http
 def run_transcript_summarizer(request):
-    try:
-        logging.info("--- Transcript Summarizer function triggered ---")
-        transcript_summarizer.run_pipeline()
-        logging.info("--- Transcript Summarizer function finished successfully ---")
-        return "Transcript summarizer pipeline finished.", 200
-    except Exception as e:
-        logging.critical(f"Transcript Summarizer function failed: {e}", exc_info=True)
-        return "An internal error occurred.", 500
+    transcript_summarizer.run_pipeline()
+    return "Transcript summarizer pipeline finished.", 200
 
 @functions_framework.http
 def run_transcript_analyzer(request):
@@ -61,5 +56,4 @@ def run_news_fetcher(request):
 @functions_framework.http
 def run_news_analyzer(request):
     news_analyzer.run_pipeline()
-    # Typo corrected from 2000 to 200
     return "News analyzer pipeline finished.", 200
