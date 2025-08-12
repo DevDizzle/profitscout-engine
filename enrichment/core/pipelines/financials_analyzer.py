@@ -1,6 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .. import config, gcs
+from core import config, gcs
 from ..clients import vertex_ai
 import os
 import re

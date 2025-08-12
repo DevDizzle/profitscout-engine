@@ -4,98 +4,91 @@ main:
         assign:
           - project_id: "profitscout-lx6bb"
           - region: "us-central1"
-          - mda_summarizer_name: "run_mda_summarizer"
-          - mda_analyzer_name: "run_mda_analyzer"
-          - transcript_summarizer_name: "run_transcript_summarizer"
-          - transcript_analyzer_name: "run_transcript_analyzer"
-          - financials_analyzer_name: "run_financials_analyzer"
-          - metrics_analyzer_name: "run_metrics_analyzer"
-          - ratios_analyzer_name: "run_ratios_analyzer"
-          - technicals_analyzer_name: "run_technicals_analyzer"
-          - news_analyzer_name: "run_news_analyzer"
+          - transcript_summarizer_name: "transcript-summarizer"
+          - mda_summarizer_name: "mda-summarizer"
+          - news_fetcher_name: "news-fetcher"
+          - financials_analyzer_name: "financials-analyzer"
+          - metrics_analyzer_name: "metrics-analyzer"
+          - ratios_analyzer_name: "ratios-analyzer"
+          - technicals_analyzer_name: "technicals-analyzer"
+          - mda_analyzer_name: "mda-analyzer"
+          - transcript_analyzer_name: "transcript-analyzer"
+          - news_analyzer_name: "news-analyzer"
 
-    - run_parallel_group_1:
-        parallel:
-          branches:
-            - mda_summarizer_branch:
-                steps:
-                  - call_mda_summarizer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_summarizer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - transcript_summarizer_branch:
-                steps:
-                  - call_transcript_summarizer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - financials_analyzer_branch:
-                steps:
-                  - call_financials_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + financials_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - metrics_analyzer_branch:
-                steps:
-                  - call_metrics_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + metrics_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - ratios_analyzer_branch:
-                steps:
-                  - call_ratios_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + ratios_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - technicals_analyzer_branch:
-                steps:
-                  - call_technicals_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - news_analyzer_branch:
-                steps:
-                  - call_news_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
+    - call_transcript_summarizer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_summarizer_name}
+          auth: { type: OIDC }
+          timeout: 900
 
-    - run_parallel_group_2:
-        parallel:
-          branches:
-            - mda_analyzer_branch:
-                steps:
-                  - call_mda_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
-            - transcript_analyzer_branch:
-                steps:
-                  - call_transcript_analyzer:
-                      call: http.post
-                      args:
-                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_analyzer_name}
-                        auth: { type: OIDC }
-                        timeout: 900
+    - call_mda_summarizer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_summarizer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_news_fetcher:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_fetcher_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_financials_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + financials_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_metrics_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + metrics_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_ratios_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + ratios_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_technicals_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_mda_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_transcript_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_news_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+
     - log_finish:
         call: sys.log
         args:
           text: "Enrichment workflow finished successfully."
+
     - done:
         return: "Workflow finished successfully."

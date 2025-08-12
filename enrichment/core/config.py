@@ -35,3 +35,4 @@ PREFIXES = {
 
 # --- Job Parameters ---
 MAX_WORKERS = 8
+HEADLINE_LIMIT = 25
