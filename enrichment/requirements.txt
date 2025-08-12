@@ -6,3 +6,4 @@ tenacity>=8.2.0
 pandas>=1.0.0
 pyarrow>=10.0.0
 db-dtypes
+requests

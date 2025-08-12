@@ -19,8 +19,14 @@ def run_mda_analyzer(request):
 
 @functions_framework.http
 def run_transcript_summarizer(request):
-    transcript_summarizer.run_pipeline()
-    return "Transcript summarizer pipeline finished.", 200
+    try:
+        logging.info("--- Transcript Summarizer function triggered ---")
+        transcript_summarizer.run_pipeline()
+        logging.info("--- Transcript Summarizer function finished successfully ---")
+        return "Transcript summarizer pipeline finished.", 200
+    except Exception as e:
+        logging.critical(f"Transcript Summarizer function failed: {e}", exc_info=True)
+        return "An internal error occurred.", 500
 
 @functions_framework.http
 def run_transcript_analyzer(request):
@@ -48,6 +54,12 @@ def run_technicals_analyzer(request):
     return "Technicals analyzer pipeline finished.", 200
 
 @functions_framework.http
+def run_news_fetcher(request):
+    news_fetcher.run_pipeline()
+    return "News fetcher pipeline finished.", 200
+
+@functions_framework.http
 def run_news_analyzer(request):
     news_analyzer.run_pipeline()
+    # Typo corrected from 2000 to 200
     return "News analyzer pipeline finished.", 200

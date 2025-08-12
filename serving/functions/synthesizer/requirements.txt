@@ -1,0 +1,7 @@
+functions-framework
+google-cloud-storage
+google-cloud-bigquery
+google-genai
+tenacity
+pandas
+db-dtypes

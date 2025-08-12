@@ -1,23 +1,24 @@
+# enrichment/core/pipelines/news_fetcher.py
+
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import json
 import urllib.parse
 import requests
+import re
+import os
 
 from .. import config, gcs
-from ..clients import vertex_ai # We need this for the query generation
-from . import utils # A new shared utils file might be needed
+from ..clients import vertex_ai
 
-# --- Configuration ---
+# This will be the input for our new fetcher
 PROFILE_INPUT_PREFIX = "sec-business/"
-NEWS_OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"] # This is "headline-news/"
-FMP_API_KEY = "YOUR_FMP_API_KEY_SECRET" # Make sure this is available, perhaps via a shared config or secret manager
-HEADLINE_LIMIT = 25
+NEWS_OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
+FMP_API_KEY = os.getenv("FMP_API_KEY") 
 
-# --- Logic adapted from profile_summarizer ---
 def generate_news_query(business_profile: str) -> str:
-    """Generates the boolean search query from a business profile."""
+    """Generates a boolean search query from a business profile using Vertex AI."""
     prompt = f"""
 You are a financial news analyst bot. Your sole task is to read a company's business profile and generate a list of key topics for a news search.
 - Your entire output must be ONLY a comma-separated list of these key topics.
@@ -30,21 +31,19 @@ Business Profile:
     query = vertex_ai.generate(prompt)
     return f'"{query}"' if query else ""
 
-
-# --- Logic adapted from news_fetcher ---
 def fetch_and_save_headlines(ticker: str, query_str: str):
     """Fetches, merges, and saves news headlines for a given ticker."""
     today = datetime.date.today().strftime("%Y-%m-%d")
     
     # 1. Company-Tagged News
-    url_stock = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&from={today}&to={today}&limit={HEADLINE_LIMIT}&apikey={FMP_API_KEY}"
+    url_stock = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&from={today}&to={today}&limit={config.HEADLINE_LIMIT}&apikey={FMP_API_KEY}"
     try:
         stock_news = requests.get(url_stock, timeout=30).json()
     except Exception:
         stock_news = []
 
     # 2. Keyword-Based News
-    url_macro = f"https://financialmodelingprep.com/api/v3/search_stock_news?query={urllib.parse.quote(query_str)}&from={today}&to={today}&limit={HEADLINE_LIMIT}&apikey={FMP_API_KEY}"
+    url_macro = f"https://financialmodelingprep.com/api/v3/search_stock_news?query={urllib.parse.quote(query_str)}&from={today}&to={today}&limit={config.HEADLINE_LIMIT}&apikey={FMP_API_KEY}"
     try:
         macro_news = requests.get(url_macro, timeout=30).json()
     except Exception:
@@ -62,14 +61,14 @@ def fetch_and_save_headlines(ticker: str, query_str: str):
 
 def process_profile_blob(blob_name: str):
     """Orchestrates the process for a single company profile."""
-    # This pattern should correctly extract the ticker, e.g., 'AAPL' from 'sec-business/AAPL_business_profile.json'
-    ticker_match = re.search(r'/([A-Z]+)_business_profile\.json$', blob_name)
-    if not ticker_match:
+    match = re.search(r'/([A-Z.]+)_business_profile\.json$', blob_name)
+    if not match:
         return None
-    ticker = ticker_match.group(1)
+    ticker = match.group(1)
 
     profile_content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
     if not profile_content:
+        logging.warning(f"Could not read business profile for {ticker}.")
         return None
 
     query = generate_news_query(profile_content)
@@ -81,11 +80,15 @@ def process_profile_blob(blob_name: str):
 
 def run_pipeline():
     """Main pipeline execution logic."""
+    if not FMP_API_KEY:
+        logging.critical("FMP_API_KEY environment variable not set. Aborting news_fetcher.")
+        return
+
     logging.info("--- Starting News Fetcher Pipeline ---")
     
     profile_blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=PROFILE_INPUT_PREFIX)
     if not profile_blobs:
-        logging.warning("No business profiles found to process.")
+        logging.warning("No business profiles found to process for news.")
         return
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
