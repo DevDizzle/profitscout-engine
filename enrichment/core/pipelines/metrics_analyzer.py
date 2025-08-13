@@ -8,6 +8,12 @@ import re
 INPUT_PREFIX = config.PREFIXES["metrics_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["metrics_analyzer"]["output"]
 
+# One-shot example for consistent output format (format anchor only)
+_EXAMPLE_OUTPUT = """{
+  "score": 0.54,
+  "analysis": "Adobe's financial performance over the last eight quarters presents a mixed picture, leaning slightly bullish. Revenue per share has generally trended upwards, with recent quarters showing consistent growth, indicating strong demand for its products and services. Net income per share, however, has fluctuated, suggesting some volatility in profitability despite revenue gains. Operating and free cash flow per share have also experienced fluctuations, but recent data indicates a healthy generation of cash. Valuation multiples such as PE, price-to-sales, and price-to-book ratios are relatively high, reflecting investor expectations for future growth, but also potentially indicating that the stock is richly valued. However, these multiples have generally decreased over the past few quarters, which is a bullish signal if fundamentals are improving. Profitability metrics like ROE and ROIC have shown some volatility, but recent figures suggest stabilization. The company maintains a relatively low debt-to-equity ratio and a manageable debt-to-assets ratio, suggesting a conservative capital structure. Liquidity, as measured by the current ratio, is generally stable, hovering around 1.0, indicating the company's ability to meet its short-term obligations. While the interest coverage ratio is strong, it has fluctuated significantly. Overall, Adobe demonstrates solid revenue growth and cash generation capabilities, but its high valuation multiples warrant caution. The risk-reward profile appears moderately bullish, contingent on the company's ability to sustain its revenue growth and improve profitability in the coming quarters."
+}"""
+
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
@@ -38,6 +44,10 @@ Use **only** the JSON provided — do **not** use external data or assumptions.
 5. **Growth Signals** - Revenue/share growth and expanding yields are bullish; declines are bearish.
 6. **No Material Signals** - If flat and balanced, output 0.50 and state valuation appears neutral.
 
+### Example Output (for format only; do not copy values or wording)
+EXAMPLE_OUTPUT:
+{{example_output}}
+
 ### Step-by-Step Reasoning
 1. Compute quarter-over-quarter and year-over-year changes for each metric.
 2. Classify each as bullish, bearish, or neutral.
@@ -50,14 +60,14 @@ Use **only** the JSON provided — do **not** use external data or assumptions.
 4. Summarize the decisive metrics in one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
-{{
+{
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (200-400 words) summarizing valuation context, profitability trends, leverage & liquidity considerations, and a risk-reward verdict>"
-}}
+}
 
 Provided data:
 {{key_metrics_data}}
-""".replace("{{key_metrics_data}}", content)
+""".replace("{{key_metrics_data}}", content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
