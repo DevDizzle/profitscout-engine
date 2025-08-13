@@ -8,6 +8,12 @@ import re
 INPUT_PREFIX = config.PREFIXES["mda_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["mda_analyzer"]["output"]
 
+# One-shot example for consistent output format (format anchor only)
+_EXAMPLE_OUTPUT = """{
+  "score": 0.62,
+  "analysis": "AbbVie's MD&A presents a mixed but overall moderately bullish picture. Revenue growth of 7.4% (8.0% constant currency) is a positive, driven by strong performances from Skyrizi and Rinvoq, indicating successful market share gains. The decline in Humira revenue due to biosimilar competition was anticipated, and the company appears to be effectively mitigating its impact with newer products. The growth in Vraylar, Botox Therapeutic, Ubrelvy, and Qulipta further supports this. However, declines in Imbruvica, Botox Cosmetic (particularly in the US), and Juvederm Collection are concerning, suggesting potential competitive pressures or demand shifts in certain segments. The increase in gross margin and decrease in SG&A as a percentage of revenue are positive signs of operating leverage. Increased R&D spending, while impacting current earnings, signals investment in future growth. The large charges related to changes in fair value of contingent consideration liabilities significantly impacted other expenses, but are somewhat offset by increased revenue estimates for Skyrizi. Strong cash flow from operations and recent debt issuances provide financial flexibility. The active pipeline with numerous compounds in development and recent approvals for Rinvoq, Emrelis, and label expansions for Mavyret are encouraging for future growth. The failure of the VERONA trial for Venclexta is a setback, but the submission of a supplemental New Drug Application for Venclexta and acalabrutinib is a positive development. Macroeconomic risks and pharmaceutical pricing pressures remain concerns, but AbbVie's diversified portfolio and strong pipeline position it reasonably well to navigate these challenges. Share repurchases and dividend payments further indicate financial health and a commitment to returning value to shareholders."
+}"""
+
 def parse_filename(blob_name: str):
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.txt$")
     match = pattern.search(os.path.basename(blob_name))
@@ -37,6 +43,10 @@ Use **only** the narrative supplied — do **not** import outside data, market p
 6. **Outlook Tone** - Raised/lifted guidance is bullish; cautious tone is bearish.
 7. **No Material Signals** - If empty or balanced, output 0.50 and state fundamentals are neutral.
 
+### Example Output (for format only; do not copy values or wording)
+EXAMPLE_OUTPUT:
+{{example_output}}
+
 ### Step-by-Step Reasoning
 1. Classify each datapoint as bullish, bearish, or neutral.
 2. Weight by materiality (revenue impact, cash flow, geographic exposure).
@@ -49,14 +59,14 @@ Use **only** the narrative supplied — do **not** import outside data, market p
 4. Summarize decisive positives/negatives in one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
-{{
+{
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (~200-300 words) summarizing key bullish vs bearish factors, balance-sheet strength, cash-flow trajectory, and management outlook.>"
-}}
+}
 
 Provided data:
 {{mda_summary}}
-""".replace("{{mda_summary}}", summary_content)
+""".replace("{{mda_summary}}", summary_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")

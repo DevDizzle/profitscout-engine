@@ -8,6 +8,12 @@ import re
 INPUT_PREFIX = config.PREFIXES["financials_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["financials_analyzer"]["output"]
 
+# One-shot example for consistent output format
+_EXAMPLE_OUTPUT = """{
+  "score": 0.55,
+  "analysis": "AAON's financial performance presents a mixed picture. Revenue has fluctuated but generally shows an upward trend from Q1 2024 (262.1M) to Q2 2025 (311.6M), although Q1 2025 was slightly higher (322.1M). Gross profit margins experienced volatility, peaking in Q2 & Q3 2024, then experiencing a decline. Net income followed a similar pattern, with a high in Q3 2024 (52.6M) and a drop to 15.5M in Q2 2025. Operating cash flow is highly variable, swinging from positive to negative values, with a concerningly negative value in Q2 2025 (-23.2M). Free cash flow mirrors this volatility, with a large negative value in Q2 2025 (-59M). The balance sheet reveals increasing receivables and inventory, which could signal potential issues with sales conversion or inventory management. Total debt increased significantly from Q1 2024 (17.2M) to Q2 2025 (352M) which is a substantial increase in leverage. Cash levels remain low, impacting the net debt position. Overall, while revenue has generally increased, profitability and cash flow have been inconsistent. The rising debt and fluctuating cash flows warrant careful monitoring. The current assets have increased, but not as fast as the revenue growth. The increasing debt load and negative cash flow in the most recent quarter raise concerns about the company's financial stability and ability to sustain growth in the near term, indicating moderately bullish sentiment may be too aggressive."
+}"""
+
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
@@ -39,6 +45,10 @@ Use **only** the JSON provided — do **not** use external data or assumptions.
 6. **Sustainability** - Identify whether trends are consistent or driven by one-off events.
 7. **No Material Signals** - If flat and balanced, output 0.50 and state fundamentals appear neutral.
 
+### Example Output (for format only; do not copy values or wording)
+EXAMPLE_OUTPUT:
+{{example_output}}
+
 ### Step-by-Step Reasoning
 1. Compute and compare quarterly changes for key metrics.
 2. Classify each as bullish, bearish, or neutral.
@@ -52,14 +62,14 @@ Use **only** the JSON provided — do **not** use external data or assumptions.
 5. Summarize into one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
-{{
+{
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (200-400 words) summarizing key trends, anomalies, and implications for financial health and trajectory.>"
-}}
+}
 
 Provided data:
 {{financial_data}}
-""".replace("{{financial_data}}", content)
+""".replace("{{financial_data}}", content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")

@@ -8,6 +8,12 @@ import re
 INPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["output"]
 
+# One-shot example for consistent output format (format anchor only)
+_EXAMPLE_OUTPUT = """{
+  "score": 0.55,
+  "analysis": "The news flow surrounding Acadia Healthcare (ACHC) presents a mixed picture, leading to a slightly bullish outlook. The most recent headline highlights a Q2 earnings beat driven by growing admission volumes, which is a positive signal. However, a Seeking Alpha article tempers this enthusiasm, noting an earnings selloff and cautioning against buying despite undervaluation based on P/S and P/E ratios. This article cites ongoing DOJ/SEC investigations and Medicaid headwinds as persistent concerns, further highlighting reputational risks, softness in Medicaid-driven business, legal costs, CFO resignation, and policy uncertainty. The presence of the Q2 earnings call transcript offers some transparency but does not inherently sway sentiment in either direction. Given the conflicting signals – a strong earnings report versus lingering legal and operational concerns – the overall impact is moderately positive. The earnings beat provides a near-term catalyst, but the longer-term risks outlined in the Seeking Alpha article prevent a more decisive bullish outlook. The recency of both articles, published on the same day, suggests a relatively balanced tug-of-war between positive earnings momentum and underlying anxieties about the company's future. Therefore, the stock is likely to experience moderate upward price pressure in the next 1-2 weeks, but gains could be capped by investor caution related to the aforementioned risks."
+}"""
+
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-08-08.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
@@ -39,6 +45,10 @@ Use **only** the JSON array supplied — do **not** draw on any outside knowledg
 5. **Magnitude of Impact** — Large-dollar deals, government actions, litigation, or earnings surprises outweigh routine coverage.
 6. **No Noteworthy News** — If the array is empty or only minor/neutral headlines exist, output 0.50 and state that the flow is neutral.
 
+### Example Output (for format only; do not copy values or wording)
+EXAMPLE_OUTPUT:
+{{example_output}}
+
 ### Step-by-Step Reasoning (internal, but condensed in output)
 1. Classify each headline as bullish, bearish, or neutral.
 2. Apply recency and credibility weights; aggregate into a net sentiment score.
@@ -52,14 +62,14 @@ Use **only** the JSON array supplied — do **not** draw on any outside knowledg
 5. Summarize the decisive themes into one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
-{{
+{
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (~200-300 words) weaving together the most influential headlines, their sentiment, timing, and expected price impact.>"
-}}
+}
 
 Provided data:
 {{news_data}}
-""".replace("{{news_data}}", content)
+""".replace("{{news_data}}", content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")

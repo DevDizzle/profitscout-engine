@@ -8,6 +8,12 @@ import re
 INPUT_PREFIX = config.PREFIXES["ratios_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["ratios_analyzer"]["output"]
 
+# One-shot example for consistent output format (format anchor only)
+_EXAMPLE_OUTPUT = """{
+  "score": 0.35,
+  "analysis": "The financial ratios of ARES present a mixed, but overall slightly bearish picture for the next 6-12 months. Liquidity, as indicated by current, quick, and cash ratios, has fluctuated significantly. The current and quick ratios show improvement in the most recent quarter, rising from 0.66 to 0, but this is offset by a decrease in the cash ratio. Profitability metrics, including gross, operating, and net profit margins, experienced substantial volatility. Gross profit margin saw a significant increase in the most recent quarter, but operating and net profit margins remain volatile. Leverage, as indicated by debt ratios, is generally high and has not shown consistent improvement. Debt-to-equity ratio remains elevated, indicating high financial risk. Efficiency ratios, such as asset turnover, remain low and inconsistent, suggesting inefficient asset utilization. Valuation multiples, including price-to-earnings and price-to-sales ratios, are high, suggesting overvaluation. The dividend payout ratio is very high and unsustainable, especially given inconsistent cash flows. The company's negative cash flow to debt ratio in some quarters raises concerns about its ability to meet its debt obligations. While some profitability metrics show improvement in the latest quarter, the high leverage, inconsistent efficiency, stretched valuation, and unsustainable payout ratio suggest that the risk-reward profile is not particularly attractive at this time. Therefore, a cautious approach is warranted."
+}"""
+
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
@@ -39,6 +45,10 @@ Use **only** the JSON provided — do **not** use external data or assumptions.
 6. **Shareholder Policy** - Sustainable dividends and payouts are bullish; unsustainable is bearish.
 7. **No Material Signals** - If flat and balanced, output 0.50 and state ratios are neutral.
 
+### Example Output (for format only; do not copy values or wording)
+EXAMPLE_OUTPUT:
+{{example_output}}
+
 ### Step-by-Step Reasoning
 1. Compute quarter-over-quarter and year-over-year changes for each ratio group where possible.
 2. Classify each as bullish, bearish, or neutral.
@@ -51,14 +61,14 @@ Use **only** the JSON provided — do **not** use external data or assumptions.
 4. Summarize in one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
-{{
+{
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (200-400 words) summarizing the most material improvements/deteriorations, liquidity & leverage context, valuation insight, and clear risk-reward verdict>"
-}}
+}
 
 Provided data:
 {{key_ratios_data}}
-""".replace("{{key_ratios_data}}", content)
+""".replace("{{key_ratios_data}}", content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")

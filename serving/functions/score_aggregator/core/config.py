@@ -7,7 +7,7 @@ LOCATION = os.getenv("LOCATION", "us-central1") # Kept for consistency, though v
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 
 # --- BigQuery Configuration ---
-BQ_DATASET = "profit_scout_synthesis"
+BQ_DATASET = "profit_scout"
 SCORES_TABLE_NAME = "analysis_scores"
 SCORES_TABLE_ID = f"{PROJECT_ID}.{BQ_DATASET}.{SCORES_TABLE_NAME}"
 
