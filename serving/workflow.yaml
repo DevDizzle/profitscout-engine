@@ -1,78 +1,51 @@
+# serving/workflow.yaml
 main:
   steps:
-  - init:
-      assign:
-      - project_id: "profitscout-lx6bb"
-      - region: "us-central1"
-      - price_updater_name: "refresh-prices"
-      - fundamentals_name: "refresh-fundamentals"
-      - technicals_name: "refresh-technicals"
-      - sec_extractor_name: "extract-sec-filings"
-      - refresh_financials_name: "refresh-financials"
-      - price_data_populator_name: "populate-price-data"
-      - refresh_stock_metadata_name: "refresh-stock-metadata"
+    - init:
+        assign:
+          - project_id: "profitscout-lx6bb"
+          - region: "us-central1"
+          - score_aggregator_name: "score-aggregator"
+          - recommendation_generator_name: "recommendation-generator"
+          - data_bundler_name: "data-bundler"
+          - sync_to_firestore_name: "sync-to-firestore"
 
-  - run_data_collection:
-      steps:
-      - call_price_updater:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_updater_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_fundamentals:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_technicals:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_sec_extractor:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sec_extractor_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_refresh_financials:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_financials_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_price_data_populator:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_data_populator_name}
-              auth: {type: OIDC}
-              timeout: 900
-      - call_refresh_stock_metadata:
-          call: http.post
-          args:
-              url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + refresh_stock_metadata_name}
-              auth: {type: OIDC}
-              timeout: 900
+    - call_score_aggregator:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + score_aggregator_name}
+          auth: { type: OIDC }
+          timeout: 900
+        result: score_aggregator_result
 
-  # This is the new step to publish a completion message
-  - publish_completion_message:
-      call: googleapis.pubsub.v1.projects.topics.publish
-      args:
-          topic: "projects/profitscout-lx6bb/topics/workflow-completed"
-          body:
-              messages:
-              - attributes:
-                  source: "main-data-pipeline"
-                  status: "success"
-                data: ${base64.encode(json.encode("Workflow finished successfully."))}
-      result: publishResult
+    - call_recommendation_generator:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + recommendation_generator_name}
+          auth: { type: OIDC }
+          timeout: 900
+        result: recommendation_generator_result
 
-  - log_finish:
-      call: sys.log
-      args:
-        text: "Main data collection workflow finished successfully. A message has been sent to trigger the data bundler."
-  - done:
-      return: "Workflow finished successfully."
+    - call_data_bundler:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + data_bundler_name}
+          auth: { type: OIDC }
+          timeout: 900
+        result: data_bundler_result
+    
+    - call_sync_to_firestore:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_to_firestore_name}
+          auth: { type: OIDC }
+          timeout: 900
+        result: sync_to_firestore_result
+
+    - log_finish:
+        call: sys.log
+        args:
+          text: "Serving workflow (scoring, recommendation, bundling, and sync) finished successfully."
+
+    - done:
+        return: "Serving workflow finished successfully."

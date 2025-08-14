@@ -1,0 +1,13 @@
+# serving/requirements.txt
+functions-framework
+google-cloud-storage
+google-cloud-bigquery
+google-cloud-bigquery-storage
+google-cloud-pubsub
+google-cloud-firestore
+google-genai
+tenacity
+pandas
+pandas-gbq
+db-dtypes
+requests

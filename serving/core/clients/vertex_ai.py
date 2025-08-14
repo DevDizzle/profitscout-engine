@@ -1,4 +1,4 @@
-# serving/functions/recommendation_generator/core/clients/vertex_ai.py
+# /serving/core/clients/vertex_ai.py
 import logging
 from tenacity import retry, wait_exponential_jitter, stop_after_attempt, retry_if_exception_type
 from google import genai
