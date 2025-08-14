@@ -1,3 +1,5 @@
+# serving/functions/data_bundler/core/bundler.py
+
 import json
 import logging
 import os
@@ -6,129 +8,127 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 from google.api_core import exceptions
-from google.cloud import bigquery, pubsub_v1, storage
+from google.cloud import bigquery, storage
 
 # --- Configuration ---
-SOURCE_PROJECT_ID = os.environ.get("PROJECT_ID")
-DESTINATION_PROJECT_ID = os.environ.get("DESTINATION_PROJECT_ID")
-LOCATION = os.environ.get("LOCATION", "US")
+SOURCE_PROJECT_ID = os.environ.get("PROJECT_ID") # e.g., profitscout-lx6bb
+DESTINATION_PROJECT_ID = os.environ.get("DESTINATION_PROJECT_ID") # e.g., profitscout-fida8
 DATA_BUCKET_NAME = os.environ.get("DATA_BUCKET_NAME")
-BUNDLE_BUCKET_NAME = os.environ.get("BUNDLE_BUCKET_NAME")
-BQ_METADATA_TABLE = os.environ.get("BQ_METADATA_TABLE")
-BQ_SOURCE_TABLE = os.environ.get("BQ_SOURCE_TABLE")
-JOB_COMPLETE_TOPIC_NAME = os.environ.get("JOB_COMPLETE_TOPIC")
-JOB_COMPLETE_TOPIC = f"projects/{SOURCE_PROJECT_ID}/topics/{JOB_COMPLETE_TOPIC_NAME}"
+BQ_METADATA_TABLE = os.environ.get("BQ_METADATA_TABLE") # The final destination table
+BQ_SOURCE_TABLE = os.environ.get("BQ_SOURCE_TABLE") # The initial work list
+BQ_SCORES_TABLE = os.environ.get("BQ_SCORES_TABLE") # The table with weighted_scores
 
 # --- Initialize Clients ---
 storage_client = storage.Client()
-bq_client = bigquery.Client(project=SOURCE_PROJECT_ID)
-publisher = pubsub_v1.PublisherClient()
+# This client will be used for reading from the source project
+bq_source_client = bigquery.Client(project=SOURCE_PROJECT_ID)
+# This client is specifically for writing to the destination project
+bq_dest_client = bigquery.Client(project=DESTINATION_PROJECT_ID)
 
-def get_ticker_work_list_from_bq() -> List[Dict[str, Any]]:
-    """
-    Queries BigQuery to get the full record for the latest quarter for each ticker.
-    """
-    logging.info(f"Fetching master work list from BigQuery table: {BQ_SOURCE_TABLE}")
+
+def get_ticker_work_list_from_bq() -> pd.DataFrame:
+    """Gets the base metadata for the latest quarter for each ticker."""
+    logging.info(f"Fetching master work list from: {BQ_SOURCE_TABLE}")
     query = f"""
         SELECT
             ticker, company_name, industry, sector, quarter_end_date,
             earnings_call_date, earnings_year, earnings_quarter
         FROM (
-            SELECT
-                *,
-                ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
-            FROM `{SOURCE_PROJECT_ID}.{BQ_SOURCE_TABLE}`
+            SELECT *, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
+            FROM `{BQ_SOURCE_TABLE}`
             WHERE ticker IS NOT NULL AND quarter_end_date IS NOT NULL
         )
         WHERE rn = 1
     """
     try:
-        results = bq_client.query(query).to_dataframe()
-        work_list = results.to_dict('records')
-        logging.info(f"Successfully fetched {len(work_list)} tickers to process.")
-        return work_list
+        df = bq_source_client.query(query).to_dataframe()
+        logging.info(f"Successfully fetched {len(df)} tickers to process.")
+        return df
     except Exception as e:
         logging.error(f"Failed to fetch ticker list from BigQuery: {e}")
-        return []
+        return pd.DataFrame()
 
-
-def create_and_upload_bundle(work_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def get_weighted_scores_from_bq() -> pd.DataFrame:
+    """Fetches the latest weighted_score for each ticker from the source project."""
+    logging.info(f"Fetching weighted scores from: {BQ_SCORES_TABLE}")
+    query = f"""
+        SELECT ticker, weighted_score
+        FROM `{BQ_SCORES_TABLE}`
+        WHERE weighted_score IS NOT NULL
     """
-    Main worker function. Builds a text file bundle for LLM parsing.
-    Returns the metadata dictionary ONLY if the bundle is created successfully.
-    """
-    ticker = work_item.get("ticker")
-    max_date = work_item.get("quarter_end_date")
-
-    if not ticker or not max_date:
-        logging.warning(f"Work item is missing ticker or quarter_end_date: {work_item}")
-        return None
-
-    logging.info(f"Processing ticker: {ticker} for date: {max_date}")
-    date_str = max_date.strftime('%Y-%m-%d')
-    
-    text_bundle_parts = []
-    text_bundle_parts.append(f"=== TICKER METADATA ===\n\n" \
-                  f"Ticker: {ticker}\n" \
-                  f"Bundle Creation Date: {date.today().isoformat()}\n\n")
-
-    data_sources = {
-        "earnings_call_summary": f"earnings-call-transcripts/{ticker}_{date_str}.json",
-        "financial_statements": f"financial-statements/{ticker}_{date_str}.json",
-        "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
-        "ratios": f"ratios/{ticker}_{date_str}.json",
-        "technicals": f"technicals/{ticker}_technicals.json",
-        "business_profile": f"sec-business/{ticker}_business_profile.json",
-        "prices": f"prices/{ticker}_90_day_prices.json",
-    }
-
-    # --- Fail-Fast Logic ---
-    for key, path in data_sources.items():
-        content = _load_blob_as_string(path)
-        if content is None:
-            logging.warning(f"[{ticker}] Missing data for '{key}'. Skipping bundle creation.")
-            return None
-        text_bundle_parts.append(f"=== {key.upper().replace('_', ' ')} ===\n\n{content}\n\n")
-
-    mda_content = _load_sec_mda(ticker, date_str)
-    if mda_content is None:
-        logging.warning(f"[{ticker}] Missing SEC MDA data. Skipping bundle creation.")
-        return None
-    text_bundle_parts.append(f"=== SEC MDA ===\n\n{mda_content}\n\n")
-
-    text_bundle = "".join(text_bundle_parts)
-
     try:
-        bundle_name = f"bundles/{ticker}_{date_str}_bundle.txt"
-        dest_bucket = storage_client.bucket(BUNDLE_BUCKET_NAME)
-        blob = dest_bucket.blob(bundle_name)
-        blob.upload_from_string(data=text_bundle, content_type="text/plain")
-        
-        bundle_gcs_path = f"gs://{BUNDLE_BUCKET_NAME}/{bundle_name}"
-        logging.info(f"[{ticker}] Successfully uploaded text bundle to {bundle_gcs_path}")
-
-        final_record = work_item.copy()
-        final_record["bundle_gcs_path"] = bundle_gcs_path
-        return final_record
-
+        df = bq_source_client.query(query).to_dataframe()
+        logging.info(f"Successfully fetched {len(df)} weighted scores.")
+        return df
     except Exception as e:
-        logging.error(f"[{ticker}] Failed to upload bundle: {e}")
-        return None
+        logging.error(f"Failed to fetch weighted scores from BigQuery: {e}")
+        return pd.DataFrame()
+
+def assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Joins the work list with scores and gathers GCS asset links for each ticker.
+    This replaces the previous 'gather_asset_links' function.
+    """
+    # Merge the base metadata with the calculated scores
+    if scores_df.empty:
+        logging.warning("No scores found. Cannot proceed with assembly.")
+        return []
+        
+    merged_df = pd.merge(work_list_df, scores_df, on="ticker", how="inner")
+    logging.info(f"Successfully merged metadata and scores. {len(merged_df)} tickers have a score.")
+
+    final_records = []
+    # Iterate over the merged dataframe to build the final records
+    for _, row in merged_df.iterrows():
+        ticker = row["ticker"]
+        date_str = row["quarter_end_date"].strftime('%Y-%m-%d')
+        
+        asset_paths = {
+            "technicals": f"technicals/{ticker}_technicals.json",
+            "ratios": f"ratios/{ticker}_{date_str}.json",
+            "profile": f"sec-business/{ticker}_{date_str}.json",
+            "news": f"headline-news/{ticker}_{date.today().strftime('%Y-%m-%d')}.json",
+            "mda": f"sec-mda/{ticker}_{date_str}.json",
+            "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
+            "financials": f"financial-statements/{ticker}_{date_str}.json",
+            "earnings_transcript": f"earnings-call-transcripts/{ticker}_{date_str}.json",
+            "recommendation_analysis": f"recommendations/{ticker}_recommendation.json"
+        }
+
+        # Check for existence of all files. If any are missing, skip this ticker.
+        if not all(_blob_exists(path) for path in asset_paths.values()):
+            logging.warning(f"[{ticker}] Missing one or more data assets. Skipping.")
+            continue
+
+        # Build the final record for BigQuery
+        record = row.to_dict()
+        for key, path in asset_paths.items():
+            record[key] = f"gs://{DATA_BUCKET_NAME}/{path}"
+        
+        # Extract the recommendation from the JSON file
+        try:
+            rec_content = _load_blob_as_string(asset_paths["recommendation_analysis"])
+            record["recommendation"] = json.loads(rec_content).get("recommendation", "HOLD")
+        except Exception:
+            record["recommendation"] = "HOLD"
+            
+        final_records.append(record)
+        
+    return final_records
 
 
 def replace_asset_metadata_in_bq(metadata_list: List[Dict[str, Any]]):
     """
-    Wipes the existing BigQuery metadata table and loads the fresh, complete data.
+    Wipes the destination BigQuery table and loads the final, assembled data.
     """
     if not metadata_list:
-        logging.warning("No successful bundles were created. The BigQuery table will be empty.")
-    
-    logging.info(f"Starting fresh load of {len(metadata_list)} records into BigQuery.")
-    
+        logging.warning("No complete asset sets were found. The destination BigQuery table will not be updated.")
+        return
+
     destination_table_id = f"{DESTINATION_PROJECT_ID}.{BQ_METADATA_TABLE}"
+    logging.info(f"Starting fresh load of {len(metadata_list)} records to: {destination_table_id}")
 
     job_config = bigquery.LoadJobConfig(
-        # The schema should match your final table exactly
         schema=[
             bigquery.SchemaField("ticker", "STRING"),
             bigquery.SchemaField("company_name", "STRING"),
@@ -138,43 +138,49 @@ def replace_asset_metadata_in_bq(metadata_list: List[Dict[str, Any]]):
             bigquery.SchemaField("earnings_call_date", "DATE"),
             bigquery.SchemaField("earnings_year", "INTEGER"),
             bigquery.SchemaField("earnings_quarter", "INTEGER"),
-            bigquery.SchemaField("bundle_gcs_path", "STRING"),
+            bigquery.SchemaField("weighted_score", "FLOAT"), 
+            bigquery.SchemaField("technicals", "STRING"),
+            bigquery.SchemaField("ratios", "STRING"),
+            bigquery.SchemaField("profile", "STRING"),
+            bigquery.SchemaField("news", "STRING"),
+            bigquery.SchemaField("mda", "STRING"),
+            bigquery.SchemaField("key_metrics", "STRING"),
+            bigquery.SchemaField("financials", "STRING"),
+            bigquery.SchemaField("earnings_transcript", "STRING"),
+            bigquery.SchemaField("recommendation", "STRING"),
+            bigquery.SchemaField("recommendation_analysis", "STRING"),
         ],
-        # This is the key change: it wipes the table before writing new data
         write_disposition="WRITE_TRUNCATE",
     )
-    
-    # Convert date objects to ISO format strings for BigQuery compatibility
-    for row in metadata_list:
-        if isinstance(row.get('quarter_end_date'), date):
-            row['quarter_end_date'] = row['quarter_end_date'].isoformat()
-        if isinstance(row.get('earnings_call_date'), date):
-            row['earnings_call_date'] = row['earnings_call_date'].isoformat()
+
+    df = pd.DataFrame(metadata_list)
+    # Convert date objects to strings for BQ compatibility before loading
+    for col in df.select_dtypes(include=['object']).columns:
+        if isinstance(df[col].iloc[0], date):
+             df[col] = pd.to_datetime(df[col]).dt.date.astype(str)
 
     try:
-        load_job = bq_client.load_table_from_json(metadata_list, destination_table_id, job_config=job_config)
-        load_job.result()  # Wait for the job to complete
-        logging.info(f"Successfully wiped and reloaded {load_job.output_rows} records to {destination_table_id}")
+        # Use the destination client to load the data
+        load_job = bq_dest_client.load_table_from_dataframe(df, destination_table_id, job_config=job_config)
+        load_job.result()
+        logging.info(f"Successfully loaded {load_job.output_rows} records to {destination_table_id}")
     except Exception as e:
-        logging.error(f"An error occurred during the BigQuery table reload: {e}")
+        logging.error(f"BigQuery load job to destination project failed: {e}", exc_info=True)
         raise
-
-
-def publish_job_complete_message():
-    """Publishes a single message to Pub/Sub to signal that the data is ready."""
+        
+# Helper functions _blob_exists and _load_blob_as_string remain the same
+def _blob_exists(gcs_path: str) -> bool:
+    """Checks if a blob exists in the data bucket without downloading it."""
     try:
-        message_data = b"Data bundler job completed. The BigQuery table is ready for sync."
-        future = publisher.publish(JOB_COMPLETE_TOPIC, message_data)
-        future.result()
-        logging.info(f"Successfully published job completion message to {JOB_COMPLETE_TOPIC}")
+        bucket = storage_client.bucket(DATA_BUCKET_NAME)
+        blob = bucket.blob(gcs_path)
+        return blob.exists()
     except Exception as e:
-        logging.error(f"Failed to publish completion message: {e}")
-
-
-# --- Helper Functions (No Changes) ---
+        logging.error(f"Failed to check existence for GCS blob at '{gcs_path}': {e}")
+        return False
 
 def _load_blob_as_string(gcs_path: str) -> Optional[str]:
-    """Loads any file from GCS and returns its content as a raw string."""
+    """Loads a file from GCS and returns its content as a raw string."""
     try:
         bucket = storage_client.bucket(DATA_BUCKET_NAME)
         blob = bucket.blob(gcs_path)
@@ -184,12 +190,3 @@ def _load_blob_as_string(gcs_path: str) -> Optional[str]:
     except Exception as e:
         logging.error(f"Failed to load GCS blob at '{gcs_path}': {e}")
         return None
-
-def _load_sec_mda(ticker: str, date_str: str) -> Optional[str]:
-    """Tries to load the 10-Q and then the 10-K for the given ticker and date."""
-    path_10q = f"sec-mda/{ticker}_{date_str}_10-Q.json"
-    content = _load_blob_as_string(path_10q)
-    if content is not None:
-        return content
-    path_10k = f"sec-mda/{ticker}_{date_str}_10-K.json"
-    return _load_blob_as_string(path_10k)

@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
-"""
-Configuration for the Firestore Sync service.
-"""
+# serving/functions/sync-to-firestore/config.py
+import os
 
-# BigQuery source table for the asset metadata
-BQ_PROJECT_ID = "profitscout-c5po5"
+# --- BigQuery Configuration ---
+# This is the destination project ID where the final, assembled data lives.
+BQ_PROJECT_ID = os.environ.get("DESTINATION_PROJECT_ID", "profitscout-fida8") 
 BQ_DATASET = "profit_scout"
-BQ_TABLE = "asset_metadata"
+BQ_TABLE = "asset_metadata" 
 
-# Firestore destination collection
-# The ticker symbol will be used as the Document ID.
+# --- Firestore Configuration ---
+# The ticker symbol will be used as the Document ID in the target collection.
 FIRESTORE_COLLECTION = "tickers"
