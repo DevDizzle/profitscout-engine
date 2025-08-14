@@ -1,6 +1,0 @@
-functions-framework
-google-cloud-storage
-google-cloud-bigquery
-db_dtypes
-google-cloud-bigquery-storage
-google-cloud-pubsub
