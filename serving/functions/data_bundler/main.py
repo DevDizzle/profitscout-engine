@@ -1,12 +1,8 @@
-# data_bundler/main.py
+# serving/functions/data_bundler/main.py
 
 import logging
 import functions_framework
-from concurrent.futures import ThreadPoolExecutor
-from core import bundler  # <-- CORRECTED IMPORT
-
-# --- Configuration ---
-MAX_WORKERS = 16 # Increased for I/O-bound tasks
+from core import bundler
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -14,45 +10,36 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 @functions_framework.cloud_event
 def run(cloud_event):
     """
-    Main entry point for the Cloud Function.
-    Orchestrates the entire data bundling process.
+    Main entry point. Orchestrates the final assembly of data from multiple sources
+    and loads it into the destination BigQuery table.
     """
-    logging.info("Data Bundler function triggered.")
+    logging.info("Data Bundler (Final Assembly) function triggered.")
     
-    # 1. Get the master work list from BigQuery
-    work_list = bundler.get_ticker_work_list_from_bq()
-    if not work_list:
-        logging.warning("No tickers to process. Shutting down.")
+    # 1. Get the base work list of tickers
+    work_list_df = bundler.get_ticker_work_list_from_bq()
+    if work_list_df.empty:
+        logging.warning("No tickers in the work list. Shutting down.")
         return "No tickers to process."
 
-    # 2. Process tickers in parallel using a thread pool
-    logging.info(f"Starting parallel processing for {len(work_list)} tickers with {MAX_WORKERS} workers.")
-    all_results = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # The map function will automatically handle the iteration and collect results
-        all_results = list(executor.map(bundler.create_and_upload_bundle, work_list))
+    # 2. Get the calculated weighted scores
+    scores_df = bundler.get_weighted_scores_from_bq()
+    if scores_df.empty:
+        logging.warning("No weighted scores found. Shutting down.")
+        return "No scores to process."
+        
+    # 3. Assemble the final, complete metadata records
+    final_metadata = bundler.assemble_final_metadata(work_list_df, scores_df)
+    
+    if not final_metadata:
+        logging.warning("No complete records could be assembled. Nothing to load to BigQuery.")
+        return "No complete records to process."
+        
+    # 4. Perform a single, final load to the destination BigQuery table
+    try:
+        bundler.replace_asset_metadata_in_bq(final_metadata)
+    except Exception as e:
+        logging.critical(f"CRITICAL: Final BigQuery load failed. Error: {e}")
+        return "BigQuery load failed.", 500
 
-    # 3. Filter out any failed tasks (which return None)
-    successful_metadata = [res for res in all_results if res is not None]
-    
-    total_tasks = len(work_list)
-    successful_tasks = len(successful_metadata)
-    failed_tasks = total_tasks - successful_tasks
-    logging.info(f"Processing complete. Success: {successful_tasks}, Failed: {failed_tasks}")
-    
-    # 4. Perform a single batch update to BigQuery
-    if successful_metadata:
-        try:
-            bundler.batch_update_asset_metadata_in_bq(successful_metadata)
-        except Exception as e:
-            # If the BQ update fails, we stop to avoid sending a false "success" signal
-            logging.critical(f"CRITICAL: BigQuery batch update failed. Downstream processes will not be triggered. Error: {e}")
-            return "BigQuery batch update failed.", 500
-    else:
-        logging.warning("No bundles were created, so no BigQuery update is necessary.")
-
-    # 5. Publish a single "job complete" message
-    bundler.publish_job_complete_message()
-    
-    logging.info("Data Bundler job finished successfully.")
+    logging.info("Data Bundler (Final Assembly) job finished successfully.")
     return "OK", 200
