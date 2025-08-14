@@ -3,7 +3,7 @@ import functions_framework
 from core.pipelines import (
     mda_summarizer, mda_analyzer, transcript_summarizer, transcript_analyzer,
     financials_analyzer, metrics_analyzer, ratios_analyzer, technicals_analyzer, 
-    news_analyzer, news_fetcher
+    news_analyzer, news_fetcher, business_summarizer
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -57,3 +57,8 @@ def run_news_fetcher(request):
 def run_news_analyzer(request):
     news_analyzer.run_pipeline()
     return "News analyzer pipeline finished.", 200
+
+@functions_framework.http
+def run_business_summarizer(request):
+    business_summarizer.run_pipeline()
+    return "Business summarizer pipeline finished.", 200

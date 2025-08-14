@@ -31,8 +31,8 @@ PREFIXES = {
     "ratios_analyzer": {"input": "ratios/", "output": "ratios-analysis/"},
     "technicals_analyzer": {"input": "technicals/", "output": "technicals-analysis/"},
     "news_analyzer": {"input": "headline-news/", "output": "news-analysis/"},
-    # --- ADD THIS NEW ENTRY ---
-    "news_fetcher": {"query_cache": "news-queries/"}
+    "news_fetcher": {"query_cache": "news-queries/"},
+    "business_summarizer": {"input": "sec-business/", "output": "business-summaries/"}
 }
 
 # --- Job Parameters ---

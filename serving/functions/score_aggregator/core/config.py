@@ -3,7 +3,7 @@ from datetime import datetime
 
 # --- GCP Configuration ---
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
-LOCATION = os.getenv("LOCATION", "us-central1") # Kept for consistency, though vertex_ai.py may override it.
+LOCATION = os.getenv("LOCATION", "us-central1")
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 
 # --- BigQuery Configuration ---
@@ -12,7 +12,9 @@ SCORES_TABLE_NAME = "analysis_scores"
 SCORES_TABLE_ID = f"{PROJECT_ID}.{BQ_DATASET}.{SCORES_TABLE_NAME}"
 
 # --- GCS Configuration ---
+# ADD 'business_summary' to the prefixes
 ANALYSIS_PREFIXES = {
+    "business_summary": "business-summaries/", 
     "news": "news-analysis/",
     "technicals": "technicals-analysis/",
     "mda": "mda-analysis/",
@@ -23,8 +25,8 @@ ANALYSIS_PREFIXES = {
 }
 RECOMMENDATION_PREFIX = "recommendations/"
 
-# --- Synthesizer Configuration ---
-# Your updated weights have been included.
+# --- Score Weights Configuration ---
+# No changes needed here, as the business summary is not scored.
 SCORE_WEIGHTS = {
     "news_score": 0.22,
     "technicals_score": 0.28,
@@ -36,7 +38,6 @@ SCORE_WEIGHTS = {
 }
 
 # --- Vertex AI Gen AI ---
-# Renamed MODEL_NAME to LLM_MODEL_NAME to match the existing pattern.
 LLM_MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.6"))
 TOP_P = float(os.getenv("TOP_P", "0.95"))

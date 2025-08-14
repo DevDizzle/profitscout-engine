@@ -14,6 +14,7 @@ main:
           - mda_analyzer_name: "mda-analyzer"
           - transcript_analyzer_name: "transcript-analyzer"
           - news_analyzer_name: "news-analyzer"
+          - business_summarizer_name: "business-summarizer"
 
     - call_transcript_summarizer:
         call: http.post
@@ -82,6 +83,13 @@ main:
         call: http.post
         args:
           url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 900
+          
+    - call_business_summarizer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + business_summarizer_name}
           auth: { type: OIDC }
           timeout: 900
 

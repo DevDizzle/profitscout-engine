@@ -1,119 +1,117 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from core import config, gcs
-from core.clients import vertex_ai
+from .. import config, gcs, bq
+from ..clients import vertex_ai
 import os
 import re
-import json
 
-INPUT_PREFIX = config.PREFIXES["transcript_summarizer"]["input"]         # "earnings-call-transcripts/"
-OUTPUT_PREFIX = config.PREFIXES["transcript_summarizer"]["output"]       # "earnings-call-summaries/"
+# Define the input and output prefixes from the central configuration
+INPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["input"]
+OUTPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["output"]
 
-def parse_filename(blob_name: str):
-    # Expect: TICKER_YYYY-MM-DD.json
-    pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
-    match = pattern.search(os.path.basename(blob_name))
-    return (match.group(1), match.group(2)) if match else (None, None)
+# Example output for consistent formatting
+_EXAMPLE_OUTPUT = """{
+  "score": 0.65,
+  "analysis": "The earnings call transcript for the quarter suggests a moderately bullish outlook. Management highlighted robust revenue growth of 15% year-over-year, driven primarily by strong performance in the cloud services division, which saw a 25% increase in bookings. This was partially offset by a slight decline in the legacy hardware segment. A key positive was the upward revision of full-year EPS guidance, which management attributed to better-than-expected margin expansion. During the Q&A, analysts focused on the competitive landscape, and management responded confidently, citing a recent key customer win and a strong product pipeline. The overall tone was optimistic, with multiple references to 'accelerating momentum' and 'sustained demand.' While some caution was expressed regarding macroeconomic headwinds in Europe, the company's strong balance sheet and consistent share buyback program provide a solid foundation. The combination of a top-line beat, raised guidance, and confident management tone points to likely positive stock performance in the near term."
+}"""
 
-def read_transcript_data(raw_json: str):
-    try:
-        data = json.loads(raw_json)
-        if isinstance(data, list) and data:
-            data = data[0]
-        return data.get("content"), data.get("year"), data.get("quarter")
-    except (json.JSONDecodeError, TypeError, ValueError, IndexError):
-        return None, None, None
-
-def process_blob(blob_name: str):
-    ticker, date_str = parse_filename(blob_name)
-    if not ticker or not date_str:
-        logging.warning("Skipping blob with unexpected name format: %s", blob_name)
+def process_summary(ticker: str, date_str: str):
+    """
+    Processes a single, targeted transcript summary file based on the
+    ticker and date from the BigQuery work list.
+    """
+    input_blob_name = f"{INPUT_PREFIX}{ticker}_{date_str}.txt"
+    output_blob_name = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
+    
+    logging.info(f"[{ticker}] Generating transcript analysis for {date_str}")
+    
+    summary_content = gcs.read_blob(config.GCS_BUCKET_NAME, input_blob_name)
+    if not summary_content:
+        logging.error(f"[{ticker}] Could not read summary content from {input_blob_name}")
         return None
+    
+    # Construct the prompt for the language model
+    prompt = r"""You are a seasoned financial analyst evaluating an **earnings call summary** to judge how the narrative may influence the stock over the next 1–3 months.
+Use **only** the summary provided — do **not** use external data or assumptions.
 
-    summary_blob_path = f"{OUTPUT_PREFIX}{ticker}_{date_str}.txt"
-    logging.info("[%s] Generating transcript summary for %s", ticker, date_str)
+### Key Interpretation Guidelines
+1.  **Guidance & Outlook** — Raised/lifted guidance is strongly bullish; cautious or lowered guidance is bearish.
+2.  **Performance vs. Expectations** — Explicit beats on revenue/EPS are bullish; misses are bearish.
+3.  **Tone & Sentiment** — Confident, optimistic language ("strong demand," "accelerating") is bullish; defensive language ("headwinds," "challenging environment") is bearish.
+4.  **Key Business Drivers** — Growth in core products/segments is bullish; weakness is bearish.
+5.  **Q&A Session Insights** — Confident, direct answers are bullish; evasiveness is bearish.
+6.  **No Material Signals** — If balanced or neutral, output 0.50.
 
-    raw_json = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-    content, year, quarter = read_transcript_data(raw_json)
-    if not all([content, year, quarter]):
-        logging.error("[%s] Missing content/year/quarter in %s; skipping.", ticker, blob_name)
-        return None
+### Example Output (for format only; do not copy wording)
+EXAMPLE_OUTPUT:
+{{example_output}}
 
-    transcript_prompt = r"""You are a financial analyst summarizing an earnings call transcript for {ticker} (Q{quarter} {year}). Use chain-of-thought reasoning to extract key information, surprises, and words/phrases signaling short-term stock movements (30–90 days), producing a single dense, narrative summary optimized for FinBERT embeddings and NLP tasks (LDA). Generalize for Russell 1000 sectors. First, identify financial surprises (beats/misses), guidance updates, tone variations vs. prior quarters, and Q&A interactions (analyst probes, management replies). Second, extract 20-30 topic keywords overall (e.g., 'growth acceleration, margin pressure, demand surge'). Third, condense all elements into a coherent, unified narrative summary in full sentences and paragraphs, maximizing density and signal richness (no bullets, no section headers, integrate metrics/quotes naturally).Reasoning Steps:Financial Surprises and Metrics: Scan for core metrics like revenue, EPS, margins, FCF, and segments; note YoY changes, vs. consensus, and surprises with exact figures and signal phrases (e.g., 'surpassed expectations by 5%,' 'missed guidance due to supply issues'). Highlight implications for momentum.
-Guidance and Forward Signals: Extract updates to outlook, projections, or macro influences; include specific values/quotes (e.g., 'raising full-year revenue guidance to $X billion amid robust demand'). Assess changes from prior calls and potential stock catalysts.
-Tone and Sentiment Analysis: Evaluate overall sentiment (positive/neutral/negative) across prepared remarks and Q&A; compare to previous quarters, identify drivers like confident language ('excited about pipeline') or cautionary notes ('headwinds persisting'). Incorporate FinBERT-friendly phrases to amplify sentiment cues.
-Key Discussions and Strategies: Pull 4-6 operational insights, events, or strategies with embedded quotes (e.g., 'launched new product line driving 15% growth'); focus on elements signaling upside or risks, using financially charged language.
-Q&A Dynamics: Locate Q&A (via 'Operator,' speaker shifts); extract 3-5 key exchanges, emphasizing management tone (defensive/confident), analyst sentiment, and unscripted reveals (e.g., 'analyst praised "impressive turnaround," management affirmed "no further delays"').
-Signal Synthesis for Stock Movement: Infer aggregated signals for short-term price probability (e.g., beats + raised guidance = positive momentum); weave in phrases indicating volatility or stability, optimizing for embedding capture of predictive signals.
+### Step-by-Step Reasoning
+1.  Identify all forward-looking statements (guidance) and classify their direction.
+2.  Note any explicit performance metrics (revenue growth, margin trends).
+3.  Assess the overall tone of management's commentary and Q&A responses.
+4.  Synthesize these points into a net bullish/bearish score.
+5.  Map the net result to probability bands:
+    -   0.00-0.30 → clearly bearish
+    -   0.31-0.49 → mildly bearish
+    -   0.50       → neutral / balanced
+    -   0.51-0.69 → moderately bullish
+    -   0.70-1.00 → strongly bullish
+6.  Summarize the key drivers into one dense paragraph.
 
-Final Output Instructions:Synthesize all reasoning into one continuous, dense narrative summary (approximately 800-1,000 words to balance density and completeness).
-Structure as a flowing story: begin with financial performance and surprises, transition to discussions and tone, incorporate outlook and signals, conclude with Q&A insights and overall implications.
-Integrate signal words/quotes naturally (e.g., 'Executives expressed optimism over "accelerating adoption," bolstering raised EPS guidance').
-End the summary with a single list: 'Topic keywords: keyword1, keyword2, ...'.
-Use only the transcript JSON for {ticker} Q{quarter} {year} (e.g., content arrays with speaker labels).
-Do not invent facts; ground in evidence.
-If data missing, note briefly (e.g., 'Guidance unchanged, though tone upbeat').
-Optimize for FinBERT embeddings: Dense, signal-rich text with financial jargon, sentiment cues, predictive phrases, and balanced positive/negative indicators.
-Prioritize unscripted elements in Q&A for authentic signals.
+### Output — return exactly this JSON, nothing else
+{
+  "score": <float between 0 and 1>,
+  "analysis": "<One dense paragraph (~200-300 words) summarizing the key themes from the call, management's tone, and the likely impact on the stock.>"
+}
 
-Transcript:
-{transcript}
-""".format(
-        ticker=ticker,
-        quarter=quarter,
-        year=year,
-        transcript=content
-    )
+Provided data:
+{{summary_content}}
+""".replace("{{summary_content}}", summary_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
-    # Generate + persist
-    summary_text = vertex_ai.generate(transcript_prompt)
-    gcs.write_text(config.GCS_BUCKET_NAME, summary_blob_path, summary_text)
-
-    # IMPORTANT: No cleanup here.
-    return summary_blob_path
+    # Generate the analysis and write it to GCS
+    analysis_json = vertex_ai.generate(prompt)
+    gcs.write_text(config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json")
+    
+    # Clean up older versions of the analysis for this ticker
+    gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, output_blob_name)
+    
+    return output_blob_name
 
 def run_pipeline():
-    logging.info("--- Starting Transcript Summarizer Pipeline ---")
-
-    # 1) List all input transcripts and all existing summaries
-    all_input_paths = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-    all_summary_paths = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX))
-
-    # 2) Compute expected summary names from inputs
-    expected_summaries = {
-        f"{OUTPUT_PREFIX}{os.path.basename(p).replace('.json', '.txt')}"
-        for p in all_input_paths
-        if os.path.basename(p).endswith(".json")
-    }
-
-    # 3) Work set = expected - existing
-    work_items = [
-        # store the original input blob path (we need it in process_blob)
-        inp for inp in all_input_paths
-        if f"{OUTPUT_PREFIX}{os.path.basename(inp).replace('.json', '.txt')}" not in all_summary_paths
-    ]
-
-    logging.info(
-        "Inputs=%d | Existing summaries=%d | Expected summaries=%d | Missing=%d",
-        len(all_input_paths), len(all_summary_paths), len(expected_summaries), len(work_items)
-    )
-
-    if work_items:
-        logging.info("First 5 missing: %s", [os.path.basename(x) for x in work_items[:5]])
-
-    if not work_items:
-        logging.info("All transcript summaries are up-to-date.")
+    """
+    Runs the transcript analysis pipeline by first querying BigQuery for the
+    latest work items and then processing only those that are missing.
+    """
+    logging.info("--- Starting Transcript Analysis Pipeline ---")
+    
+    # 1. Get the definitive list of the single latest summary for each ticker from BigQuery
+    work_list_df = bq.get_latest_transcript_work_list()
+    if work_list_df.empty:
+        logging.info("No work items returned from BigQuery. Exiting.")
         return
 
-    # 4) Process missing items with bounded concurrency and resilient loop
-    processed = 0
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-        futures = [executor.submit(process_blob, item) for item in work_items]
-        for f in as_completed(futures):
-            try:
-                if f.result():
-                    processed += 1
-            except Exception as e:
-                logging.error("Worker failed: %s", e, exc_info=True)
+    # 2. Determine which analyses are missing
+    work_items = []
+    for _, row in work_list_df.iterrows():
+        ticker = row['ticker']
+        date_str = row['date_str']
+        expected_output = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
+        
+        # Check if the final analysis file already exists in GCS
+        if not gcs.blob_exists(config.GCS_BUCKET_NAME, expected_output):
+            work_items.append((ticker, date_str))
+            
+    if not work_items:
+        logging.info("All latest transcript analyses are already up-to-date.")
+        return
 
-    logging.info("--- Transcript Summarizer Finished. Processed %d new files. ---", processed)
+    logging.info(f"Found {len(work_items)} new transcript summaries to analyze.")
+    
+    # 3. Process the missing items in parallel
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+        # We submit a tuple of (ticker, date_str) to the worker function
+        futures = [executor.submit(process_summary, ticker, date_str) for ticker, date_str in work_items]
+        count = sum(1 for future in as_completed(futures) if future.result())
+        
+    logging.info(f"--- Transcript Analysis Pipeline Finished. Processed {count} new files. ---")
