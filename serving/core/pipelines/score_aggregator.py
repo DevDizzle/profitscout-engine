@@ -6,7 +6,6 @@ import re
 from .. import config, gcs, bq
 
 def _gather_analysis_files() -> dict:
-    # ... (logic from original aggregator.py)
     ticker_data = {}
     score_regex = re.compile(r'"score"\s*:\s*([0-9.]+)')
     analysis_regex = re.compile(r'"analysis"\s*:\s*"(.*?)"\s*}', re.DOTALL)
@@ -38,7 +37,6 @@ def _gather_analysis_files() -> dict:
     return ticker_data
 
 def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
-    # ... (logic from original aggregator.py)
     if not ticker_data: return pd.DataFrame()
     all_records = []
     for ticker, data in ticker_data.items():
@@ -51,25 +49,38 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
         sorted_texts.extend(texts.values())
         record["aggregated_text"] = "\n\n---\n\n".join(sorted_texts)
         all_records.append(record)
+
     df = pd.DataFrame(all_records)
     df["run_date"] = datetime.now().date()
     score_cols = list(config.SCORE_WEIGHTS.keys())
+
     for col in score_cols:
         if col not in df.columns: df[col] = pd.NA
         df[col] = pd.to_numeric(df[col], errors='coerce')
-    complete_mask = df[score_cols].notna().all(axis=1)
+
     df["weighted_score"] = pd.NA
+    complete_mask = df[score_cols].notna().all(axis=1)
+
     if complete_mask.any():
         df_complete = df[complete_mask].copy()
+        
+        # Normalize scores only for the complete rows
         for col in score_cols:
             min_val, max_val = df_complete[col].min(), df_complete[col].max()
-            df.loc[complete_mask, f"norm_{col}"] = (df_complete[col] - min_val) / (max_val - min_val) if (max_val - min_val) > 0 else 0.5
+            df_complete[f"norm_{col}"] = (df_complete[col] - min_val) / (max_val - min_val) if (max_val - min_val) > 0 else 0.5
+        
         norm_cols = [f"norm_{col}" for col in score_cols]
-        weighted_sum = sum(df.loc[complete_mask, norm_col] * config.SCORE_WEIGHTS[col] for col, norm_col in zip(score_cols, norm_cols))
-        df.loc[complete_mask, "weighted_score"] = weighted_sum
+        
+        # Calculate weighted score
+        df_complete["weighted_score"] = sum(df_complete[norm_col] * config.SCORE_WEIGHTS[col] for col, norm_col in zip(score_cols, norm_cols))
+        
+        # Update the original DataFrame with the calculated weighted scores
+        df.update(df_complete[["weighted_score"]])
+
+    # Define final columns and reindex the DataFrame to ensure correct order
     final_cols = ['ticker', 'run_date', 'weighted_score', 'aggregated_text'] + score_cols
-    df = df.reindex(columns=final_cols).drop(columns=[f"norm_{col}" for col in score_cols if f"norm_{col}" in df.columns])
-    return df
+    return df.reindex(columns=final_cols)
+
 
 def run_pipeline():
     """Main pipeline for score aggregation."""
