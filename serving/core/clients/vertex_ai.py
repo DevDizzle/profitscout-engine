@@ -4,21 +4,40 @@ from tenacity import retry, wait_exponential_jitter, stop_after_attempt, retry_i
 from google import genai
 from google.genai import types
 from .. import config
+import google.auth
+import google.auth.transport.requests
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
 
-def _init_client() -> genai.Client | None:
-    """Initializes the Vertex AI client."""
+def _adc_identity() -> str:
     try:
-        _log.info("Initializing Vertex AI GenAI client with project=%s, location=%s...", config.PROJECT_ID, config.LOCATION)
+        creds, _ = google.auth.default()
+        # Touch the token to surface ADC / IAM issues immediately
+        google.auth.transport.requests.Request().__enter__()
+        return getattr(creds, "service_account_email", "unknown-identity")
+    except Exception as e:
+        _log.warning("Could not resolve ADC identity: %s", e)
+        return "unknown-identity"
+
+def _init_client() -> genai.Client | None:
+    try:
+        # Use the project you already expose via env -> SOURCE_PROJECT_ID
+        project = config.SOURCE_PROJECT_ID
+        # Force global for google.genai + Vertex routing
+        location = "global"
+
+        _log.info(
+            "Initializing Vertex GenAI client (project=%s, location=%s, identity=%s)...",
+            project, location, _adc_identity()
+        )
         client = genai.Client(
             vertexai=True,
-            project=config.PROJECT_ID,
-            location=config.LOCATION,
+            project=project,
+            location=location,
             http_options=types.HttpOptions(api_version="v1"),
         )
-        _log.info("Vertex AI GenAI client initialized successfully.")
+        _log.info("Vertex GenAI client initialized successfully.")
         return client
     except Exception as e:
         _log.critical("FAILED to initialize Vertex AI client: %s", e, exc_info=True)
@@ -35,10 +54,15 @@ _client = _init_client()
 )
 def generate(prompt: str) -> str:
     """Generates content using the Vertex AI client with retry logic."""
+    global _client
     if _client is None:
-        raise RuntimeError("Vertex AI client is not available.")
+        _log.warning("Vertex client was None; attempting re-init now…")
+        _client = _init_client()
+        if _client is None:
+            raise RuntimeError("Vertex AI client is not available.")
 
-    _log.info("Generating content with Vertex AI (model=%s)...", config.MODEL_NAME)
+    _log.info("Generating content with Vertex AI (model=%s, prompt_tokens=%d)…",
+              config.MODEL_NAME, len(prompt.split()))
 
     cfg = types.GenerateContentConfig(
         temperature=config.TEMPERATURE,

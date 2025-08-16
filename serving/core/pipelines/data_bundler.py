@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import date
 from typing import Any, Dict, List, Optional
 from google.api_core import exceptions
-from google.cloud import bigquery, storage # <-- Make sure 'storage' is imported
+from google.cloud import bigquery, storage
 from .. import config
 
 def _get_ticker_work_list() -> pd.DataFrame:
@@ -22,7 +22,6 @@ def _get_ticker_work_list() -> pd.DataFrame:
     """
     try:
         df = client.query(query).to_dataframe()
-        logging.info(f"Successfully fetched {len(df)} tickers for bundling.")
         return df
     except Exception as e:
         logging.error(f"Failed to fetch ticker work list: {e}", exc_info=True)
@@ -34,7 +33,6 @@ def _get_weighted_scores() -> pd.DataFrame:
     query = f"SELECT ticker, weighted_score FROM `{config.BUNDLER_SCORES_TABLE_ID}` WHERE weighted_score IS NOT NULL"
     try:
         df = client.query(query).to_dataframe()
-        logging.info(f"Successfully fetched {len(df)} weighted scores.")
         return df
     except Exception as e:
         logging.error(f"Failed to fetch weighted scores: {e}", exc_info=True)
@@ -44,8 +42,6 @@ def _blob_exists(path: str) -> bool:
     """Checks if a blob exists in the data bucket."""
     from .. import gcs
     bucket = gcs._client().bucket(config.GCS_BUCKET_NAME)
-    # --- CORRECTED LINE ---
-    # This now correctly uses the 'storage' library, not 'bigquery.storage'
     blob = storage.Blob(name=path, bucket=bucket)
     return blob.exists(gcs._client())
 
@@ -60,13 +56,9 @@ def _load_blob_as_string(path: str) -> Optional[str]:
 
 def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame) -> List[Dict[str, Any]]:
     """Joins metadata with scores and gathers GCS asset links."""
-    if scores_df.empty:
-        logging.warning("No scores found. Cannot proceed.")
-        return []
-        
+    if scores_df.empty: return []
     merged_df = pd.merge(work_list_df, scores_df, on="ticker", how="inner")
-    logging.info(f"Merged metadata and scores for {len(merged_df)} tickers.")
-
+    
     final_records = []
     for _, row in merged_df.iterrows():
         ticker = row["ticker"]
@@ -77,21 +69,32 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
             "profile": f"sec-business/{ticker}_{date_str}.json", "news": f"headline-news/{ticker}_{date.today().strftime('%Y-%m-%d')}.json",
             "mda": f"sec-mda/{ticker}_{date_str}.json", "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
             "financials": f"financial-statements/{ticker}_{date_str}.json", "earnings_transcript": f"earnings-call-transcripts/{ticker}_{date_str}.json",
-            "recommendation_analysis": f"recommendations/{ticker}_recommendation.json"
+            # We now define paths for BOTH recommendation files
+            "recommendation_json": f"recommendations/{ticker}_recommendation.json",
+            "recommendation_markdown": f"recommendations/{ticker}_recommendation.md"
         }
 
+        # Check for existence of all assets, including the new recommendation files
         if not all(_blob_exists(path) for path in asset_paths.values()):
             logging.warning(f"[{ticker}] Missing one or more data assets. Skipping.")
             continue
 
         record = row.to_dict()
+        # Store GCS URIs for all assets
         for key, path in asset_paths.items():
-            record[key] = f"gs://{config.GCS_BUCKET_NAME}/{path}"
-        
+             # We want the URI for the markdown file in the 'recommendation_analysis' column
+            if key == "recommendation_markdown":
+                 record["recommendation_analysis"] = f"gs://{config.GCS_BUCKET_NAME}/{path}"
+            # We don't need to store the path to the json file in the final table
+            elif key != "recommendation_json":
+                 record[key] = f"gs://{config.GCS_BUCKET_NAME}/{path}"
+
+        # Parse the JSON file to get the simple BUY/SELL/HOLD recommendation
         try:
-            rec_content = _load_blob_as_string(asset_paths["recommendation_analysis"])
+            rec_content = _load_blob_as_string(asset_paths["recommendation_json"])
             record["recommendation"] = json.loads(rec_content).get("recommendation", "HOLD")
-        except: record["recommendation"] = "HOLD"
+        except (json.JSONDecodeError, TypeError, exceptions.NotFound):
+             record["recommendation"] = "HOLD"
             
         final_records.append(record)
     return final_records
@@ -113,5 +116,5 @@ def run_pipeline():
     
     from .. import bq
     df = pd.DataFrame(final_metadata)
-    bq.load_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
+    bq.load_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID, "WRITE_TRUNCATE")
     logging.info("--- Data Bundler (Final Assembly) Pipeline Finished ---")
