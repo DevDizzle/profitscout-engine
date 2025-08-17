@@ -79,7 +79,7 @@ def _get_analysis_scores() -> list[dict]:
         return []
 
 def _process_ticker(ticker_data: dict):
-    """Generates and uploads both a JSON and a Markdown recommendation for a single ticker."""
+    """Generates and uploads a Markdown recommendation for a single ticker."""
     ticker = ticker_data.get("ticker")
     weighted_score = ticker_data.get("weighted_score")
     aggregated_text = ticker_data.get("aggregated_text")
@@ -87,21 +87,12 @@ def _process_ticker(ticker_data: dict):
     if not all([ticker, weighted_score, aggregated_text]):
         return None
 
-    # Define paths for both output files
-    json_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation.json"
+    # Define path for the output markdown file
     md_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation.md"
 
-    logging.info(f"[{ticker}] Generating recommendation (JSON and Markdown).")
+    logging.info(f"[{ticker}] Generating recommendation Markdown.")
 
-    # 1. Determine the recommendation programmatically for the JSON payload
-    if weighted_score > 0.68:
-        recommendation = "BUY"
-    elif weighted_score >= 0.50:
-        recommendation = "HOLD"
-    else:
-        recommendation = "SELL"
-
-    # 2. Create the prompt to generate the detailed Markdown report
+    # Create the prompt to generate the detailed Markdown report
     prompt = _PROMPT_TEMPLATE.format(
         weighted_score=str(weighted_score),
         aggregated_text=aggregated_text,
@@ -109,26 +100,12 @@ def _process_ticker(ticker_data: dict):
     )
 
     try:
-        # 3. Generate the rich Markdown analysis using the LLM
+        # Generate the rich Markdown analysis using the LLM
         recommendation_md = vertex_ai.generate(prompt)
 
-        # 4. Create the simple, machine-readable JSON payload
-        json_payload = {
-            "recommendation": recommendation,
-            "score": weighted_score,
-            # Storing the full markdown in the JSON is a good practice for data consistency
-            "analysis_markdown": recommendation_md
-        }
-
-        # 5. Upload both files to Google Cloud Storage
-        gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(json_payload, indent=2), "application/json")
+        # Upload the markdown file to Google Cloud Storage (this will overwrite the existing file)
         gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_md, "text/markdown")
-        logging.info(f"[{ticker}] Successfully wrote both JSON and Markdown files.")
-
-        # 6. Clean up old files for this ticker
-        # (This assumes cleanup can handle multiple files; if not, this may need adjustment)
-        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, config.RECOMMENDATION_PREFIX, ticker, json_blob_path)
-        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, config.RECOMMENDATION_PREFIX, ticker, md_blob_path)
+        logging.info(f"[{ticker}] Successfully wrote Markdown file.")
 
         return md_blob_path # Return a success indicator
     except Exception as e:

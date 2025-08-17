@@ -10,26 +10,17 @@ import google.auth.transport.requests
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
 
-def _adc_identity() -> str:
-    try:
-        creds, _ = google.auth.default()
-        # Touch the token to surface ADC / IAM issues immediately
-        google.auth.transport.requests.Request().__enter__()
-        return getattr(creds, "service_account_email", "unknown-identity")
-    except Exception as e:
-        _log.warning("Could not resolve ADC identity: %s", e)
-        return "unknown-identity"
-
 def _init_client() -> genai.Client | None:
+    """Initializes the Vertex AI client."""
     try:
-        # Use the project you already expose via env -> SOURCE_PROJECT_ID
+        # Use the project specified in the serving configuration
         project = config.SOURCE_PROJECT_ID
         # Force global for google.genai + Vertex routing
         location = "global"
 
         _log.info(
-            "Initializing Vertex GenAI client (project=%s, location=%s, identity=%s)...",
-            project, location, _adc_identity()
+            "Initializing Vertex GenAI client (project=%s, location=%s)...",
+            project, location
         )
         client = genai.Client(
             vertexai=True,

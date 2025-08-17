@@ -1,12 +1,10 @@
 # serving/core/pipelines/data_bundler.py
 import logging
-import json
 import pandas as pd
 from datetime import date
-from typing import Any, Dict, List, Optional
-from google.api_core import exceptions
-from google.cloud import bigquery, storage
-from .. import config
+from typing import Any, Dict, List
+from google.cloud import bigquery
+from .. import config, bq
 
 def _get_ticker_work_list() -> pd.DataFrame:
     """Gets the base metadata for the latest quarter for each ticker."""
@@ -38,25 +36,11 @@ def _get_weighted_scores() -> pd.DataFrame:
         logging.error(f"Failed to fetch weighted scores: {e}", exc_info=True)
         return pd.DataFrame()
 
-def _blob_exists(path: str) -> bool:
-    """Checks if a blob exists in the data bucket."""
-    from .. import gcs
-    bucket = gcs._client().bucket(config.GCS_BUCKET_NAME)
-    blob = storage.Blob(name=path, bucket=bucket)
-    return blob.exists(gcs._client())
-
-def _load_blob_as_string(path: str) -> Optional[str]:
-    """Loads a file from GCS as a string."""
-    from .. import gcs
-    try:
-        bucket = gcs._client().bucket(config.GCS_BUCKET_NAME)
-        return bucket.blob(path).download_as_string().decode('utf-8', 'replace')
-    except exceptions.NotFound:
-        return None
-
 def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Joins metadata with scores and gathers GCS asset links."""
-    if scores_df.empty: return []
+    """Joins metadata, adds GCS asset URIs, and generates a recommendation."""
+    if scores_df.empty:
+        return []
+    
     merged_df = pd.merge(work_list_df, scores_df, on="ticker", how="inner")
     
     final_records = []
@@ -64,39 +48,37 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
         ticker = row["ticker"]
         date_str = row["quarter_end_date"].strftime('%Y-%m-%d')
         
+        # Define all potential asset paths
         asset_paths = {
-            "technicals": f"technicals/{ticker}_technicals.json", "ratios": f"ratios/{ticker}_{date_str}.json",
-            "profile": f"sec-business/{ticker}_{date_str}.json", "news": f"headline-news/{ticker}_{date.today().strftime('%Y-%m-%d')}.json",
-            "mda": f"sec-mda/{ticker}_{date_str}.json", "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
-            "financials": f"financial-statements/{ticker}_{date_str}.json", "earnings_transcript": f"earnings-call-transcripts/{ticker}_{date_str}.json",
-            # We now define paths for BOTH recommendation files
-            "recommendation_json": f"recommendations/{ticker}_recommendation.json",
-            "recommendation_markdown": f"recommendations/{ticker}_recommendation.md"
+            "technicals": f"technicals/{ticker}_technicals.json",
+            "ratios": f"ratios/{ticker}_{date_str}.json",
+            "profile": f"sec-business/{ticker}_{date_str}.json",
+            "news": f"headline-news/{ticker}_{date.today().strftime('%Y-%m-%d')}.json",
+            "mda": f"sec-mda/{ticker}_{date_str}.json",
+            "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
+            "financials": f"financial-statements/{ticker}_{date_str}.json",
+            "earnings_transcript": f"earnings-call-transcripts/{ticker}_{date_str}.json",
+            "recommendation_analysis": f"recommendations/{ticker}_recommendation.md"
         }
 
-        # Check for existence of all assets, including the new recommendation files
-        if not all(_blob_exists(path) for path in asset_paths.values()):
-            logging.warning(f"[{ticker}] Missing one or more data assets. Skipping.")
-            continue
-
         record = row.to_dict()
-        # Store GCS URIs for all assets
+        
+        # Add the GCS URI for each asset
         for key, path in asset_paths.items():
-             # We want the URI for the markdown file in the 'recommendation_analysis' column
-            if key == "recommendation_markdown":
-                 record["recommendation_analysis"] = f"gs://{config.GCS_BUCKET_NAME}/{path}"
-            # We don't need to store the path to the json file in the final table
-            elif key != "recommendation_json":
-                 record[key] = f"gs://{config.GCS_BUCKET_NAME}/{path}"
-
-        # Parse the JSON file to get the simple BUY/SELL/HOLD recommendation
-        try:
-            rec_content = _load_blob_as_string(asset_paths["recommendation_json"])
-            record["recommendation"] = json.loads(rec_content).get("recommendation", "HOLD")
-        except (json.JSONDecodeError, TypeError, exceptions.NotFound):
-             record["recommendation"] = "HOLD"
+            record[key] = f"gs://{config.GCS_BUCKET_NAME}/{path}"
+            
+        # Generate BUY/SELL/HOLD recommendation based on the weighted score
+        weighted_score = row["weighted_score"]
+        if weighted_score > 0.68:
+            recommendation = "BUY"
+        elif weighted_score >= 0.50:
+            recommendation = "HOLD"
+        else:
+            recommendation = "SELL"
+        record["recommendation"] = recommendation
             
         final_records.append(record)
+        
     return final_records
 
 def run_pipeline():
@@ -114,7 +96,6 @@ def run_pipeline():
         logging.warning("No complete records to load to BigQuery.")
         return
     
-    from .. import bq
     df = pd.DataFrame(final_metadata)
     bq.load_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID, "WRITE_TRUNCATE")
     logging.info("--- Data Bundler (Final Assembly) Pipeline Finished ---")
