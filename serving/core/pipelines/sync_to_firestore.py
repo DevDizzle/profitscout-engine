@@ -17,8 +17,13 @@ def _delete_collection(coll_ref, batch_size: int):
 def run_pipeline():
     """Orchestrates the sync from BigQuery to Firestore."""
     logging.info("--- Starting Firestore Sync Pipeline ---")
-    db = firestore.Client()
-    bq_client = bigquery.Client()
+    
+    # Initialize Firestore client with the destination project ID
+    db = firestore.Client(project=config.DESTINATION_PROJECT_ID)
+    
+    # Correctly initialize BigQuery client with the destination project ID
+    bq_client = bigquery.Client(project=config.DESTINATION_PROJECT_ID)
+    
     collection_ref = db.collection(config.FIRESTORE_COLLECTION)
 
     logging.info(f"Wiping Firestore collection: '{config.FIRESTORE_COLLECTION}'...")
@@ -26,9 +31,11 @@ def run_pipeline():
     logging.info("Wipe complete.")
 
     logging.info(f"Fetching scored rows from {config.SYNC_FIRESTORE_TABLE_ID}...")
+    # The table ID correctly points to the destination project's table
     query = f"SELECT * FROM `{config.SYNC_FIRESTORE_TABLE_ID}` WHERE weighted_score IS NOT NULL"
     
     try:
+        # The query will now run in the correct project (profitscout-fida8)
         df = bq_client.query(query).to_dataframe()
         if df.empty:
             logging.info("No scored records found in BigQuery. Sync complete.")
