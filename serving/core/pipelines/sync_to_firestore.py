@@ -18,10 +18,7 @@ def run_pipeline():
     """Orchestrates the sync from BigQuery to Firestore."""
     logging.info("--- Starting Firestore Sync Pipeline ---")
     
-    # Initialize Firestore client with the destination project ID
     db = firestore.Client(project=config.DESTINATION_PROJECT_ID)
-    
-    # Correctly initialize BigQuery client with the destination project ID
     bq_client = bigquery.Client(project=config.DESTINATION_PROJECT_ID)
     
     collection_ref = db.collection(config.FIRESTORE_COLLECTION)
@@ -31,11 +28,9 @@ def run_pipeline():
     logging.info("Wipe complete.")
 
     logging.info(f"Fetching scored rows from {config.SYNC_FIRESTORE_TABLE_ID}...")
-    # The table ID correctly points to the destination project's table
     query = f"SELECT * FROM `{config.SYNC_FIRESTORE_TABLE_ID}` WHERE weighted_score IS NOT NULL"
     
     try:
-        # The query will now run in the correct project (profitscout-fida8)
         df = bq_client.query(query).to_dataframe()
         if df.empty:
             logging.info("No scored records found in BigQuery. Sync complete.")
@@ -48,25 +43,29 @@ def run_pipeline():
         raise
 
     batch = db.batch()
+    commit_counter = 0  # Initialize a counter for the batch size
     total_docs_written = 0
+    
     logging.info(f"Starting batch write of {len(df)} documents to Firestore...")
     for index, row in df.iterrows():
         doc_ref = collection_ref.document(str(row["ticker"]))
         doc_data = row.where(pd.notna(row), None).to_dict()
         batch.set(doc_ref, doc_data)
+        commit_counter += 1 # Increment the counter
         
-        if len(batch._mutations) >= 500:
-            count = len(batch._mutations)
+        # Check the counter instead of the private attribute
+        if commit_counter >= 500:
             batch.commit()
-            total_docs_written += count
-            logging.info(f"Committed a batch of {count} documents.")
-            batch = db.batch()
+            total_docs_written += commit_counter
+            logging.info(f"Committed a batch of {commit_counter} documents.")
+            batch = db.batch()  # Start a new batch
+            commit_counter = 0  # Reset the counter
 
-    if len(batch._mutations) > 0:
-        count = len(batch._mutations)
+    # Commit any remaining documents in the final batch
+    if commit_counter > 0:
         batch.commit()
-        total_docs_written += count
-        logging.info(f"Committed final batch of {count} documents.")
+        total_docs_written += commit_counter
+        logging.info(f"Committed final batch of {commit_counter} documents.")
 
     logging.info(f"✅ Successfully synced {total_docs_written} documents.")
     logging.info("--- Firestore Sync Pipeline Finished ---")
