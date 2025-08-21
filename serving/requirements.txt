@@ -11,3 +11,4 @@ pandas
 pandas-gbq
 db-dtypes
 requests
+matplotlib
