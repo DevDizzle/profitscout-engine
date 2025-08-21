@@ -6,6 +6,7 @@ SOURCE_PROJECT_ID = os.environ.get("PROJECT_ID", "profitscout-lx6bb")
 DESTINATION_PROJECT_ID = os.environ.get("DESTINATION_PROJECT_ID", "profitscout-fida8")
 LOCATION = os.environ.get("LOCATION", "us-central1")
 GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "profit-scout-data")
+DESTINATION_GCS_BUCKET_NAME = os.environ.get("DESTINATION_GCS_BUCKET_NAME", "profit-scout")
 FMP_API_KEY_SECRET = os.environ.get("FMP_API_KEY_SECRET", "FMP_API_KEY")
 
 # --- Score Aggregator Pipeline ---
@@ -31,8 +32,14 @@ SCORE_WEIGHTS = {
 # --- Recommendation Generator Pipeline ---
 RECOMMENDATION_PREFIX = "recommendations/"
 MAX_WORKERS_RECOMMENDER = 8
+PRICE_DATA_TABLE_ID = f"{SOURCE_PROJECT_ID}.profit_scout.price_data" # For chart data
+CHART_GCS_FOLDER = "charts/" # GCS folder for chart images
+SERVICE_ACCOUNT_EMAIL = os.environ.get(
+    "SERVICE_ACCOUNT_EMAIL"
+)
 
 # --- Data Bundler Pipeline ---
+MAX_WORKERS_BUNDLER = 24
 BQ_DATASET_BUNDLER = "profit_scout"
 ASSET_METADATA_TABLE = "asset_metadata"
 STOCK_METADATA_TABLE = "stock_metadata"
