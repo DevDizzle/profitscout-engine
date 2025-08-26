@@ -38,6 +38,9 @@ SERVICE_ACCOUNT_EMAIL = os.environ.get(
     "SERVICE_ACCOUNT_EMAIL"
 )
 
+# --- Page Generator Pipeline ---
+PAGE_JSON_PREFIX = "pages/"
+
 # --- Data Bundler Pipeline ---
 MAX_WORKERS_BUNDLER = 24
 BQ_DATASET_BUNDLER = "profit_scout"

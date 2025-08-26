@@ -93,5 +93,8 @@ def run_pipeline():
     if final_df.empty:
         logging.info("No data to load after processing.")
         return
-    bq.load_df_to_bq(final_df, config.SCORES_TABLE_ID, config.SOURCE_PROJECT_ID)
+    
+
+    bq.load_df_to_bq(final_df, config.SCORES_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_APPEND")
+    
     logging.info("--- Score Aggregation Pipeline Finished ---")

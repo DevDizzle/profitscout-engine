@@ -7,6 +7,7 @@ main:
           - region: "us-central1"
           - score_aggregator_name: "score-aggregator"
           - recommendation_generator_name: "recommendation-generator"
+          - page_generator_name: "page-generator"
           - data_bundler_name: "data-bundler"
           - sync_to_firestore_name: "sync-to-firestore"
 
@@ -25,6 +26,14 @@ main:
           auth: { type: OIDC }
           timeout: 900
         result: recommendation_generator_result
+
+    - call_page_generator:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + page_generator_name}
+          auth: { type: OIDC }
+          timeout: 900
+        result: page_generator_result
 
     - call_data_bundler:
         call: http.post
@@ -45,7 +54,7 @@ main:
     - log_finish:
         call: sys.log
         args:
-          text: "Serving workflow (scoring, recommendation, bundling, and sync) finished successfully."
+          text: "Serving workflow (scoring, recommendation, page gen, bundling, and sync) finished successfully."
 
     - done:
         return: "Serving workflow finished successfully."
