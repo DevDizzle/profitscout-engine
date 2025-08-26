@@ -19,24 +19,6 @@ def _delete_blob(blob, bucket):
         return None
 
 
-def _delete_all_blobs_in_parallel(bucket):
-    """Deletes all blobs in a GCS bucket using multiple threads."""
-    logging.info(f"Starting deletion of all files in bucket gs://{bucket.name}")
-    blobs_to_delete = list(bucket.list_blobs())
-    if not blobs_to_delete:
-        logging.info("Destination bucket is already empty. No files to delete.")
-        return
-
-    deleted_count = 0
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_BUNDLER) as executor:
-        future_to_blob = {executor.submit(_delete_blob, blob, bucket): blob for blob in blobs_to_delete}
-        for future in as_completed(future_to_blob):
-            if future.result():
-                deleted_count += 1
-
-    logging.info(f"Deletion complete. Removed {deleted_count} of {len(blobs_to_delete)} files.")
-
-
 def _copy_blob(blob, source_bucket, destination_bucket):
     """Worker function to copy a single blob."""
     try:
@@ -54,20 +36,35 @@ def _copy_blob(blob, source_bucket, destination_bucket):
         return None
 
 
-def _copy_gcs_files():
-    """Deletes all destination files and then copies all source files in parallel."""
+def _sync_recommendations():
+    """
+    Deletes all blobs in the destination recommendations folder and then copies
+    all recommendation files from the source in parallel.
+    """
     storage_client = storage.Client()
     source_bucket = storage_client.bucket(config.GCS_BUCKET_NAME, user_project=config.SOURCE_PROJECT_ID)
     destination_bucket = storage_client.bucket(
         config.DESTINATION_GCS_BUCKET_NAME, user_project=config.DESTINATION_PROJECT_ID
     )
+    recommendation_prefix = config.RECOMMENDATION_PREFIX
 
-    # --- Step 1: Delete all files in the destination bucket ---
-    _delete_all_blobs_in_parallel(destination_bucket)
+    # --- Step 1: Delete all blobs in the destination recommendations folder ---
+    logging.info(f"Starting deletion of all files in gs://{destination_bucket.name}/{recommendation_prefix}")
+    blobs_to_delete = list(destination_bucket.list_blobs(prefix=recommendation_prefix))
+    if not blobs_to_delete:
+        logging.info("Destination recommendations folder is already empty. No files to delete.")
+    else:
+        deleted_count = 0
+        with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_BUNDLER) as executor:
+            future_to_blob = {executor.submit(_delete_blob, blob, destination_bucket): blob for blob in blobs_to_delete}
+            for future in as_completed(future_to_blob):
+                if future.result():
+                    deleted_count += 1
+        logging.info(f"Deletion complete. Removed {deleted_count} of {len(blobs_to_delete)} files.")
 
-    # --- Step 2: Copy all files from the source bucket ---
-    logging.info(f"Starting parallel copy from gs://{source_bucket.name} to gs://{destination_bucket.name}")
-    blobs_to_copy = list(source_bucket.list_blobs())
+    # --- Step 2: Copy all recommendation files from the source bucket ---
+    logging.info(f"Starting parallel copy from gs://{source_bucket.name}/{recommendation_prefix} to gs://{destination_bucket.name}/{recommendation_prefix}")
+    blobs_to_copy = list(source_bucket.list_blobs(prefix=recommendation_prefix))
     copied_count = 0
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_BUNDLER) as executor:
@@ -79,7 +76,7 @@ def _copy_gcs_files():
             if future.result():
                 copied_count += 1
 
-    logging.info(f"GCS file copy finished. Copied {copied_count} of {len(blobs_to_copy)} files.")
+    logging.info(f"GCS recommendation file sync finished. Copied {copied_count} of {len(blobs_to_copy)} files.")
 
 
 def _get_ticker_work_list() -> pd.DataFrame:
@@ -122,6 +119,7 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
     merged_df = pd.merge(work_list_df, scores_df, on="ticker", how="inner")
 
     final_records = []
+    today_str = date.today().strftime('%Y-%m-%d')
     for _, row in merged_df.iterrows():
         ticker = row["ticker"]
         date_str = row["quarter_end_date"].strftime('%Y-%m-%d')
@@ -131,12 +129,15 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
             "technicals": f"technicals/{ticker}_technicals.json",
             "ratios": f"ratios/{ticker}_{date_str}.json",
             "profile": f"sec-business/{ticker}_{date_str}.json",
-            "news": f"headline-news/{ticker}_{date.today().strftime('%Y-%m-%d')}.json",
+            "news": f"headline-news/{ticker}_{today_str}.json",
             "mda": f"sec-mda/{ticker}_{date_str}.json",
             "key_metrics": f"key-metrics/{ticker}_{date_str}.json",
             "financials": f"financial-statements/{ticker}_{date_str}.json",
             "earnings_transcript": f"earnings-call-transcripts/{ticker}_{date_str}.json",
-            "recommendation_analysis": f"recommendations/{ticker}_recommendation.md",
+            "recommendation_analysis": f"recommendations/{ticker}_recommendation_{today_str}.md",
+            # --- CHANGE IS HERE ---
+            # Add the new column for the page generator's JSON output
+            "page_json_uri": f"pages/{ticker}_page_{today_str}.json",
         }
 
         record = row.to_dict()
@@ -164,8 +165,8 @@ def run_pipeline():
     """Orchestrates the final assembly and loading of asset metadata."""
     logging.info("--- Starting Data Bundler (Final Assembly) Pipeline ---")
 
-    # First, sync the GCS buckets
-    _copy_gcs_files()
+    # First, sync only the recommendation files
+    _sync_recommendations()
 
     work_list_df = _get_ticker_work_list()
     if work_list_df.empty:
@@ -180,5 +181,5 @@ def run_pipeline():
         return
 
     df = pd.DataFrame(final_metadata)
-    bq.load_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID, "WRITE_TRUNCATE")
+    bq.load_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID, "WRITE_APPEND")
     logging.info("--- Data Bundler (Final Assembly) Pipeline Finished ---")
