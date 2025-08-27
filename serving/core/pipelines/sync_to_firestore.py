@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import pandas as pd
 from google.cloud import firestore, bigquery, storage
 from .. import config
+import numpy as np
 
 # --------- Tunables ----------
 BATCH_SIZE = 500
@@ -119,13 +120,14 @@ def _load_bq_df(bq):
     """
     df = bq.query(query).to_dataframe()
     if not df.empty:
-        # Convert datetime-like columns to strings (matches your prior behavior)
         for col in df.columns:
             dtype_str = str(df[col].dtype)
             if dtype_str.startswith("datetime64") or "datetimetz" in dtype_str or dtype_str == "dbdate":
                 df[col] = df[col].astype(str)
-        df = _validate_gcs_links(df)
+        
+        df = df.replace({pd.NA: np.nan})
         df = df.where(pd.notna(df), None)
+
     return df
 
 def run_pipeline(full_reset: bool = False):
@@ -144,8 +146,6 @@ def run_pipeline(full_reset: bool = False):
     logging.info(f"Target collection: {config.FIRESTORE_COLLECTION}")
     logging.info(f"Full reset? {'YES' if full_reset else 'NO'}")
 
-    # Pull current snapshot from BigQuery
-    logging.info(f"Fetching rows from {config.SYNC_FIRESTORE_TABLE_ID}...")
     try:
         df = _load_bq_df(bq)
     except Exception as e:
@@ -153,11 +153,9 @@ def run_pipeline(full_reset: bool = False):
         raise
 
     if full_reset:
-        # One-time wipe, then repopulate
         _delete_collection_in_batches(collection_ref)
         if df.empty:
             logging.info("BigQuery returned 0 rows after reset. Collection remains empty.")
-            logging.info("--- Finished ---")
             return
 
         if PRIMARY_KEY_FIELD not in df.columns:
@@ -167,17 +165,17 @@ def run_pipeline(full_reset: bool = False):
         for _, row in df.iterrows():
             key = str(row[PRIMARY_KEY_FIELD])
             doc_ref = collection_ref.document(key)
-            upsert_ops.append({"type": "set", "ref": doc_ref, "data": dict(row)})
+            # Convert row to dict here to handle any remaining numpy types
+            upsert_ops.append({"type": "set", "ref": doc_ref, "data": row.to_dict()})
 
         logging.info(f"Upserting {len(upsert_ops)} documents (post-reset)...")
         for chunk in _iter_batches(upsert_ops, BATCH_SIZE):
             _commit_ops(db, chunk)
 
         logging.info(f"✅ Reset complete. Wrote {len(upsert_ops)} documents.")
-        logging.info("--- Finished ---")
         return
 
-    # Incremental mode (default): upsert + prune stale
+    # Incremental mode
     if df.empty:
         logging.info("No rows in BigQuery; skipping upserts, only pruning stale documents...")
         current_keys = set()
@@ -188,15 +186,13 @@ def run_pipeline(full_reset: bool = False):
         for _, row in df.iterrows():
             key = str(row[PRIMARY_KEY_FIELD])
             doc_ref = collection_ref.document(key)
-            upsert_ops.append({"type": "set", "ref": doc_ref, "data": dict(row)})
+            upsert_ops.append({"type": "set", "ref": doc_ref, "data": row.to_dict()})
 
         logging.info(f"Upserting {len(upsert_ops)} documents...")
         for chunk in _iter_batches(upsert_ops, BATCH_SIZE):
             _commit_ops(db, chunk)
-
         current_keys = set(str(x) for x in df[PRIMARY_KEY_FIELD].tolist())
 
-    # Prune stale docs
     logging.info("Scanning Firestore for stale docs...")
     existing_keys = [doc.id for doc in collection_ref.stream()]
     to_delete = [k for k in existing_keys if k not in current_keys]
@@ -210,4 +206,3 @@ def run_pipeline(full_reset: bool = False):
         logging.info("No stale documents to delete.")
 
     logging.info(f"✅ Incremental sync complete. Upserted {len(current_keys)}; removed {len(to_delete)}.")
-    logging.info("--- Finished ---")
