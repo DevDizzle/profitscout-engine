@@ -7,7 +7,7 @@ from .. import config, gcs
 from ..clients import vertex_ai
 import io
 import base64
-from datetime import date
+from datetime import date, datetime, timedelta
 import re
 
 import matplotlib
@@ -65,6 +65,25 @@ Map aggregated text sections into these labels:
 {example_output}
 """
 
+def _get_last_gen_date(ticker: str) -> date | None:
+    """Gets the date of the most recently generated recommendation file."""
+    prefix = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_"
+    blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
+    
+    date_regex = re.compile(r'(\d{4}-\d{2}-\d{2})\.md$')
+    
+    latest_date = None
+    
+    for blob_name in blobs:
+        match = date_regex.search(blob_name)
+        if match:
+            try:
+                blob_date = datetime.strptime(match.group(1), '%Y-%m-%d').date()
+                if latest_date is None or blob_date > latest_date:
+                    latest_date = blob_date
+            except ValueError:
+                continue
+    return latest_date
 
 def _get_daily_work_list() -> list[dict]:
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
@@ -95,12 +114,23 @@ def _get_daily_work_list() -> list[dict]:
         prev_df = pd.DataFrame(columns=['ticker', 'prev_weighted_score'])
 
     merged_df = pd.merge(today_df, prev_df, on="ticker", how="left")
+    
+    # Check for a new generation if score diff is >= 0.02 OR if it's the first time
     merged_df['score_diff'] = (merged_df['weighted_score'] - merged_df['prev_weighted_score']).abs()
     merged_df['needs_new_text'] = (merged_df['score_diff'] >= 0.02) | (merged_df['prev_weighted_score'].isna())
+    
+    # Add the 7-day refresh logic
+    today_date = date.today()
+    merged_df['last_gen_date'] = merged_df['ticker'].apply(_get_last_gen_date)
+    merged_df['needs_new_text'] = merged_df['needs_new_text'] | (
+        (merged_df['last_gen_date'].apply(lambda x: (today_date - x).days) >= 7)
+    )
+    
     logging.info(f"Found {len(today_df)} tickers. Flagged {merged_df['needs_new_text'].sum()} for new text generation.")
     return merged_df.to_dict('records')
 
 def _get_latest_recommendation_text_from_gcs(ticker: str) -> str | None:
+    """Retrieves the text from the most recent recommendation file for a ticker."""
     prefix = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_"
     blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
     if not blobs: return None
@@ -200,8 +230,6 @@ def _process_ticker(ticker_data: dict):
     needs_new_text = ticker_data["needs_new_text"]
     today_str = date.today().strftime('%Y-%m-%d')
     
-    _delete_all_recommendations_for_ticker(ticker)
-    
     md_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}.md"
     recommendation_text = None
 
@@ -213,6 +241,9 @@ def _process_ticker(ticker_data: dict):
                 example_output=_EXAMPLE_OUTPUT,
             )
             recommendation_text = vertex_ai.generate(prompt)
+            gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown")
+            _delete_all_recommendations_for_ticker(ticker) # Delete AFTER successful write
+            
         else:
             recommendation_text = _get_latest_recommendation_text_from_gcs(ticker)
 
