@@ -7,7 +7,7 @@ from .. import config, gcs
 from ..clients import vertex_ai
 import io
 import base64
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import re
 
 import matplotlib
@@ -65,33 +65,38 @@ Map aggregated text sections into these labels:
 {example_output}
 """
 
-def _get_last_gen_date(ticker: str) -> date | None:
-    """Gets the date of the most recently generated recommendation file."""
-    prefix = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_"
+def _get_all_last_gen_dates() -> dict[str, date]:
+    """
+    Efficiently gets the last generation date for all tickers by listing blobs once.
+    """
+    prefix = config.RECOMMENDATION_PREFIX
     blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
-    
-    date_regex = re.compile(r'(\d{4}-\d{2}-\d{2})\.md$')
-    
-    latest_date = None
-    
+    date_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$')
+    last_dates = {}
+
     for blob_name in blobs:
         match = date_regex.search(blob_name)
         if match:
+            ticker, date_str = match.groups()
             try:
-                blob_date = datetime.strptime(match.group(1), '%Y-%m-%d').date()
-                if latest_date is None or blob_date > latest_date:
-                    latest_date = blob_date
+                blob_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                if ticker not in last_dates or blob_date > last_dates[ticker]:
+                    last_dates[ticker] = blob_date
             except ValueError:
                 continue
-    return latest_date
+    return last_dates
 
 def _get_daily_work_list() -> list[dict]:
+    """
+    Builds the list of tickers that need processing for the day.
+    """
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    today = date.today().isoformat()
+    today_iso = date.today().isoformat()
+    
     today_scores_query = f"""
         SELECT ticker, weighted_score, aggregated_text
         FROM `{config.SCORES_TABLE_ID}`
-        WHERE run_date = '{today}' AND weighted_score IS NOT NULL
+        WHERE run_date = '{today_iso}' AND weighted_score IS NOT NULL
     """
     try:
         today_df = client.query(today_scores_query).to_dataframe()
@@ -104,7 +109,7 @@ def _get_daily_work_list() -> list[dict]:
         WITH RankedScores AS (
             SELECT ticker, weighted_score, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY run_date DESC) as rn
             FROM `{config.SCORES_TABLE_ID}`
-            WHERE run_date < '{today}' AND weighted_score IS NOT NULL
+            WHERE run_date < '{today_iso}' AND weighted_score IS NOT NULL
         )
         SELECT ticker, weighted_score AS prev_weighted_score FROM RankedScores WHERE rn = 1
     """
@@ -115,19 +120,46 @@ def _get_daily_work_list() -> list[dict]:
 
     merged_df = pd.merge(today_df, prev_df, on="ticker", how="left")
     
-    # Check for a new generation if score diff is >= 0.02 OR if it's the first time
     merged_df['score_diff'] = (merged_df['weighted_score'] - merged_df['prev_weighted_score']).abs()
     merged_df['needs_new_text'] = (merged_df['score_diff'] >= 0.02) | (merged_df['prev_weighted_score'].isna())
     
-    # Add the 7-day refresh logic
+    last_gen_dates_map = _get_all_last_gen_dates()
+    last_gen_df = pd.DataFrame(list(last_gen_dates_map.items()), columns=['ticker', 'last_gen_date'])
+    merged_df = pd.merge(merged_df, last_gen_df, on='ticker', how='left')
+
     today_date = date.today()
-    merged_df['last_gen_date'] = merged_df['ticker'].apply(_get_last_gen_date)
     merged_df['needs_new_text'] = merged_df['needs_new_text'] | (
-        (merged_df['last_gen_date'].apply(lambda x: (today_date - x).days) >= 7)
+        merged_df['last_gen_date'].apply(lambda x: (today_date - x).days >= 7 if pd.notnull(x) else True)
     )
     
     logging.info(f"Found {len(today_df)} tickers. Flagged {merged_df['needs_new_text'].sum()} for new text generation.")
     return merged_df.to_dict('records')
+
+def _get_all_price_histories(tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """
+    Fetches price history for all specified tickers in a single BigQuery call.
+    """
+    if not tickers:
+        return {}
+        
+    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    fixed_start_date = "2020-01-01"
+    query = f"""
+        SELECT ticker, date, adj_close
+        FROM `{config.PRICE_DATA_TABLE_ID}`
+        WHERE ticker IN UNNEST(@tickers) AND date >= @start_date
+        ORDER BY ticker, date ASC
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("tickers", "STRING", tickers),
+            bigquery.ScalarQueryParameter("start_date", "DATE", fixed_start_date),
+        ]
+    )
+    full_df = client.query(query, job_config=job_config).to_dataframe()
+    
+    return {ticker: group for ticker, group in full_df.groupby("ticker")}
+
 
 def _get_latest_recommendation_text_from_gcs(ticker: str) -> str | None:
     """Retrieves the text from the most recent recommendation file for a ticker."""
@@ -143,97 +175,79 @@ def _get_latest_recommendation_text_from_gcs(ticker: str) -> str | None:
     return None
 
 def _delete_all_recommendations_for_ticker(ticker: str):
+    """Deletes all old recommendation files for a given ticker."""
     prefix = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_"
     blobs_to_delete = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
-    deleted_count = 0
     for blob_name in blobs_to_delete:
         try:
             gcs.delete_blob(config.GCS_BUCKET_NAME, blob_name)
-            deleted_count += 1
         except Exception as e:
             logging.error(f"[{ticker}] Failed to delete old file {blob_name}: {e}")
-    if deleted_count > 0:
-        logging.info(f"[{ticker}] Deleted {deleted_count} old recommendation files.")
 
-def _generate_chart_data_uri(ticker: str) -> str | None:
-    """Generates a thread-safe, base64-encoded chart of the last 90 days of price data."""
-    try:
-        bq_client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-        fixed_start_date = "2020-01-01"
-        query = f"""
-            SELECT date, adj_close
-            FROM `{config.PRICE_DATA_TABLE_ID}`
-            WHERE ticker = @ticker AND date >= @start_date
-            ORDER BY date ASC
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
-                bigquery.ScalarQueryParameter("start_date", "DATE", fixed_start_date),
-            ]
-        )
-        df = bq_client.query(query, job_config=job_config).to_dataframe()
-
-        if df.empty or len(df) < 220:
-            logging.warning(f"[{ticker}] Not enough price data (need >=220) to generate chart.")
-            return None
-
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.dropna(subset=["date", "adj_close"]).sort_values("date")
-
-        df["sma_50"] = df["adj_close"].rolling(window=50, min_periods=50).mean()
-        df["sma_200"] = df["adj_close"].rolling(window=200, min_periods=200).mean()
-        plot_df = df.tail(90).copy()
-
-        if plot_df.empty: return None
-        
-        # --- Thread-Safe Plotting ---
-        with _PLOT_LOCK:
-            fig, ax = plt.subplots(figsize=(10, 5), dpi=160)
-            try:
-                bg, price_c, sma50_c, sma200_c = "#20222D", "#9CFF0A", "#00BFFF", "#FF6347"
-                fig.patch.set_facecolor(bg)
-                ax.set_facecolor(bg)
-                ax.plot(plot_df["date"], plot_df["adj_close"], label="Price", color=price_c, linewidth=2.2)
-                ax.plot(plot_df["date"], plot_df["sma_50"], label="50-Day SMA", color=sma50_c, linestyle="--", linewidth=1.6)
-                ax.plot(plot_df["date"], plot_df["sma_200"], label="200-Day SMA", color=sma200_c, linestyle="--", linewidth=1.6)
-                
-                xmin, xmax = plot_df["date"].iloc[0], plot_df["date"].iloc[-1]
-                ax.set_xlim(xmin, xmax)
-                locator = mdates.AutoDateLocator()
-                ax.xaxis.set_major_locator(locator)
-                ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-                
-                last_x, last_y = plot_df["date"].iloc[-1], float(plot_df["adj_close"].iloc[-1])
-                ax.annotate(f"${last_y:,.2f}", xy=(last_x, last_y), xytext=(8, 0), textcoords="offset points", color="white", fontsize=9, va="center")
-                ax.set_title(f"{ticker} — 90-Day Price with 50/200-Day SMA", color="white", fontsize=14, pad=12)
-                ax.tick_params(axis="both", colors="#C8C9CC", labelsize=9)
-                ax.grid(True, linestyle="--", alpha=0.15)
-                leg = ax.legend(loc="upper left", framealpha=0.2, facecolor=bg, edgecolor="none", labelcolor="white")
-                for text in leg.get_texts(): text.set_color("#EDEEEF")
-                
-                plt.tight_layout()
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", bbox_inches="tight")
-                buf.seek(0)
-                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                return f"data:image/png;base64,{b64}"
-            finally:
-                plt.close(fig)
-
-    except Exception as e:
-        logging.error(f"[{ticker}] Failed to generate inline chart: {e}", exc_info=True)
+def _generate_chart_data_uri(ticker: str, price_df: pd.DataFrame) -> str | None:
+    """
+    Generates a chart from a pre-fetched DataFrame, conditionally plotting SMAs.
+    """
+    if price_df is None or price_df.empty:
+        logging.warning(f"[{ticker}] No price data available to generate a chart.")
         return None
 
-def _process_ticker(ticker_data: dict):
+    df = price_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date", "adj_close"]).sort_values("date")
+
+    # Conditionally calculate SMAs only if enough data exists
+    if len(df) >= 50:
+        df["sma_50"] = df["adj_close"].rolling(window=50, min_periods=50).mean()
+    if len(df) >= 200:
+        df["sma_200"] = df["adj_close"].rolling(window=200, min_periods=200).mean()
+
+    plot_df = df.tail(90).copy()
+
+    if plot_df.empty: return None
+    
+    with _PLOT_LOCK:
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=160)
+        try:
+            bg, price_c, sma50_c, sma200_c = "#20222D", "#9CFF0A", "#00BFFF", "#FF6347"
+            fig.patch.set_facecolor(bg)
+            ax.set_facecolor(bg)
+            
+            # Always plot the main price
+            ax.plot(plot_df["date"], plot_df["adj_close"], label="Price", color=price_c, linewidth=2.2)
+            
+            # Conditionally plot SMAs if the columns exist and have data
+            if "sma_50" in plot_df.columns and plot_df["sma_50"].notna().any():
+                ax.plot(plot_df["date"], plot_df["sma_50"], label="50-Day SMA", color=sma50_c, linestyle="--", linewidth=1.6)
+            if "sma_200" in plot_df.columns and plot_df["sma_200"].notna().any():
+                ax.plot(plot_df["date"], plot_df["sma_200"], label="200-Day SMA", color=sma200_c, linestyle="--", linewidth=1.6)
+            
+            last_y = float(plot_df["adj_close"].iloc[-1])
+            ax.set_title(f"{ticker} — 90-Day Price", color="white", fontsize=14, pad=12)
+            ax.tick_params(axis="both", colors="#C8C9CC", labelsize=9)
+            ax.grid(True, linestyle="--", alpha=0.15)
+            leg = ax.legend(loc="upper left", framealpha=0.2, facecolor=bg, edgecolor="none", labelcolor="white")
+            for text in leg.get_texts(): text.set_color("#EDEEEF")
+            
+            plt.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", bbox_inches="tight")
+            buf.seek(0)
+            return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        finally:
+            plt.close(fig)
+
+def _process_ticker(ticker_data: dict, price_histories: dict):
+    """
+    Main worker function for a single ticker.
+    """
     ticker = ticker_data["ticker"]
     needs_new_text = ticker_data["needs_new_text"]
     today_str = date.today().strftime('%Y-%m-%d')
-    
     md_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}.md"
-    recommendation_text = None
-
+    
     try:
+        recommendation_text = ""
         if needs_new_text:
             prompt = _PROMPT_TEMPLATE.format(
                 weighted_score=ticker_data["weighted_score"],
@@ -241,9 +255,6 @@ def _process_ticker(ticker_data: dict):
                 example_output=_EXAMPLE_OUTPUT,
             )
             recommendation_text = vertex_ai.generate(prompt)
-            gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown")
-            _delete_all_recommendations_for_ticker(ticker) # Delete AFTER successful write
-            
         else:
             recommendation_text = _get_latest_recommendation_text_from_gcs(ticker)
 
@@ -251,34 +262,47 @@ def _process_ticker(ticker_data: dict):
             logging.error(f"[{ticker}] Could not get or generate text. Aborting.")
             return None
 
-        chart_data_uri = _generate_chart_data_uri(ticker)
+        ticker_price_df = price_histories.get(ticker)
+        chart_data_uri = _generate_chart_data_uri(ticker, ticker_price_df)
+        
         final_md = recommendation_text
         if chart_data_uri:
             chart_md = (
-                "\n\n### 90-Day Performance\n"
-                f'<img src="{chart_data_uri}" alt="{ticker} price with 50/200-day SMA (last 90 days)" '
-                'style="max-width:100%; height:auto; display:block; margin:0;"/>'
+                f'\n\n### 90-Day Performance\n'
+                f'<img src="{chart_data_uri}" alt="{ticker} price chart"/>'
             )
             final_md += chart_md
-
+        
+        _delete_all_recommendations_for_ticker(ticker)
         gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, final_md, "text/markdown")
-        logging.info(f"[{ticker}] Successfully wrote single recommendation file to {md_blob_path}")
+        
+        logging.info(f"[{ticker}] Successfully generated and wrote recommendation to {md_blob_path}")
         return md_blob_path
+        
     except Exception as e:
         logging.error(f"[{ticker}] Unhandled exception in processing: {e}", exc_info=True)
         return None
 
 def run_pipeline():
-    logging.info("--- Starting Recommendation Generation Pipeline (Single File Model) ---")
+    logging.info("--- Starting Optimized Recommendation Generation Pipeline ---")
+    
     work_list = _get_daily_work_list()
     if not work_list:
         logging.warning("No tickers in daily work list. Exiting.")
         return
 
+    tickers_to_process = [item['ticker'] for item in work_list]
+    price_histories = _get_all_price_histories(tickers_to_process)
+    
+    # Process all tickers from the work list without filtering
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_RECOMMENDER) as executor:
-        futures = [executor.submit(_process_ticker, item) for item in work_list]
-        for future in as_completed(futures):
+        future_to_ticker = {
+            executor.submit(_process_ticker, item, price_histories): item['ticker']
+            for item in work_list
+        }
+        for future in as_completed(future_to_ticker):
             if future.result():
                 processed_count += 1
+                
     logging.info(f"--- Recommendation Pipeline Finished. Processed {processed_count} of {len(work_list)} tickers. ---")

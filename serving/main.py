@@ -31,9 +31,26 @@ def run_data_bundler(request):
 
 @functions_framework.http
 def run_sync_to_firestore(request):
-    """Entry point for the Firestore sync pipeline."""
-    sync_to_firestore.run_pipeline()
-    return "Firestore sync pipeline finished.", 200
+    """
+    Entry point for the Firestore sync pipeline.
+    Accepts a JSON body with 'full_reset': true to trigger a wipe-and-reload.
+    """
+    full_reset = False
+    try:
+        # Check for a JSON payload in the request
+        request_json = request.get_json(silent=True)
+        if request_json and request_json.get('full_reset') is True:
+            full_reset = True
+            logging.info("Full reset requested for Firestore sync.")
+    except Exception as e:
+        # Log if parsing fails, but don't block the function
+        logging.warning(f"Could not parse request JSON for full_reset flag: {e}")
+
+    # Pass the flag to the pipeline
+    sync_to_firestore.run_pipeline(full_reset=full_reset)
+    
+    message = "Firestore sync pipeline finished with full reset." if full_reset else "Firestore sync pipeline finished."
+    return message, 200
 
 @functions_framework.http
 def run_page_generator(request):
