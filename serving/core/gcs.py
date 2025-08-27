@@ -24,7 +24,6 @@ def list_blobs(bucket_name: str, prefix: str | None = None) -> list[str]:
     blobs = _client().list_blobs(bucket_name, prefix=prefix)
     return [blob.name for blob in blobs]
 
-# --- ADD THIS FUNCTION BACK ---
 def read_blob(bucket_name: str, blob_name: str, encoding: str = "utf-8") -> str | None:
     """Reads a blob from GCS and returns its content as a string."""
     try:
@@ -40,6 +39,15 @@ def write_text(bucket_name: str, blob_name: str, data: str, content_type: str = 
         _client().bucket(bucket_name).blob(blob_name).upload_from_string(data, content_type)
     except Exception as e:
         logging.error(f"Failed to write to blob {blob_name}: {e}")
+        raise
+
+def delete_blob(bucket_name: str, blob_name: str):
+    """Deletes a blob from GCS."""
+    try:
+        _client().bucket(bucket_name).blob(blob_name).delete()
+        logging.info(f"Successfully deleted {blob_name}")
+    except Exception as e:
+        logging.error(f"Failed to delete blob {blob_name}: {e}")
         raise
 
 def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename: str):
