@@ -27,12 +27,16 @@ PREFIXES = {
     "transcript_summarizer": {"input": "earnings-call-transcripts/", "output": "earnings-call-summaries/"},
     "transcript_analyzer": {"input": "earnings-call-summaries/", "output": "transcript-analysis/"},
     "financials_analyzer": {"input": "financial-statements/", "output": "financials-analysis/"},
-    "metrics_analyzer": {"input": "key-metrics/", "output": "key-metrics-analysis/"},
-    "ratios_analyzer": {"input": "ratios/", "output": "ratios-analysis/"},
     "technicals_analyzer": {"input": "technicals/", "output": "technicals-analysis/"},
     "news_analyzer": {"input": "headline-news/", "output": "news-analysis/"},
     "news_fetcher": {"query_cache": "news-queries/"},
-    "business_summarizer": {"input": "sec-business/", "output": "business-summaries/"}
+    "business_summarizer": {"input": "sec-business/", "output": "business-summaries/"},
+    # --- THIS IS THE CORRECTED SECTION ---
+    "fundamentals_analyzer": {
+        "input_metrics": "key-metrics/", 
+        "input_ratios": "ratios/", 
+        "output": "fundamentals-analysis/"
+    }
 }
 
 # --- Job Parameters ---

@@ -20,13 +20,15 @@ ANALYSIS_PREFIXES = {
     "mda": "mda-analysis/",
     "transcript": "transcript-analysis/",
     "financials": "financials-analysis/",
-    "metrics": "key-metrics-analysis/",
-    "ratios": "ratios-analysis/",
+    "fundamentals": "fundamentals-analysis/", # <-- CHANGED
 }
 SCORE_WEIGHTS = {
-    "news_score": 0.22, "technicals_score": 0.28, "mda_score": 0.07,
-    "transcript_score": 0.13, "financials_score": 0.12, "metrics_score": 0.09,
-    "ratios_score": 0.09,
+    "news_score": 0.25,
+    "technicals_score": 0.40,
+    "mda_score": 0.05,
+    "transcript_score": 0.07,
+    "financials_score": 0.08,
+    "fundamentals_score": 0.15,
 }
 
 # --- Recommendation Generator Pipeline ---

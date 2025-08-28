@@ -1,9 +1,16 @@
 import logging
 import functions_framework
 from core.pipelines import (
-    mda_summarizer, mda_analyzer, transcript_summarizer, transcript_analyzer,
-    financials_analyzer, metrics_analyzer, ratios_analyzer, technicals_analyzer, 
-    news_analyzer, news_fetcher, business_summarizer
+    mda_summarizer, 
+    mda_analyzer, 
+    transcript_summarizer, 
+    transcript_analyzer,
+    financials_analyzer, 
+    technicals_analyzer, 
+    news_analyzer, 
+    news_fetcher, 
+    business_summarizer,
+    fundamentals_analyzer
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -34,14 +41,10 @@ def run_financials_analyzer(request):
     return "Financials analyzer pipeline finished.", 200
 
 @functions_framework.http
-def run_metrics_analyzer(request):
-    metrics_analyzer.run_pipeline()
-    return "Key metrics analyzer pipeline finished.", 200
-
-@functions_framework.http
-def run_ratios_analyzer(request):
-    ratios_analyzer.run_pipeline()
-    return "Ratios analyzer pipeline finished.", 200
+def run_fundamentals_analyzer(request):
+    """Entry point for the combined fundamentals analysis pipeline."""
+    fundamentals_analyzer.run_pipeline()
+    return "Fundamentals analyzer pipeline finished.", 200
 
 @functions_framework.http
 def run_technicals_analyzer(request):

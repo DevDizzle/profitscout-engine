@@ -15,7 +15,6 @@ def _copy_blob(blob, source_bucket, destination_bucket, overwrite: bool = False)
     try:
         destination_blob = destination_bucket.blob(blob.name)
         
-        # --- FIX IS HERE: Check for existence only if not overwriting ---
         if not overwrite and destination_blob.exists():
             logging.info(f"Skipping copy, blob already exists: {blob.name}")
             return None
@@ -42,11 +41,12 @@ def _sync_gcs_data():
     source_bucket = storage_client.bucket(config.GCS_BUCKET_NAME, user_project=config.SOURCE_PROJECT_ID)
     destination_bucket = storage_client.bucket(config.DESTINATION_GCS_BUCKET_NAME, user_project=config.DESTINATION_PROJECT_ID)
     
-    # --- FIX IS HERE: Split prefixes into two groups ---
+    # --- THIS IS THE MODIFIED SECTION ---
     prefixes_to_sync = [
-        "ratios/", "sec-business/", "headline-news/", "sec-mda/",
-        "key-metrics/", "financial-statements/", "earnings-call-transcripts/",
-        "recommendations/", "pages/"
+        "sec-business/", "headline-news/", "sec-mda/",
+        "financial-statements/", "earnings-call-transcripts/",
+        "recommendations/", "pages/",
+        "fundamentals-analysis/"
     ]
     prefixes_to_overwrite = ["technicals/"]
 
@@ -142,17 +142,17 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
         record["recommendation_analysis"] = daily_files_map.get(ticker, {}).get("recommendation_analysis")
         record["pages_json"] = daily_files_map.get(ticker, {}).get("pages_json")
         
+        # --- THIS IS THE MODIFIED SECTION ---
         record["technicals"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/technicals/{ticker}_technicals.json"
-        record["ratios"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/ratios/{ticker}_{quarterly_date_str}.json"
         record["profile"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/sec-business/{ticker}_{quarterly_date_str}.json"
         record["mda"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/sec-mda/{ticker}_{quarterly_date_str}.json"
-        record["key_metrics"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/key-metrics/{ticker}_{quarterly_date_str}.json"
         record["financials"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/financial-statements/{ticker}_{quarterly_date_str}.json"
         record["earnings_transcript"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/earnings-call-transcripts/{ticker}_{quarterly_date_str}.json"
+        record["fundamentals"] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/fundamentals-analysis/{ticker}_{quarterly_date_str}.json" # <-- ADDED
 
         weighted_score = row["weighted_score"]
-        if weighted_score > 0.68: record["recommendation"] = "BUY"
-        elif weighted_score >= 0.50: record["recommendation"] = "HOLD"
+        if weighted_score > 0.62: record["recommendation"] = "BUY"
+        elif weighted_score >= 0.43: record["recommendation"] = "HOLD"
         else: record["recommendation"] = "SELL"
         
         final_records.append(record)

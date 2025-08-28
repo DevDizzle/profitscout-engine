@@ -15,50 +15,58 @@ from ..clients import vertex_ai
 INPUT_PREFIX = config.RECOMMENDATION_PREFIX
 OUTPUT_PREFIX = config.PAGE_JSON_PREFIX
 
-# --- Updated Example with three metrics ---
+# --- Updated Example (momentum-led tone preserved) ---
 _EXAMPLE_JSON_FOR_LLM = """
 {
   "seo": {
-    "title": "Is Expedia Group (EXPE) a Buy After Its Latest Report? | ProfitScout",
-    "metaDescription": "AI-powered analysis signals a strong buy for Expedia Group (EXPE) based on impressive growth and positive earnings. Explore the full stock analysis and data.",
-    "keywords": ["Expedia Group stock", "EXPE stock analysis", "Is EXPE a buy", "AI stock signals 2025", "EXPE financials"]
+    "title": "Is Expedia Group (EXPE) Breaking Out Right Now? | ProfitScout",
+    "metaDescription": "AI-powered analysis signals a momentum-led BUY for Expedia Group (EXPE), with strong technicals, favorable news flow, and supportive earnings tone. Explore the full stock analysis.",
+    "keywords": ["Expedia Group stock", "EXPE stock analysis", "Is EXPE a buy", "AI stock signals 2025", "EXPE technicals"]
   },
   "teaser": {
     "signal": "BUY",
-    "summary": "Expedia Group exhibits strong bullish signals across news, technicals, and earnings, supported by raised guidance and positive growth drivers.",
+    "summary": "EXPE shows a momentum breakout supported by positive headlines and stable fundamentals.",
     "metrics": {
-      "Revenue Growth": "Positive",
-      "EBITDA Margin": "Expanding",
-      "Forward Guidance": "Raised"
+      "Price Trend": "Uptrend with higher highs",
+      "Volume Confirmation": "Above-average volume on advances",
+      "Guidance Tone": "Improving quarter over quarter"
     }
   },
   "relatedStocks": ["BKNG", "ABNB", "TRIP"]
 }
 """
 
-# --- Updated Prompt to explicitly ask for three metrics ---
+# --- Updated Prompt (aligns thresholds + momentum emphasis) ---
 _PROMPT_TEMPLATE = r"""
 You are an expert financial copywriter and SEO analyst. Your task is to generate a specific JSON object with compelling SEO metadata, a teaser summary, and related stocks based on the provided analysis.
 
+### Signal Policy (align with momentum-led framework)
+Use the `weighted_score` to set the final recommendation signal:
+- `weighted_score` > 0.62 → "BUY"
+- `weighted_score` between 0.44 and 0.62 → "HOLD"
+- `weighted_score` < 0.44 → "SELL"
+
+### Momentum Emphasis
+- Treat this analysis as **momentum-led** (weights tilt toward Technicals + News).
+- Lead the teaser summary with momentum context (trend, breakouts, volume, breadth).
+- If momentum and fundamentals conflict, reflect that tension concisely in the summary.
+
 ### Instructions
-1.  **Determine the Signal**: Use the `weighted_score` to set the final recommendation signal.
-    * `weighted_score` > 0.68 is "BUY"
-    * `weighted_score` between 0.50 and 0.67 is "HOLD"
-    * `weighted_score` < 0.50 is "SELL"
+1) **SEO Title** (60–70 chars)
+   - Frame as a question or bold, insightful statement.
+   - Must include full company name "{{company_name}}" and ticker "({{ticker}})".
+   - End with "| ProfitScout".
 
-2.  **SEO Title**: Craft a compelling, SEO-friendly title (60-70 characters).
-    * **Frame it as a question or a bold, insightful statement.**
-    * **Must include the full `{company_name}` and the ticker `({ticker})`.**
-    * End with "| ProfitScout".
+2) **Teaser Section**
+   - `signal`: Use the signal from the policy above.
+   - `summary`: A sharp 1–2 sentence momentum-led outlook using the aggregated text.
+   - `metrics`: **Exactly 3** high-signal items. Prefer at least **one momentum indicator** (e.g., trend/breakout/volume/breadth/RSI/MA cross), plus 1–2 from earnings tone, guidance, or fundamentals.
 
-3.  **Teaser Section**:
-    * `signal`: Use the signal you determined in step 1.
-    * `summary`: Write a new, sharp 1-2 sentence summary of the overall outlook from the `aggregated_text`.
-    * `metrics`: **Extract exactly 3 of the most important metrics** from the full analysis to display.
+3) **Related Stocks**
+   - Infer **2–3** direct public competitor tickers from the "About" section in the aggregated text.
 
-4.  **Related Stocks**: Infer 2-3 direct public competitor tickers from the "About" section in the `aggregated_text`.
-
-5.  **Format**: Your entire output must be ONLY the JSON object, matching the example's structure.
+4) **Format**
+   - Output **ONLY** the JSON object that matches the example structure exactly.
 
 ### Input Data
 - **Ticker**: {ticker}
@@ -81,10 +89,14 @@ def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
         if match:
             key = match.group(1).lower().replace(' ', '')
             text = match.group(2).strip()
+            # --- THIS IS THE MODIFIED SECTION ---
             key_map = {
-                "news": "newsSummary", "technicals": "technicals", "mda": "mdAndA",
-                "transcript": "earningsCall", "financials": "financials",
-                "metrics": "metrics", "ratios": "ratios"
+                "news": "newsSummary", 
+                "technicals": "technicals", 
+                "mda": "mdAndA",
+                "transcript": "earningsCall", 
+                "financials": "financials",
+                "fundamentals": "fundamentals" # <-- ADDED
             }
             final_key = key_map.get(key, key)
             section_dict[final_key] = text
