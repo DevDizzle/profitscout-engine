@@ -8,8 +8,7 @@ main:
           - mda_summarizer_name: "mda-summarizer"
           - news_fetcher_name: "news-fetcher"
           - financials_analyzer_name: "financials-analyzer"
-          - metrics_analyzer_name: "metrics-analyzer"
-          - ratios_analyzer_name: "ratios-analyzer"
+          - fundamentals_analyzer_name: "fundamentals-analyzer" # <-- ADDED
           - technicals_analyzer_name: "technicals-analyzer"
           - mda_analyzer_name: "mda-analyzer"
           - transcript_analyzer_name: "transcript-analyzer"
@@ -44,17 +43,10 @@ main:
           auth: { type: OIDC }
           timeout: 900
 
-    - call_metrics_analyzer:
+    - call_fundamentals_analyzer: # <-- ADDED
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + metrics_analyzer_name}
-          auth: { type: OIDC }
-          timeout: 900
-
-    - call_ratios_analyzer:
-        call: http.post
-        args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + ratios_analyzer_name}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
 

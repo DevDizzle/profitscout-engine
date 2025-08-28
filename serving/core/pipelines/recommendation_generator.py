@@ -21,18 +21,25 @@ _PLOT_LOCK = threading.Lock()
 # --- Templates and other top-level definitions remain the same ---
 _EXAMPLE_OUTPUT = """
 # American Airlines (AAL) ✈️
-**HOLD** – Strong momentum, but financial risks keep us cautious.
-Quick take: AAL shows near-term strength in price action and headlines, but high debt and weak equity limit long-term upside. Caution is warranted.
+
+**BUY** – Momentum-led breakout with supportive news flow.
+
+**Quick take:** Momentum strength and positive headlines favor upside near term; fundamentals look stable.
+
 ### Profile
-American Airlines is a major network air carrier for passengers and cargo. It operates an extensive domestic and international network, earning revenue primarily from ticket sales, fees, and its loyalty program.
-### Key Highlights:
-- **News Buzz**: Partnership wins and stock momentum suggest optimism. 📈
-- **Tech Signals**: Breakouts and positive indicators point to short-term gains. ⚡
-- **Mgmt Chat**: Liquidity is solid, but rising costs and fuel risks add pressure. 😬
-- **Earnings Scoop**: Record revenue and EPS, though margins remain under strain. 💵
-- **Financials**: Heavy debt load and negative equity are ongoing concerns. 🚩
-- **Fundamentals**: Signs of recovery, but profitability is still fragile. ⚖️
-Overall: Positive momentum meets financial headwinds—best to hold for now.
+American Airlines is a major network air carrier serving passengers and cargo.
+It operates an extensive domestic and international network with diversified revenue streams.
+
+### Key Highlights
+- ⚡ Momentum breakout on strong volume; trend and breadth improving.
+- 📈 Price strength aligns with supportive headlines and analyst chatter.
+- ⚖️ Management confident, but input costs and fuel risks persist.
+- 📈 Transcript tone improved; guidance modestly higher quarter over quarter.
+- ⚖️ Financials stabilizing; leverage remains a watch item.
+- 📈 Fundamentals show gradual margin recovery and operating efficiency.
+
+Overall: Momentum-led setup supported by steady fundamentals — appropriate for a BUY.
+
 💡 Help shape the future: share your feedback to guide our next update.
 """
 
@@ -40,27 +47,55 @@ _PROMPT_TEMPLATE = r"""
 You are a confident but approachable financial analyst writing AI-powered stock recommendations.
 Tone = clear, professional, and concise.
 Think: "Smarter Investing Starts Here" — give users clarity, not noise.
+
 ### Section Mapping
-Map aggregated text sections into these labels:
+Map aggregated text sections into these labels (for your internal reasoning; do not print these labels):
 - **Profile** → "About"
 - **News Buzz** → "News Analysis"
-- **Tech Signals** → "Technicals Analysis"
-- **Mgmt Chat** → "Mda Analysis"
+- **Tech Signals** → "Technical Analysis"
+- **Mgmt Chat** → "MD&A Analysis"
 - **Earnings Scoop** → "Transcript Analysis"
 - **Financials** → "Financials Analysis"
 - **Fundamentals** → "Key Metrics Analysis" + "Ratios Analysis"
-### Instructions
-1. **Recommendation**: Strictly "BUY" (> 0.68), "HOLD" (0.50–0.67), or "SELL" (< 0.50). Add a short, confident one-liner. Do not show the raw score.
-2. **Quick Take**: Start with 1–2 sentences summarizing the overall outlook.
-3. **Profile**: Add a "### Profile" section. Briefly summarize the "About" text in **1-2 sentences**.
-4. **Highlights**: Use concise emoji bullets (📈 bullish, 🚩 bearish, ⚖️ mixed, ⚡ momentum). Each bullet = 1 line, clear and factual. Keep each section under ~12 words.
-5. **Wrap-Up**: End with 1 sentence summarizing why this is the right call.
-6. **Engagement Hook**: Close with a single call-to-action.
-7. **Format**: H1 with ticker + emoji. Bold Recommendation line. Section = "### Key Highlights:" followed by bullets. Entire output under ~250 words.
+
+### Momentum Emphasis (important)
+- Treat this as a **momentum-led** framework (weights tilt toward Technicals + News).
+- Lead the narrative with near-term momentum; fundamentals/financials provide context.
+- If momentum and fundamentals conflict, include a single ⚖️ bullet noting the tension.
+
+### Formatting Rules (strict)
+- Use this layout and spacing exactly:
+  1) H1 line: "# {{company_name}} ({{ticker}}) [Emoji]"
+  2) Bold recommendation line: "**BUY/HOLD/SELL** – short one-liner."
+  3) A blank line, then "**Quick take:**" + 1–2 sentences.
+  4) A blank line, then "### Profile" + 1–2 sentences.
+  5) A blank line, then "### Key Highlights" followed by bullets.
+  6) A blank line, then one sentence "Overall: …"
+  7) A blank line, then a single call-to-action line (no header).
+- Exactly one blank line between every block. No extra blank lines at start or end.
+- **Key Highlights** must be a Markdown bulleted list using dashes (`- `), not numbered lists.
+- **Bullet order (momentum-first):**
+  - First bullet: ⚡ momentum summary (from Technicals/News).
+  - Second bullet: 📈 or 🚩 momentum confirmation (breakouts/trend/breadth/volume).
+  - Remaining bullets: strongest items from Transcript, MD&A, Financials, Fundamentals.
+- Each bullet: start with one emoji (📈 bullish, 🚩 bearish, ⚖️ mixed, ⚡ momentum), then a concise statement (≤ 12 words).
+- Do not include bold subsection labels inside bullets (no "**News Buzz:**", etc.).
+- No additional headings beyond "### Profile" and "### Key Highlights".
+- Total length ≲ 250 words.
+
+### Content Instructions
+1. **Recommendation**: Strictly "BUY" (> 0.62), "HOLD" (0.44–0.62), or "SELL" (< 0.44). Add a short, confident one-liner with **momentum context**. Do not show the raw score.
+2. **Quick Take**: 1–2 sentences summarizing the overall outlook, leading with momentum.
+3. **Profile**: Summarize the "About" text in **1–2 sentences**.
+4. **Highlights**: Convert mapped analyses into concise emoji bullets (respect the momentum-first ordering).
+5. **Wrap-Up**: End with one sentence ("Overall: ...") explaining why the call fits a momentum-led view now.
+6. **Engagement Hook**: Close with a single call-to-action that encourages feedback.
+
 ### Input Data
 - **Weighted Score**: {weighted_score}
 - **Aggregated Analysis Text**:
 {aggregated_text}
+
 ### Example Output
 {example_output}
 """
@@ -94,9 +129,21 @@ def _get_daily_work_list() -> list[dict]:
     today_iso = date.today().isoformat()
     
     today_scores_query = f"""
-        SELECT ticker, weighted_score, aggregated_text
-        FROM `{config.SCORES_TABLE_ID}`
-        WHERE run_date = '{today_iso}' AND weighted_score IS NOT NULL
+        WITH LatestMetadata AS (
+            SELECT 
+                ticker,
+                company_name,
+                ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
+            FROM `{config.BUNDLER_STOCK_METADATA_TABLE_ID}`
+        )
+        SELECT 
+            t1.ticker, 
+            t1.weighted_score, 
+            t1.aggregated_text,
+            t2.company_name
+        FROM `{config.SCORES_TABLE_ID}` AS t1
+        LEFT JOIN LatestMetadata AS t2 ON t1.ticker = t2.ticker AND t2.rn = 1
+        WHERE t1.run_date = '{today_iso}' AND t1.weighted_score IS NOT NULL
     """
     try:
         today_df = client.query(today_scores_query).to_dataframe()
@@ -242,6 +289,7 @@ def _process_ticker(ticker_data: dict, price_histories: dict):
     Main worker function for a single ticker.
     """
     ticker = ticker_data["ticker"]
+    company_name = ticker_data["company_name"]
     needs_new_text = ticker_data["needs_new_text"]
     today_str = date.today().strftime('%Y-%m-%d')
     md_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}.md"
@@ -250,9 +298,11 @@ def _process_ticker(ticker_data: dict, price_histories: dict):
         recommendation_text = ""
         if needs_new_text:
             prompt = _PROMPT_TEMPLATE.format(
+                ticker=ticker,
+                company_name=company_name,
                 weighted_score=ticker_data["weighted_score"],
                 aggregated_text=ticker_data["aggregated_text"],
-                example_output=_EXAMPLE_OUTPUT,
+                example_output=_EXAMPLE_OUTPUT
             )
             recommendation_text = vertex_ai.generate(prompt)
         else:
