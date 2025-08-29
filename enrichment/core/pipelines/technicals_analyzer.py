@@ -4,8 +4,10 @@ from .. import config, gcs
 from ..clients import vertex_ai
 import os
 import re
+import json
 
 INPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["input"]
+PRICE_INPUT_PREFIX = "prices/"  # New prefix for price data
 OUTPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["output"]
 
 # One-shot example for consistent output format (format anchor only)
@@ -20,9 +22,9 @@ def parse_filename(blob_name: str):
     match = pattern.search(os.path.basename(blob_name))
     return match.group(1) if match else None
 
-def process_blob(blob_name: str):
-    """Processes one daily technicals file."""
-    ticker = parse_filename(blob_name)
+def process_blob(technicals_blob_name: str):
+    """Processes one daily technicals file and its corresponding price data."""
+    ticker = parse_filename(technicals_blob_name)
     if not ticker:
         return None
     
@@ -30,20 +32,34 @@ def process_blob(blob_name: str):
     analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_technicals.json"
     logging.info(f"[{ticker}] Generating technicals analysis")
     
-    content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-    if not content:
+    technicals_content = gcs.read_blob(config.GCS_BUCKET_NAME, technicals_blob_name)
+    if not technicals_content:
+        logging.warning(f"[{ticker}] No technicals content found for {technicals_blob_name}")
         return None
-    
-    prompt = r"""You are a seasoned technical analyst evaluating a stock’s **technical indicators** over the past ~90 days to assess likely direction over the next 1–3 months.
-Use **only** the JSON provided — do **not** use external data or assumptions.
+
+    # --- New: Read Price Data ---
+    price_blob_name = f"{PRICE_INPUT_PREFIX}{ticker}_90_day_prices.json"
+    price_content = gcs.read_blob(config.GCS_BUCKET_NAME, price_blob_name)
+    if not price_content:
+        logging.warning(f"[{ticker}] No price data found for {price_blob_name}")
+        # Decide if you want to proceed without price data or fail
+        # For this example, we'll proceed but the prompt will not have price data
+        price_data_for_prompt = '"prices": []' # Provide empty price data
+    else:
+        price_data_for_prompt = price_content
+
+
+    # --- Updated Prompt ---
+    prompt = r"""You are a seasoned technical analyst evaluating a stock’s **technical indicators and 90-day price history** to assess likely direction over the next 1–3 months.
+Use **only** the JSON data provided — do **not** use external data or assumptions.
 
 ### Key Interpretation Guidelines
-1. **Price Action** — Rising closes or breakouts above prior highs are bullish; declines toward lows are bearish.
+1. **Price Action** — Analyze the 90-day price data. Rising closes or breakouts above prior highs are bullish; declines toward lows are bearish. Identify trends, support, and resistance.
 2. **Moving Averages** — Price above SMA/EMA is bullish; below is bearish. Golden cross bullish; death cross bearish.
 3. **Trend Strength** — ADX >25 with DMP>DMN is bullish; DMN>DMP is bearish.
 4. **Momentum** — Positive MACD crossovers and rising RSI (40–70) are bullish; negative crossovers and falling RSI are bearish.
 5. **Oscillators** — RSI >70 or STOCH >80 is overbought (bearish reversal risk); RSI <30 or STOCH <20 is oversold (bullish reversal potential).
-6. **Volatility & Volume** — Rising OBV with uptrend is bullish; falling OBV with rising price is bearish divergence.
+6. **Volatility & Volume** — Rising OBV with uptrend is bullish; falling OBV with rising price is bearish divergence. Pay attention to volume spikes in the price data.
 7. **No Material Signals** — If mixed/neutral, output 0.50 and state technicals are neutral.
 
 ### Example Output (for format only; do not copy values or wording)
@@ -51,7 +67,7 @@ EXAMPLE_OUTPUT:
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1. Evaluate recent changes in price, trend, momentum, volatility, and volume.
+1. Evaluate recent changes in price, trend, momentum, volatility, and volume from both the technical indicators and the 90-day price history.
 2. Classify as bullish, bearish, or neutral.
 3. Map net result to probability bands:
    - 0.00-0.30 → clearly bearish
@@ -68,8 +84,11 @@ EXAMPLE_OUTPUT:
 }
 
 Provided data:
-{{technicals_data}}
-""".replace("{{technicals_data}}", content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
+{
+  "technicals": {{technicals_data}},
+  "prices": {{price_data}}
+}
+""".replace("{{technicals_data}}", technicals_content).replace("{{price_data}}", price_data_for_prompt).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
