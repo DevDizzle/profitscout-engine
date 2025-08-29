@@ -1,4 +1,4 @@
-# ProfitScout-Engine — Serverless financial scoring pipeline
+# ProfitScout-Engine — Serverless Financial Data Pipeline
 
 ProfitScout-Engine turns raw market data into actionable investment signals. It ingests public filings and prices, enriches them with AI, and serves ranked scores and pages for downstream apps.
 
