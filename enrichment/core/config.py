@@ -10,6 +10,7 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 
 # --- BigQuery ---
 BQ_METADATA_TABLE = f"{PROJECT_ID}.profit_scout.stock_metadata"
+BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
 
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")

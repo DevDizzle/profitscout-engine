@@ -10,7 +10,8 @@ from core.pipelines import (
     news_analyzer, 
     news_fetcher, 
     business_summarizer,
-    fundamentals_analyzer
+    fundamentals_analyzer,
+    options_candidate_selector as candidate_selector_pipeline,  # <-- added
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -65,3 +66,10 @@ def run_news_analyzer(request):
 def run_business_summarizer(request):
     business_summarizer.run_pipeline()
     return "Business summarizer pipeline finished.", 200
+
+# --- NEW: Options candidate selector (no LLM here) ---
+@functions_framework.http
+def candidate_selector(request):
+    """Programmatic options top-5 CALL/PUT selector."""
+    candidate_selector_pipeline.run_pipeline()
+    return "Options candidate selector pipeline finished.", 200

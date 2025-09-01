@@ -8,6 +8,7 @@ LOCATION = os.environ.get("LOCATION", "us-central1")
 GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "profit-scout-data")
 DESTINATION_GCS_BUCKET_NAME = os.environ.get("DESTINATION_GCS_BUCKET_NAME", "profit-scout")
 FMP_API_KEY_SECRET = os.environ.get("FMP_API_KEY_SECRET", "FMP_API_KEY")
+BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
 
 # --- Score Aggregator Pipeline ---
 BQ_DATASET_AGGREGATOR = "profit_scout"
@@ -20,7 +21,7 @@ ANALYSIS_PREFIXES = {
     "mda": "mda-analysis/",
     "transcript": "transcript-analysis/",
     "financials": "financials-analysis/",
-    "fundamentals": "fundamentals-analysis/", # <-- CHANGED
+    "fundamentals": "fundamentals-analysis/",
 }
 SCORE_WEIGHTS = {
     "news_score": 0.25,
@@ -34,11 +35,13 @@ SCORE_WEIGHTS = {
 # --- Recommendation Generator Pipeline ---
 RECOMMENDATION_PREFIX = "recommendations/"
 MAX_WORKERS_RECOMMENDER = 8
-PRICE_DATA_TABLE_ID = f"{SOURCE_PROJECT_ID}.profit_scout.price_data" # For chart data
-CHART_GCS_FOLDER = "charts/" # GCS folder for chart images
-SERVICE_ACCOUNT_EMAIL = os.environ.get(
-    "SERVICE_ACCOUNT_EMAIL"
-)
+PRICE_DATA_TABLE_ID = f"{SOURCE_PROJECT_ID}.profit_scout.price_data"  # For chart data
+CHART_GCS_FOLDER = "charts/"  # GCS folder for chart images
+SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
+
+# --- Options Explainer (Serving) ---
+# Markdown outputs for options notes will be written under this folder in GCS.
+OPTIONS_MD_PREFIX = os.environ.get("OPTIONS_MD_PREFIX", "options-recommendations/")
 
 # --- Page Generator Pipeline ---
 PAGE_JSON_PREFIX = "pages/"

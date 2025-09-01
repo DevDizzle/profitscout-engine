@@ -6,7 +6,8 @@ from core.pipelines import (
     recommendation_generator,
     data_bundler,
     sync_to_firestore,
-    page_generator  # <-- Import the new module
+    page_generator,  # existing
+    options_recommendation_generator as options_reco_gen,  # <-- NEW import
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -37,23 +38,29 @@ def run_sync_to_firestore(request):
     """
     full_reset = False
     try:
-        # Check for a JSON payload in the request
         request_json = request.get_json(silent=True)
         if request_json and request_json.get('full_reset') is True:
             full_reset = True
             logging.info("Full reset requested for Firestore sync.")
     except Exception as e:
-        # Log if parsing fails, but don't block the function
         logging.warning(f"Could not parse request JSON for full_reset flag: {e}")
 
-    # Pass the flag to the pipeline
     sync_to_firestore.run_pipeline(full_reset=full_reset)
-    
-    message = "Firestore sync pipeline finished with full reset." if full_reset else "Firestore sync pipeline finished."
-    return message, 200
+    msg = "Firestore sync pipeline finished with full reset." if full_reset else "Firestore sync pipeline finished."
+    return msg, 200
 
 @functions_framework.http
 def run_page_generator(request):
     """Entry point for the page content generation pipeline."""
     page_generator.run_pipeline()
     return "Page generator pipeline finished.", 200
+
+# --- NEW: Options recommendations explainer (LLM) ---
+@functions_framework.http
+def options_recommendation_generator(request):
+    """
+    Entry point for the options recommendations markdown generator.
+    Reads options_candidates and writes MD files to GCS (options-recommendations/).
+    """
+    options_reco_gen.run_pipeline()
+    return "Options recommendation generator pipeline finished.", 200

@@ -8,7 +8,7 @@ main:
           - mda_summarizer_name: "mda-summarizer"
           - news_fetcher_name: "news-fetcher"
           - financials_analyzer_name: "financials-analyzer"
-          - fundamentals_analyzer_name: "fundamentals-analyzer" # <-- ADDED
+          - fundamentals_analyzer_name: "fundamentals-analyzer"
           - technicals_analyzer_name: "technicals-analyzer"
           - mda_analyzer_name: "mda-analyzer"
           - transcript_analyzer_name: "transcript-analyzer"
@@ -43,7 +43,7 @@ main:
           auth: { type: OIDC }
           timeout: 900
 
-    - call_fundamentals_analyzer: # <-- ADDED
+    - call_fundamentals_analyzer:
         call: http.post
         args:
           url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_analyzer_name}

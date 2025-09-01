@@ -10,6 +10,7 @@ TICKER_LIST_PATH = "tickerlist.txt"
 # --- API Key Secret Names ---
 FMP_API_KEY_SECRET = os.getenv("FMP_API_KEY_SECRET", "FMP_API_KEY")
 SEC_API_KEY_SECRET = os.getenv("SEC_API_KEY_SECRET", "SEC_API_KEY")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")  
 
 # --- BigQuery ---
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
@@ -21,6 +22,9 @@ MASTER_TABLE = "stock_metadata"
 MASTER_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{MASTER_TABLE}"
 # For technicals_collector
 TECHNICALS_PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{PRICE_DATA_TABLE}"
+# For Options
+OPTIONS_CHAIN_TABLE = "options_chain"
+OPTIONS_CHAIN_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{OPTIONS_CHAIN_TABLE}"
 
 
 # --- Fundamentals / Statements / Ratios ---
