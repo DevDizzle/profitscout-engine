@@ -40,6 +40,7 @@ CHART_GCS_FOLDER = "charts/"  # GCS folder for chart images
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
 
 # --- Options Explainer (Serving) ---
+OPTIONS_CANDIDATES_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.options_candidates"
 # Markdown outputs for options notes will be written under this folder in GCS.
 OPTIONS_MD_PREFIX = os.environ.get("OPTIONS_MD_PREFIX", "options-recommendations/")
 
