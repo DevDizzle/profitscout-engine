@@ -1,233 +1,209 @@
-# serving/core/pipelines/page_generator.py
+# serving/core/pipelines/options_recommendation_generator.py
 import logging
 import pandas as pd
 import json
-import re
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import bigquery
 from datetime import date
-from typing import Dict, Optional
 
 from .. import config, gcs
 from ..clients import vertex_ai
 
-INPUT_PREFIX = config.RECOMMENDATION_PREFIX
-OUTPUT_PREFIX = config.PAGE_JSON_PREFIX
+# --- You can copy this function directly from the main recommendation_generator.py ---
+from .recommendation_generator import _generate_chart_data_uri, _get_all_price_histories
 
-# --- Updated Example (momentum-led tone preserved) ---
-_EXAMPLE_JSON_FOR_LLM = """
-{
-  "seo": {
-    "title": "Is Expedia Group (EXPE) Breaking Out Right Now? | ProfitScout",
-    "metaDescription": "AI-powered analysis signals a momentum-led BUY for Expedia Group (EXPE), with strong technicals, favorable news flow, and supportive earnings tone. Explore the full stock analysis.",
-    "keywords": ["Expedia Group stock", "EXPE stock analysis", "Is EXPE a buy", "AI stock signals 2025", "EXPE technicals"]
-  },
-  "teaser": {
-    "signal": "BUY",
-    "summary": "EXPE shows a momentum breakout supported by positive headlines and stable fundamentals.",
-    "metrics": {
-      "Price Trend": "Uptrend with higher highs",
-      "Volume Confirmation": "Above-average volume on advances",
-      "Guidance Tone": "Improving quarter over quarter"
-    }
-  },
-  "relatedStocks": ["BKNG", "ABNB", "TRIP"]
-}
+# --- Prompt Template and Example ---
+
+_EXAMPLE_OUTPUT_OPTIONS = """
+# Fifth Third Bancorp (FITB) 📊
+
+**BUY CALL** – Affordable OTM contract with strong liquidity and steady Greeks.
+
+**Quick take:** Momentum tilt favors upside; this contract offers leverage with controlled risk.
+
+### Contract Profile
+FITB 50C expiring 11/21/2025 (447 DTE). Strike = $50.00, premium ≈ $0.55.
+This contract shows high open interest and balanced Greeks, indicating tradable liquidity.
+
+### Key Highlights
+- ⚡ Momentum-led BUY rating aligns with this bullish contract setup.
+- 📈 Contract is 5.3% Out-of-the-Money, offering good leverage on a rally.
+- 💧 Solid open interest (581 contracts) ensures strong liquidity for trading.
+- ⚖️ Greeks show moderate delta (0.21) and contained daily theta decay (-$0.008).
+- 📈 Vega is positive, offering exposure if upside volatility expands.
+- ⚖️ Implied volatility is within a normal range; the option is not overly expensive.
+
+Overall: A liquid, moderately OTM call offering convex upside that is well-aligned with the underlying stock's bullish signal.
+
+💡 Share your feedback to refine our options analysis experience.
 """
 
-# --- Updated Prompt (aligns thresholds + momentum emphasis) ---
-_PROMPT_TEMPLATE = r"""
-You are an expert financial copywriter and SEO analyst. Your task is to generate a specific JSON object with compelling SEO metadata, a teaser summary, and related stocks based on the provided analysis.
+_PROMPT_TEMPLATE_OPTIONS = r"""
+You are a confident but approachable financial analyst writing AI-powered **options recommendations**.
+Your tone is clear, professional, and concise. Your goal is to give users clarity, not noise, for making smarter options trades.
 
-### Signal Policy (align with momentum-led framework)
-Use the `weighted_score` to set the final recommendation signal:
-- `weighted_score` > 0.62 → "BUY"
-- `weighted_score` between 0.44 and 0.62 → "HOLD"
-- `weighted_score` < 0.44 → "SELL"
+### Formatting Rules (Strict)
+- Use this layout and spacing exactly:
+  1) H1 line: "# {company_name} ({ticker}) [Emoji]"
+  2) Bold recommendation line: "**{signal} {option_type_upper}** – short one-liner."
+  3) A blank line, then "**Quick take:**" + 1–2 sentences summarizing the setup.
+  4) A blank line, then "### Contract Profile" + contract summary including DTE.
+  5) A blank line, then "### Key Highlights" followed by a bulleted list.
+  6) A blank line, then one sentence starting with "Overall: ..."
+  7) A blank line, then a single call-to-action line.
+- Each bullet in "Key Highlights" must start with an emoji (`⚡`, `📈`, `⚖️`, `💧`) and be a concise statement.
+- Total length should be under 200 words.
 
-### Momentum Emphasis
-- Treat this analysis as **momentum-led** (weights tilt toward Technicals + News).
-- Lead the teaser summary with momentum context (trend, breakouts, volume, breadth).
-- If momentum and fundamentals conflict, reflect that tension concisely in the summary.
-
-### Instructions
-1) **SEO Title** (60–70 chars)
-   - Frame as a question or bold, insightful statement.
-   - Must include full company name "{{company_name}}" and ticker "({{ticker}})".
-   - End with "| ProfitScout".
-
-2) **Teaser Section**
-   - `signal`: Use the signal from the policy above.
-   - `summary`: A sharp 1–2 sentence momentum-led outlook using the aggregated text.
-   - `metrics`: **Exactly 3** high-signal items. Prefer at least **one momentum indicator** (e.g., trend/breakout/volume/breadth/RSI/MA cross), plus 1–2 from earnings tone, guidance, or fundamentals.
-
-3) **Related Stocks**
-   - Infer **2–3** direct public competitor tickers from the "About" section in the aggregated text.
-
-4) **Format**
-   - Output **ONLY** the JSON object that matches the example structure exactly.
+### Content Instructions
+1.  **Recommendation**: Combine the `{signal}` and `{option_type_upper}`.
+2.  **Quick Take**: Link the stock signal to the option's attractiveness.
+3.  **Contract Profile**: Describe the contract with strike, type, expiry, DTE, and premium.
+4.  **Highlights**: Create 5-6 emoji-led bullets covering the signal, moneyness, liquidity, greeks, and implied volatility.
+5.  **Wrap-Up**: A single sentence summarizing why the option is a good fit.
 
 ### Input Data
 - **Ticker**: {ticker}
 - **Company Name**: {company_name}
-- **Current Year**: {year}
-- **Weighted Score**: {weighted_score}
-- **Full Aggregated Analysis (Text)**:
-{aggregated_text}
+- **Signal**: {signal}
+- **Option Type**: {option_type}
+- **Option Type Upper**: {option_type_upper}
+- **Expiration**: {expiration_date}
+- **DTE**: {dte}
+- **Moneyness**: {moneyness}
+- **Strike**: {strike}
+- **Last Price (premium)**: {last_price}
+- **Open Interest**: {open_interest}
+- **Implied Volatility**: {implied_volatility}
+- **Delta**: {delta}
+- **Theta**: {theta}
+- **Underlying Price**: {underlying_price}
+- **Options Score**: {options_score}
 
-### Example Output (Return ONLY this JSON structure)
-{example_json}
+### Example Output
+{example_output}
 """
 
-def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
-    """Splits aggregated_text into a dictionary of its component sections."""
-    sections = re.split(r'\n\n---\n\n', aggregated_text.strip())
-    section_dict = {}
-    for section in sections:
-        match = re.match(r'## (.*?) Analysis\n\n(.*)', section, re.DOTALL)
-        if match:
-            key = match.group(1).lower().replace(' ', '')
-            text = match.group(2).strip()
-            # --- THIS IS THE MODIFIED SECTION ---
-            key_map = {
-                "news": "newsSummary", 
-                "technicals": "technicals", 
-                "mda": "mdAndA",
-                "transcript": "earningsCall", 
-                "financials": "financials",
-                "fundamentals": "fundamentals" # <-- ADDED
-            }
-            final_key = key_map.get(key, key)
-            section_dict[final_key] = text
-        elif section.startswith("## About"):
-            section_dict["about"] = re.sub(r'## About\n\n', '', section).strip()
-    return section_dict
-
-def _get_data_from_bq(ticker: str, run_date: str) -> Optional[Dict]:
+def _get_options_work_list() -> pd.DataFrame:
     """
-    Fetches aggregated_text, weighted_score, and company_name for a specific ticker and date.
+    Fetches all of today's options candidates from BigQuery.
+    """
+    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    query = f"""
+        SELECT
+            c.*,
+            s.company_name
+        FROM `{config.OPTIONS_CANDIDATES_TABLE_ID}` AS c
+        JOIN (
+            SELECT ticker, company_name, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
+            FROM `{config.BUNDLER_STOCK_METADATA_TABLE_ID}`
+        ) AS s ON c.ticker = s.ticker AND s.rn = 1
+        WHERE c.fetch_date = CURRENT_DATE() AND c.options_score >= 0.7
+        ORDER BY c.ticker, c.options_score DESC
     """
     try:
-        client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-        query = f"""
-            SELECT
-                t1.aggregated_text,
-                t1.weighted_score,
-                t2.company_name
-            FROM `{config.SCORES_TABLE_ID}` AS t1
-            LEFT JOIN `{config.BUNDLER_STOCK_METADATA_TABLE_ID}` AS t2
-                ON t1.ticker = t2.ticker
-            WHERE t1.ticker = @ticker AND t1.run_date = @run_date
-            ORDER BY t2.quarter_end_date DESC
-            LIMIT 1
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
-                bigquery.ScalarQueryParameter("run_date", "DATE", run_date),
-            ]
+        df = client.query(query).to_dataframe()
+        return df
+    except Exception as e:
+        logging.critical(f"Failed to fetch options work list: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
+def _process_contract(contract_data: pd.Series, price_histories: dict):
+    """
+    Main worker function for a single option contract.
+    Generates one markdown file for the contract.
+    """
+    ticker = contract_data['ticker']
+    
+    try:
+        # ==============================================================================
+        # --- CONSOLIDATED VARIABLE CALCULATION TO PREVENT ALL KEYERRORS ---
+        # ==============================================================================
+        
+        # 1. Calculate DTE (Days to Expiration)
+        expiration_date = pd.to_datetime(contract_data.get('expiration_date'))
+        dte = (expiration_date - pd.Timestamp.now()).days if pd.notna(expiration_date) else 0
+
+        # 2. Create Uppercase Option Type
+        option_type = contract_data.get('option_type', '')
+        option_type_upper = option_type.upper() if option_type else ''
+
+        # 3. Calculate Moneyness
+        moneyness_str = "N/A"
+        strike = contract_data.get('strike', 0.0)
+        underlying_price = contract_data.get('underlying_price', 0.0)
+        
+        if pd.notna(underlying_price) and underlying_price > 0 and pd.notna(strike) and strike > 0:
+            if option_type == 'call':
+                moneyness_val = (strike / underlying_price - 1) * 100
+                moneyness_str = f"{moneyness_val:.1f}% Out-of-the-Money" if moneyness_val >= 0 else f"{-moneyness_val:.1f}% In-the-Money"
+            elif option_type == 'put':
+                moneyness_val = (underlying_price / strike - 1) * 100
+                moneyness_str = f"{moneyness_val:.1f}% Out-of-the-Money" if moneyness_val >= 0 else f"{-moneyness_val:.1f}% In-the-Money"
+
+        # ==============================================================================
+
+        prompt = _PROMPT_TEMPLATE_OPTIONS.format(
+            ticker=ticker,
+            company_name=contract_data.get('company_name', 'N/A'),
+            signal=contract_data.get('signal', 'N/A'),
+            option_type=option_type,
+            option_type_upper=option_type_upper,
+            expiration_date=expiration_date.strftime('%m/%d/%Y') if pd.notna(expiration_date) else 'N/A',
+            dte=dte,
+            moneyness=moneyness_str,
+            strike=strike,
+            last_price=contract_data.get('last_price', 0.0),
+            open_interest=contract_data.get('open_interest', 0),
+            implied_volatility=contract_data.get('implied_volatility', 0.0),
+            delta=contract_data.get('delta', 0.0),
+            theta=contract_data.get('theta', 0.0),
+            underlying_price=underlying_price,
+            options_score=contract_data.get('options_score', 0.0),
+            example_output=_EXAMPLE_OUTPUT_OPTIONS
         )
-        df = client.query(query, job_config=job_config).to_dataframe()
-        return df.to_dict('records')[0] if not df.empty else None
-    except Exception as e:
-        logging.error(f"[{ticker}] Failed to fetch BQ data for {run_date}: {e}", exc_info=True)
-        return None
-
-
-def process_blob(blob_name: str) -> Optional[str]:
-    """
-    Processes one recommendation blob to generate a page JSON.
-    """
-    dated_format_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$')
-    file_name = os.path.basename(blob_name)
-    match = dated_format_regex.match(file_name)
-    if not match:
-        return None
-    
-    ticker, run_date_str = match.groups()
-    
-    bq_data = _get_data_from_bq(ticker, run_date_str)
-    if not bq_data or not bq_data.get("company_name"):
-        logging.error(f"[{ticker}] Could not find BQ data or company name for {run_date_str}.")
-        return None
-
-    aggregated_text = bq_data.get("aggregated_text")
-    weighted_score = bq_data.get("weighted_score")
-    company_name = bq_data.get("company_name")
-
-    full_analysis_sections = _split_aggregated_text(aggregated_text)
-    
-    bullish_score = round((weighted_score - 0.5) * 20, 2) if weighted_score is not None else 0.0
-
-    final_json = {
-        "symbol": ticker,
-        "date": run_date_str,
-        "bullishScore": bullish_score,
-        "fullAnalysis": full_analysis_sections
-    }
-
-    prompt = _PROMPT_TEMPLATE.format(
-        ticker=ticker,
-        company_name=company_name,
-        year=date.today().year,
-        weighted_score=round(weighted_score, 4),
-        aggregated_text=aggregated_text,
-        example_json=_EXAMPLE_JSON_FOR_LLM,
-    )
-
-    json_blob_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date_str}.json"
-    logging.info(f"[{ticker}] Generating SEO/Teaser JSON for {run_date_str}.")
-    
-    try:
-        llm_response_str = vertex_ai.generate(prompt)
         
-        if llm_response_str.strip().startswith("```json"):
-            llm_response_str = re.search(r'\{.*\}', llm_response_str, re.DOTALL).group(0)
-
-        llm_generated_data = json.loads(llm_response_str)
-        final_json.update(llm_generated_data)
-
-        gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(final_json, indent=2), "application/json")
-        logging.info(f"[{ticker}] Successfully uploaded complete JSON file to {json_blob_path}")
-        return json_blob_path
+        recommendation_text = vertex_ai.generate(prompt)
         
-    except (json.JSONDecodeError, ValueError, AttributeError) as e:
-        logging.error(f"[{ticker}] Failed to generate/parse LLM JSON. Error: {e}. Response: '{llm_response_str}'")
-        return None
-    except Exception as e:
-        logging.error(f"[{ticker}] An unexpected error occurred: {e}", exc_info=True)
-        return None
+        ticker_price_df = price_histories.get(ticker)
+        chart_data_uri = _generate_chart_data_uri(ticker, ticker_price_df)
+        
+        final_md = recommendation_text
+        if chart_data_uri:
+            chart_md = (
+                f'\n\n---\n\n### 90-Day Underlying Price Performance\n'
+                f'<img src="{chart_data_uri}" alt="{ticker} price chart"/>'
+            )
+            final_md += chart_md
+            
+        today_str = date.today().strftime('%Y-%m-%d')
+        contract_symbol = contract_data.get('contract_symbol', '').replace(':', '_')
+        md_blob_path = f"{config.OPTIONS_MD_PREFIX}{ticker}/{contract_symbol}_{today_str}.md"
+        gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, final_md, "text/markdown")
+        
+        logging.info(f"[{ticker}] Successfully generated recommendation for {contract_symbol}")
+        return md_blob_path
 
+    except Exception as e:
+        logging.error(f"[{ticker}] Failed during options recommendation generation: {e}", exc_info=True)
+        return None
 
 def run_pipeline():
-    """Finds recommendation files that are missing a page and processes them."""
-    logging.info("--- Starting Page Generation Pipeline ---")
+    """Main pipeline for options recommendation generation."""
+    logging.info("--- Starting Single-Contract Options Recommendation Pipeline ---")
     
-    all_recommendations = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-    all_pages = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX))
-    
-    work_items = []
-    dated_format_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$')
-
-    for rec_path in all_recommendations:
-        file_name = os.path.basename(rec_path)
-        match = dated_format_regex.match(file_name)
-        if not match: continue
-            
-        ticker, run_date_str = match.groups()
-        expected_page_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date_str}.json"
-
-        if expected_page_path not in all_pages:
-            work_items.append(rec_path)
-
-    if not work_items:
-        logging.info("All recommendations have a corresponding page JSON.")
+    work_df = _get_options_work_list()
+    if work_df.empty:
+        logging.warning("No options candidates found for today. Exiting.")
         return
 
-    logging.info(f"Found {len(work_items)} new recommendations to process into pages.")
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_RECOMMENDER) as executor:
-        futures = [executor.submit(process_blob, item) for item in work_items]
-        count = sum(1 for future in as_completed(futures) if future.result())
+    tickers_to_process = work_df['ticker'].unique().tolist()
+    price_histories = _get_all_price_histories(tickers_to_process)
     
-    logging.info(f"--- Page Generation Pipeline Finished. Processed {count} new pages. ---")
+    work_items = [row for index, row in work_df.iterrows()]
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_process_contract, item, price_histories) for item in work_items]
+        count = sum(1 for future in as_completed(futures) if future.result())
+                
+    logging.info(f"--- Options Recommendation Pipeline Finished. Processed {count} individual contracts. ---")

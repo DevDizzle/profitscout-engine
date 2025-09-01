@@ -9,6 +9,9 @@ from ..clients.polygon_client import PolygonClient
 
 OPTIONS_TABLE = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_chain"
 
+BUY_THRESHOLD = 0.62
+SELL_THRESHOLD = 0.44
+
 
 def _truncate_options_chain(bq_client: bigquery.Client):
     """Remove ALL previous rows so only today's snapshot remains."""
@@ -18,36 +21,50 @@ def _truncate_options_chain(bq_client: bigquery.Client):
     logging.info("Truncated %s", OPTIONS_TABLE)
 
 
-def _get_buy_universe(client: bigquery.Client) -> pd.DataFrame:
+def _get_buy_sell_universe(client: bigquery.Client) -> pd.DataFrame:
     """
-    Selects ALL tickers for the most recent run_date where weighted_score > 0.62.
+    Select ALL tickers for the most recent run_date where:
+      - BUY  if weighted_score >  BUY_THRESHOLD
+      - SELL if weighted_score <  SELL_THRESHOLD
+    Emits: ticker, signal ('BUY' or 'SELL'), weighted_score, run_date
     """
     q = f"""
     WITH latest_run AS (
       SELECT MAX(run_date) AS run_date
       FROM `{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.analysis_scores`
       WHERE weighted_score IS NOT NULL
+    ),
+    latest AS (
+      SELECT s.ticker, s.weighted_score, r.run_date
+      FROM `{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.analysis_scores` AS s
+      JOIN latest_run AS r ON s.run_date = r.run_date
+      WHERE s.weighted_score IS NOT NULL
+    ),
+    buys AS (
+      SELECT ticker, 'BUY' AS signal, weighted_score, run_date
+      FROM latest
+      WHERE weighted_score > {BUY_THRESHOLD}
+    ),
+    sells AS (
+      SELECT ticker, 'SELL' AS signal, weighted_score, run_date
+      FROM latest
+      WHERE weighted_score < {SELL_THRESHOLD}
     )
-    SELECT
-      s.ticker,
-      'BUY' AS signal,
-      s.weighted_score,
-      s.run_date
-    FROM `{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.analysis_scores` AS s
-    JOIN latest_run r
-      ON s.run_date = r.run_date
-    WHERE s.weighted_score > 0.62
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY s.ticker ORDER BY s.weighted_score DESC) = 1
+    SELECT * FROM buys
+    UNION ALL
+    SELECT * FROM sells
     """
     df = client.query(q).to_dataframe()
     if not df.empty:
         used = df["run_date"].iloc[0]
+        n_buy = (df["signal"] == "BUY").sum()
+        n_sell = (df["signal"] == "SELL").sum()
         logging.info(
-            "Using latest run_date=%s; selected %d tickers with weighted_score > 0.62",
-            used, len(df),
+            "Using latest run_date=%s; selected %d BUY and %d SELL tickers",
+            used, n_buy, n_sell,
         )
     else:
-        logging.warning("No tickers above threshold found for latest run_date.")
+        logging.warning("No BUY/SELL tickers found for latest run_date.")
     return df
 
 
@@ -128,8 +145,9 @@ def _fetch_and_load_chain_for_ticker(
     client: PolygonClient, bq_client: bigquery.Client, ticker: str, signal: str
 ):
     """
-    Fetch Polygon option chain (≤90d) for ticker, keep CALLs only (BUY universe),
-    then append to BigQuery.
+    Fetch Polygon option chain (≤90d) for ticker, filter by direction, then append to BigQuery.
+      - BUY  => keep CALLs
+      - SELL => keep PUTs
     """
     today = date.today()
     logging.info("[%s] Fetching Polygon chain (≤90d).", ticker)
@@ -140,14 +158,13 @@ def _fetch_and_load_chain_for_ticker(
 
     df = _coerce_and_align(pd.DataFrame(raw), ticker, today)
 
-    # Only BUY universe => CALLs
-    desired = "call"
+    desired = "call" if signal == "BUY" else "put"
     before = len(df)
     df = df[df["option_type"] == desired]
     logging.info("[%s] Direction=%s; kept %d/%d contracts.", ticker, desired.upper(), len(df), before)
 
     if df.empty:
-        logging.info("[%s] Nothing to load after direction filter.", ticker)
+        logging.info("[%s] Nothing to load after %s filter.", ticker, desired.upper())
         return
 
     logging.info("[%s] Loading %d contracts into %s", ticker, len(df), OPTIONS_TABLE)
@@ -159,17 +176,20 @@ def _fetch_and_load_chain_for_ticker(
 
 def run_pipeline(polygon_client: PolygonClient | None = None, bq_client: bigquery.Client | None = None):
     """
-    Main entry: TRUNCATE table, select latest-run tickers with weighted_score > 0.62,
-    fetch Polygon chains (≤90d), keep CALLs only, and load today's rows.
+    Main entry:
+      - TRUNCATE table (keep only today's snapshot)
+      - Build BUY+SELL universe from latest run_date
+      - Fetch Polygon chains (≤90d)
+      - Filter CALLs for BUY and PUTs for SELL
+      - Append to BigQuery
     """
     logging.info("--- Starting Options Chain Fetcher (Polygon) ---")
     bq_client = bq_client or bigquery.Client(project=config.PROJECT_ID)
     polygon_client = polygon_client or PolygonClient(api_key=config.POLYGON_API_KEY)
 
-    # Remove ALL previous rows; we only keep today's snapshot.
     _truncate_options_chain(bq_client)
 
-    work = _get_buy_universe(bq_client)
+    work = _get_buy_sell_universe(bq_client)
     if work.empty:
         logging.warning("No tickers identified. Exiting.")
         return

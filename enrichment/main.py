@@ -1,3 +1,4 @@
+# enrichment/main.py
 import logging
 import functions_framework
 from core.pipelines import (
@@ -11,7 +12,7 @@ from core.pipelines import (
     news_fetcher, 
     business_summarizer,
     fundamentals_analyzer,
-    options_candidate_selector as candidate_selector_pipeline,  # <-- added
+    options_candidate_selector as candidate_selector_pipeline,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -69,7 +70,7 @@ def run_business_summarizer(request):
 
 # --- NEW: Options candidate selector (no LLM here) ---
 @functions_framework.http
-def candidate_selector(request):
+def run_options_candidate_selector(request):
     """Programmatic options top-5 CALL/PUT selector."""
     candidate_selector_pipeline.run_pipeline()
     return "Options candidate selector pipeline finished.", 200

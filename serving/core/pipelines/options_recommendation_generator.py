@@ -1,126 +1,210 @@
 # serving/core/pipelines/options_recommendation_generator.py
 import logging
-import re
-from datetime import date
-from typing import Dict, List
-
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import bigquery
+from datetime import date
 
 from .. import config, gcs
 from ..clients import vertex_ai
 
-PROJECT = config.SOURCE_PROJECT_ID if hasattr(config, "SOURCE_PROJECT_ID") else config.PROJECT_ID
-DATASET = config.BIGQUERY_DATASET
-CAND_TABLE = f"{PROJECT}.{DATASET}.options_candidates"
+# --- You can copy this function directly from the main recommendation_generator.py ---
+from .recommendation_generator import _generate_chart_data_uri, _get_all_price_histories
 
-# Where to write MD artifacts (add this in config.py if you want a dedicated prefix)
-OPTIONS_MD_PREFIX = getattr(config, "OPTIONS_MD_PREFIX", "options-recos/")
+# --- Prompt Template and Example ---
 
-_PROMPT = r"""
-You are an options analyst writing a short, momentum-led options note.
+_EXAMPLE_OUTPUT_OPTIONS = """
+# Fifth Third Bancorp (FITB) 📊
 
-Write clean, concise Markdown. Keep to ≤ 220 words total. No tables.
+**BUY CALL** – Affordable OTM contract with strong liquidity and steady Greeks.
 
-### Formatting (strict)
-- H1: "# {company} ({ticker}) – Options Pick"
-- Next line: "**Signal:** {signal}"
-- Then: "**Quick take:**" 1–2 sentences.
-- "### Selection Criteria" bullet points (4–6 bullets) covering liquidity (spread, OI/volume), moneyness (5–10% OTM aligned with direction), Greeks (moderate |Delta|, responsive Gamma, lower Theta), and IV context.
-- "### Finalists (Top 5)" bullets: one line per contract "SYMBOL – STRIKE {type} exp {expiry} | Score={score:.3f}, Δ={delta:.2f}, Γ={gamma:.2f}, Θ={theta:.2f}, IV={iv:.1f}%, OI={oi}, Vol={vol}, Spread={spread:.1%}"
-- "### Why these?" 1–2 bullets tying momentum intent to the above metrics.
+**Quick take:** Momentum tilt favors upside; this contract offers leverage with controlled risk.
 
-### Inputs
-Ticker: {ticker}
-Signal: {signal}
-Company: {company}
+### Contract Profile
+FITB 50C expiring 11/21/2025 (447 DTE). Strike = $50.00, premium ≈ $0.55.
+This contract shows high open interest and balanced Greeks, indicating tradable liquidity.
 
-Candidates (top-5, pre-filtered & scored):
-{candidates}
+### Key Highlights
+- ⚡ Momentum-led BUY rating aligns with this bullish contract setup.
+- 📈 Contract is 5.3% Out-of-the-Money, offering good leverage on a rally.
+- 💧 Solid open interest (581 contracts) ensures strong liquidity for trading.
+- ⚖️ Greeks show moderate delta (0.21) and contained daily theta decay (-$0.008).
+- 📈 Vega is positive, offering exposure if upside volatility expands.
+- ⚖️ Implied volatility is within a normal range; the option is not overly expensive.
 
-Guidelines:
-- Favor liquidity (tight spreads, higher OI/volume). 
-- Prefer moderate |Delta| and higher Gamma for responsiveness; penalize high Theta.
-- Avoid very high IV percentile when available.
-- Do NOT invent data; only use what’s shown.
-- Do NOT include calls to action.
-- Keep it readable and skimmable.
+Overall: A liquid, moderately OTM call offering convex upside that is well-aligned with the underlying stock's bullish signal.
+
+💡 Share your feedback to refine our options analysis experience.
 """
 
-def _fetch_work(bq: bigquery.Client) -> pd.DataFrame:
-    q = f"""
-    SELECT *
-    FROM `{CAND_TABLE}`
-    WHERE fetch_date = CURRENT_DATE("America/New_York")
-    ORDER BY ticker, signal, rn
-    """
-    return bq.query(q).to_dataframe()
+_PROMPT_TEMPLATE_OPTIONS = r"""
+You are a confident but approachable financial analyst writing AI-powered **options recommendations**.
+Your tone is clear, professional, and concise. Your goal is to give users clarity, not noise, for making smarter options trades.
 
-def _format_candidates_block(df: pd.DataFrame) -> str:
-    rows: List[str] = []
-    for _, r in df.iterrows():
-        spread = (r["ask"] - r["bid"]) / ((r["bid"] + r["ask"]) / 2) if (r["bid"] + r["ask"]) else None
-        rows.append(
-            f"- {r['contract_symbol']} – {r['strike']:.2f} {r['option_type']} exp {r['expiration_date']} | "
-            f"Score={r['options_score']:.3f}, Δ={r['delta']:.2f}, Γ={r['gamma']:.2f}, Θ={r['theta']:.2f}, "
-            f"IV={r['implied_volatility']:.1f}%, OI={int(r['open_interest'])}, Vol={int(r['volume'])}"
-            + (f", Spread={spread:.1%}" if spread is not None else "")
+### Formatting Rules (Strict)
+- Use this layout and spacing exactly:
+  1) H1 line: "# {company_name} ({ticker}) [Emoji]"
+  2) Bold recommendation line: "**{signal} {option_type_upper}** – short one-liner."
+  3) A blank line, then "**Quick take:**" + 1–2 sentences summarizing the setup.
+  4) A blank line, then "### Contract Profile" + contract summary including DTE.
+  5) A blank line, then "### Key Highlights" followed by a bulleted list.
+  6) A blank line, then one sentence starting with "Overall: ..."
+  7) A blank line, then a single call-to-action line.
+- Each bullet in "Key Highlights" must start with an emoji (`⚡`, `📈`, `⚖️`, `💧`) and be a concise statement.
+- Total length should be under 200 words.
+
+### Content Instructions
+1.  **Recommendation**: Combine the `{signal}` and `{option_type_upper}`.
+2.  **Quick Take**: Link the stock signal to the option's attractiveness.
+3.  **Contract Profile**: Describe the contract with strike, type, expiry, DTE, and premium.
+4.  **Highlights**: Create 5-6 emoji-led bullets covering the signal, moneyness, liquidity, greeks, and implied volatility.
+5.  **Wrap-Up**: A single sentence summarizing why the option is a good fit.
+
+### Input Data
+- **Ticker**: {ticker}
+- **Company Name**: {company_name}
+- **Signal**: {signal}
+- **Option Type**: {option_type}
+- **Option Type Upper**: {option_type_upper}
+- **Expiration**: {expiration_date}
+- **DTE**: {dte}
+- **Moneyness**: {moneyness}
+- **Strike**: {strike}
+- **Last Price (premium)**: {last_price}
+- **Open Interest**: {open_interest}
+- **Implied Volatility**: {implied_volatility}
+- **Delta**: {delta}
+- **Theta**: {theta}
+- **Underlying Price**: {underlying_price}
+- **Options Score**: {options_score}
+
+### Example Output
+{example_output}
+"""
+
+def _get_options_work_list() -> pd.DataFrame:
+    """
+    Fetches all of today's options candidates from BigQuery.
+    """
+    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    query = f"""
+        SELECT
+            c.*,
+            s.company_name
+        FROM `{config.OPTIONS_CANDIDATES_TABLE_ID}` AS c
+        JOIN (
+            SELECT ticker, company_name, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
+            FROM `{config.BUNDLER_STOCK_METADATA_TABLE_ID}`
+        ) AS s ON c.ticker = s.ticker AND s.rn = 1
+        WHERE c.fetch_date = CURRENT_DATE() AND c.options_score >= 0.5
+        ORDER BY c.ticker, c.options_score DESC
+    """
+    try:
+        df = client.query(query).to_dataframe()
+        return df
+    except Exception as e:
+        logging.critical(f"Failed to fetch options work list: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
+def _process_contract(contract_data: pd.Series, price_histories: dict):
+    """
+    Main worker function for a single option contract.
+    Generates one markdown file for the contract with a clean, unique name.
+    """
+    ticker = contract_data['ticker']
+    
+    try:
+        # --- Consolidated variable calculation to prevent all KeyErrors ---
+        expiration_date = pd.to_datetime(contract_data.get('expiration_date'))
+        dte = (expiration_date - pd.Timestamp.now()).days if pd.notna(expiration_date) else 0
+        
+        option_type = contract_data.get('option_type', '')
+        option_type_upper = option_type.upper() if option_type else ''
+
+        moneyness_str = "N/A"
+        strike = contract_data.get('strike', 0.0)
+        underlying_price = contract_data.get('underlying_price', 0.0)
+        
+        if pd.notna(underlying_price) and underlying_price > 0 and pd.notna(strike) and strike > 0:
+            if option_type == 'call':
+                moneyness_val = (strike / underlying_price - 1) * 100
+                moneyness_str = f"{moneyness_val:.1f}% Out-of-the-Money" if moneyness_val >= 0 else f"{-moneyness_val:.1f}% In-the-Money"
+            elif option_type == 'put':
+                moneyness_val = (underlying_price / strike - 1) * 100
+                moneyness_str = f"{moneyness_val:.1f}% Out-of-the-Money" if moneyness_val >= 0 else f"{-moneyness_val:.1f}% In-the-Money"
+        
+        # --- Final prompt formatting ---
+        prompt = _PROMPT_TEMPLATE_OPTIONS.format(
+            ticker=ticker,
+            company_name=contract_data.get('company_name', 'N/A'),
+            signal=contract_data.get('signal', 'N/A'),
+            option_type=option_type,
+            option_type_upper=option_type_upper,
+            expiration_date=expiration_date.strftime('%m/%d/%Y') if pd.notna(expiration_date) else 'N/A',
+            dte=dte,
+            moneyness=moneyness_str,
+            strike=strike,
+            last_price=contract_data.get('last_price', 0.0),
+            open_interest=contract_data.get('open_interest', 0),
+            implied_volatility=contract_data.get('implied_volatility', 0.0),
+            delta=contract_data.get('delta', 0.0),
+            theta=contract_data.get('theta', 0.0),
+            underlying_price=underlying_price,
+            options_score=contract_data.get('options_score', 0.0),
+            example_output=_EXAMPLE_OUTPUT_OPTIONS # <-- Re-added this key
         )
-    return "\n".join(rows)
+        
+        recommendation_text = vertex_ai.generate(prompt)
+        
+        ticker_price_df = price_histories.get(ticker)
+        chart_data_uri = _generate_chart_data_uri(ticker, ticker_price_df)
+        
+        final_md = recommendation_text
+        if chart_data_uri:
+            chart_md = (
+                f'\n\n---\n\n### 90-Day Underlying Price Performance\n'
+                f'<img src="{chart_data_uri}" alt="{ticker} price chart"/>'
+            )
+            final_md += chart_md
+            
+        # --- Clean Filename Logic ---
+        exp_date_str = expiration_date.strftime('%Y-%m-%d') if pd.notna(expiration_date) else 'NODATE'
+        clean_filename = f"{ticker}_{strike}_{option_type_upper}_{exp_date_str}.md"
+        md_blob_path = f"{config.OPTIONS_MD_PREFIX}{clean_filename}"
+        # --- End Clean Filename Logic ---
 
-def _company_name_for_ticker(bq: bigquery.Client, ticker: str) -> str:
-    # Try your metadata table if available; otherwise fallback to ticker.
-    table_id = getattr(config, "BUNDLER_STOCK_METADATA_TABLE_ID", None)
-    if not table_id:
-        return ticker
-    q = f"""
-    WITH Latest AS (
-      SELECT ticker, company_name, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY quarter_end_date DESC) rn
-      FROM `{table_id}`
-    )
-    SELECT company_name FROM Latest WHERE ticker=@t AND rn=1
-    """
-    df = bq.query(q, job_config=bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", ticker)]
-    )).to_dataframe()
-    return df["company_name"].iloc[0] if not df.empty else ticker
+        gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, final_md, "text/markdown")
+        
+        logging.info(f"[{ticker}] Successfully generated recommendation: {md_blob_path}")
+        return md_blob_path
 
-def _render_one(bq: bigquery.Client, ticker: str, signal: str, group: pd.DataFrame) -> str:
-    company = _company_name_for_ticker(bq, ticker)
-    cblock = _format_candidates_block(group)
-    prompt = _PROMPT.format(
-        company=company,
-        ticker=ticker,
-        signal=signal,
-        candidates=cblock
-    )
-    md = vertex_ai.generate(prompt)
-    # Keep only markdown-like content
-    md = md.strip()
-    return md
+    except Exception as e:
+        logging.error(f"[{ticker}] Failed during options recommendation generation: {e}", exc_info=True)
+        return None
 
-def _write_md(ticker: str, md: str):
-    today_str = date.today().strftime("%Y-%m-%d")
-    blob_path = f"{OPTIONS_MD_PREFIX}{ticker}_options_{today_str}.md"
-    gcs.write_text(config.GCS_BUCKET_NAME, blob_path, md, "text/markdown")
-    logging.info("[%s] wrote %s", ticker, blob_path)
-    return blob_path
+def run_pipeline():
+    """Main pipeline for generating single-contract options recommendations."""
+    
+    # --- Daily Cleanup Step ---
+    logging.info(f"Starting daily cleanup of {config.OPTIONS_MD_PREFIX} folder...")
+    gcs.delete_folder_contents(config.GCS_BUCKET_NAME, config.OPTIONS_MD_PREFIX)
+    # --- End Daily Cleanup Step ---
 
-def run_pipeline(bq_client: bigquery.Client | None = None):
-    logging.info("--- Starting Options Options Explainer (serving) ---")
-    bq = bq_client or bigquery.Client(project=PROJECT)
-
-    df = _fetch_work(bq)
-    if df.empty:
-        logging.warning("No candidates found for today; aborting.")
+    logging.info("--- Starting Single-Contract Options Recommendation Pipeline ---")
+    
+    work_df = _get_options_work_list()
+    if work_df.empty:
+        logging.warning("No options candidates found for today. Exiting.")
         return
 
-    # process per (ticker, signal)
-    for (ticker, signal), group in df.groupby(["ticker", "signal"]):
-        try:
-            md = _render_one(bq, ticker, signal, group)
-            _write_md(ticker, md)
-        except Exception as e:
-            logging.error("[%s/%s] rendering failed: %s", ticker, signal, e, exc_info=True)
-
-    logging.info("--- Options Options Explainer Finished ---")
+    tickers_to_process = work_df['ticker'].unique().tolist()
+    price_histories = _get_all_price_histories(tickers_to_process)
+    
+    work_items = [row for index, row in work_df.iterrows()]
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_process_contract, item, price_histories) for item in work_items]
+        count = sum(1 for future in as_completed(futures) if future.result())
+                
+    logging.info(f"--- Options Recommendation Pipeline Finished. Processed {count} individual contracts. ---")

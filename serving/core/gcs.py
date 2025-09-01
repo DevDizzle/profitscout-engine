@@ -67,3 +67,19 @@ def get_tickers() -> list[str]:
     except Exception as e:
         logging.error(f"Failed to load tickers from GCS: {e}")
         return []
+
+def delete_folder_contents(bucket_name: str, prefix: str):
+    """Deletes all blobs within a specified folder (prefix) in a GCS bucket."""
+    client = _client()
+    bucket = client.bucket(bucket_name)
+    blobs = bucket.list_blobs(prefix=prefix)
+    
+    deleted_count = 0
+    for blob in blobs:
+        blob.delete()
+        deleted_count += 1
+    
+    if deleted_count > 0:
+        logging.info(f"Deleted {deleted_count} old files from gs://{bucket_name}/{prefix}")
+    else:
+        logging.info(f"No old files found in gs://{bucket_name}/{prefix} to delete.")
