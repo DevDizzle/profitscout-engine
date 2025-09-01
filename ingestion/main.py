@@ -1,10 +1,13 @@
 # ingestion/main.py
 import logging
+import os
 import functions_framework
 from google.cloud import storage, bigquery, pubsub_v1
+
 from core import config
 from core.clients.fmp_client import FMPClient
 from core.clients.sec_api_client import SecApiClient
+from core.clients.polygon_client import PolygonClient
 from core.pipelines import (
     fundamentals,
     price_updater,
@@ -14,28 +17,34 @@ from core.pipelines import (
     technicals_collector,
     transcript_collector,
     refresh_stock_metadata,
+    options_chain_fetcher,  # NEW
 )
 
 # --- Global Initialization (Shared Across Functions) ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def _get_api_key(secret_name: str) -> str | None:
-    """Helper to read any secret from the mounted path."""
-    secret_path = f"/secrets/{secret_name}"
+def _get_secret_or_env(name: str) -> str | None:
+    """
+    Prefer environment variables (works with --set-secrets). Fall back to
+    reading /secrets/<NAME> only if mounted. Return None if not available.
+    """
+    val = os.environ.get(name)
+    if val:
+        return val
     try:
-        with open(secret_path, "r") as f:
+        with open(f"/secrets/{name}", "r") as f:
             return f.read().strip()
-    except (IOError, FileNotFoundError) as e:
-        logging.critical(f"Could not read secret '{secret_name}': {e}")
+    except Exception:
         return None
 
-# Initialize clients once for all functions to use
+# Initialize shared clients once
 storage_client = storage.Client(project=config.PROJECT_ID)
 bq_client = bigquery.Client(project=config.PROJECT_ID)
 publisher_client = pubsub_v1.PublisherClient()
 
-fmp_api_key = _get_api_key(config.FMP_API_KEY_SECRET)
-sec_api_key = _get_api_key(config.SEC_API_KEY_SECRET)
+# Optional secrets for existing pipelines (don't crash if missing)
+fmp_api_key = _get_secret_or_env(config.FMP_API_KEY_SECRET)
+sec_api_key = _get_secret_or_env(config.SEC_API_KEY_SECRET)
 
 fmp_client = FMPClient(api_key=fmp_api_key) if fmp_api_key else None
 sec_api_client = SecApiClient(api_key=sec_api_key) if sec_api_key else None
@@ -86,10 +95,10 @@ def populate_price_data(request):
 def refresh_technicals(request):
     """Entry point for the technicals collector pipeline."""
     if not all([storage_client, bq_client]):
-         return "Server config error: technicals collector clients not initialized.", 500
+        return "Server config error: technicals collector clients not initialized.", 500
     technicals_collector.run_pipeline(storage_client, bq_client)
     return "Technicals collector pipeline started.", 202
-    
+
 @functions_framework.http
 def refresh_stock_metadata_http(request):
     """HTTP-triggered entry point for stock metadata refresh."""
@@ -105,3 +114,22 @@ def refresh_transcripts(cloud_event):
         raise ConnectionError("Server config error: transcript clients not initialized.")
     transcript_collector.run_pipeline(fmp_client, bq_client, storage_client)
     return "Transcript collection pipeline finished successfully.", 200
+
+# --- NEW: Options Chain (Polygon) HTTP entry point ---
+@functions_framework.http
+def fetch_options_chain(request):
+    """
+    Entry point for the options chain fetcher.
+    Uses Polygon snapshot API to retrieve ≤90d options chains for top/bottom 10 tickers,
+    then loads normalized rows into BigQuery profit_scout.options_chain.
+    """
+    api_key = os.environ.get("POLYGON_API_KEY")
+    if not api_key:
+        return "POLYGON_API_KEY not set", 500
+
+    if not bq_client:
+        return "Server config error: BigQuery client not initialized.", 500
+
+    polygon_client = PolygonClient(api_key=api_key)
+    options_chain_fetcher.run_pipeline(polygon_client=polygon_client, bq_client=bq_client)
+    return "Options chain fetch started.", 202
