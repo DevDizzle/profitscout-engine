@@ -3,11 +3,9 @@ import logging
 import os
 import functions_framework
 from google.cloud import storage, bigquery, pubsub_v1
-
 from core import config
 from core.clients.fmp_client import FMPClient
 from core.clients.sec_api_client import SecApiClient
-from core.clients.polygon_client import PolygonClient
 from core.pipelines import (
     fundamentals,
     price_updater,
@@ -17,7 +15,6 @@ from core.pipelines import (
     technicals_collector,
     transcript_collector,
     refresh_stock_metadata,
-    options_chain_fetcher,  
 )
 
 # --- Global Initialization (Shared Across Functions) ---
@@ -114,22 +111,3 @@ def refresh_transcripts(cloud_event):
         raise ConnectionError("Server config error: transcript clients not initialized.")
     transcript_collector.run_pipeline(fmp_client, bq_client, storage_client)
     return "Transcript collection pipeline finished successfully.", 200
-
-# --- NEW: Options Chain (Polygon) HTTP entry point ---
-@functions_framework.http
-def fetch_options_chain(request):
-    """
-    Entry point for the options chain fetcher.
-    Uses Polygon snapshot API to retrieve ≤90d options chains for top/bottom 10 tickers,
-    then loads normalized rows into BigQuery profit_scout.options_chain.
-    """
-    api_key = os.environ.get("POLYGON_API_KEY")
-    if not api_key:
-        return "POLYGON_API_KEY not set", 500
-
-    if not bq_client:
-        return "Server config error: BigQuery client not initialized.", 500
-
-    polygon_client = PolygonClient(api_key=api_key)
-    options_chain_fetcher.run_pipeline(polygon_client=polygon_client, bq_client=bq_client)
-    return "Options chain fetch started.", 202
