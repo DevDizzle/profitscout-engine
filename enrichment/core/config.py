@@ -19,7 +19,7 @@ TOP_P = float(os.getenv("TOP_P", "0.95"))
 TOP_K = int(os.getenv("TOP_K", "30"))
 SEED = int(os.getenv("SEED", "42"))
 CANDIDATE_COUNT = int(os.getenv("CANDIDATE_COUNT", "1"))
-MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
 
 # --- Cloud Storage Prefixes ---
 PREFIXES = {

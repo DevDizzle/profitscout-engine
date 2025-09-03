@@ -1,6 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from core import config, gcs
+from .. import config, gcs
 from ..clients import vertex_ai
 import os
 import re
@@ -8,15 +8,15 @@ import re
 INPUT_PREFIX = config.PREFIXES["financials_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["financials_analyzer"]["output"]
 
-# One-shot example for consistent output format
+# --- MODIFIED: A more concise one-shot example ---
 _EXAMPLE_OUTPUT = """{
-  "score": 0.55,
-  "analysis": "AAON's financial performance presents a mixed picture. Revenue has fluctuated but generally shows an upward trend from Q1 2024 (262.1M) to Q2 2025 (311.6M), although Q1 2025 was slightly higher (322.1M). Gross profit margins experienced volatility, peaking in Q2 & Q3 2024, then experiencing a decline. Net income followed a similar pattern, with a high in Q3 2024 (52.6M) and a drop to 15.5M in Q2 2025. Operating cash flow is highly variable, swinging from positive to negative values, with a concerningly negative value in Q2 2025 (-23.2M). Free cash flow mirrors this volatility, with a large negative value in Q2 2025 (-59M). The balance sheet reveals increasing receivables and inventory, which could signal potential issues with sales conversion or inventory management. Total debt increased significantly from Q1 2024 (17.2M) to Q2 2025 (352M) which is a substantial increase in leverage. Cash levels remain low, impacting the net debt position. Overall, while revenue has generally increased, profitability and cash flow have been inconsistent. The rising debt and fluctuating cash flows warrant careful monitoring. The current assets have increased, but not as fast as the revenue growth. The increasing debt load and negative cash flow in the most recent quarter raise concerns about the company's financial stability and ability to sustain growth in the near term, indicating moderately bullish sentiment may be too aggressive."
+  "score": 0.45,
+  "analysis": "AAON's financials present a mixed outlook. While revenue is trending upwards, profitability and margins have been volatile. A key concern is the highly variable and recently negative operating and free cash flow. The balance sheet is weakening due to a substantial increase in total debt and rising inventory levels, suggesting potential leverage and sales conversion issues. Despite top-line growth, inconsistent cash flow and a heavier debt load raise questions about the company's near-term financial stability."
 }"""
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
-    pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
+    pattern = re.compile(r"([A-Z.]+)_(\\d{4}-\\d{2}-\\d{2})\\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return (match.group(1), match.group(2)) if match else (None, None)
 
@@ -33,38 +33,36 @@ def process_blob(blob_name: str):
     if not content:
         return None
     
-    prompt = r"""You are a seasoned financial analyst evaluating a company’s **quarterly financial data** to assess overall health and growth trajectory over the next 6-12 months.
-Use **only** the JSON provided — do **not** use external data or assumptions.
+    # --- MODIFIED: Updated prompt for a shorter, more direct analysis ---
+    prompt = r"""You are a sharp financial analyst writing for a fast-paced audience. Evaluate the provided quarterly financial data to assess the company's health and trajectory over the next 6-12 months.
+
+Use **only** the JSON provided.
 
 ### Key Interpretation Guidelines
-1. **Growth** - Sustained revenue and profit growth are bullish; declines are bearish.
-2. **Profitability** - Expanding margins and positive net income are bullish; contracting margins are bearish.
-3. **Liquidity** - Strong cash/current ratios are bullish; weakening liquidity is bearish.
-4. **Solvency** - Falling debt or rising coverage is bullish; rising leverage is bearish.
-5. **Cash Flow** - Positive and rising free cash flow is bullish; persistent negative cash flow is bearish.
-6. **Sustainability** - Identify whether trends are consistent or driven by one-off events.
-7. **No Material Signals** - If flat and balanced, output 0.50 and state fundamentals appear neutral.
+1.  **Growth**: Is revenue and profit growth sustained or declining?
+2.  **Profitability**: Are margins expanding or contracting?
+3.  **Cash Flow**: Is the company generating or burning cash? Is it consistent?
+4.  **Solvency**: Is debt rising to dangerous levels? Can they cover liabilities?
+5.  **No Material Signals**: If balanced, output 0.50 and state fundamentals are neutral.
 
 ### Example Output (for format only; do not copy values or wording)
-EXAMPLE_OUTPUT:
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1. Compute and compare quarterly changes for key metrics.
-2. Classify each as bullish, bearish, or neutral.
-3. Weigh materiality and consistency across multiple quarters.
-4. Map net findings to probability bands:
-   - 0.00-0.30 - clearly bearish
-   - 0.31-0.49 - mildly bearish
-   - 0.50       - neutral / balanced
-   - 0.51-0.69 - moderately bullish
-   - 0.70-1.00 - strongly bullish
-5. Summarize into one dense paragraph.
+1.  Compute and compare quarterly changes for key metrics.
+2.  Classify each as bullish, bearish, or neutral.
+3.  Map net findings to probability bands:
+    -   0.00-0.30 - clearly bearish
+    -   0.31-0.49 - mildly bearish
+    -   0.50       - neutral / balanced
+    -   0.51-0.69 - moderately bullish
+    -   0.70-1.00 - strongly bullish
+4.  Summarize into one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (200-400 words) summarizing key trends, anomalies, and implications for financial health and trajectory.>"
+  "analysis": "<One dense, informative paragraph (150-200 words) summarizing key trends, anomalies, and implications for financial health.>"
 }
 
 Provided data:

@@ -7,7 +7,6 @@ from core.pipelines import (
     data_bundler,
     sync_to_firestore,
     page_generator,
-    options_recommendation_generator as options_reco_gen,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -54,13 +53,3 @@ def run_page_generator(request):
     """Entry point for the page content generation pipeline."""
     page_generator.run_pipeline()
     return "Page generator pipeline finished.", 200
-
-# --- NEW: Options recommendations explainer (LLM) ---
-@functions_framework.http
-def run_options_recommendation_generator(request):
-    """
-    Entry point for the options recommendations markdown generator.
-    Reads options_candidates and writes MD files to GCS (options-recommendations/).
-    """
-    options_reco_gen.run_pipeline()
-    return "Options recommendation generator pipeline finished.", 200

@@ -7,18 +7,18 @@ import re
 import json
 
 INPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["input"]
-PRICE_INPUT_PREFIX = "prices/"  # New prefix for price data
+PRICE_INPUT_PREFIX = "prices/"
 OUTPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["output"]
 
-# One-shot example for consistent output format (format anchor only)
+# --- MODIFIED: A more concise one-shot example ---
 _EXAMPLE_OUTPUT = """{
   "score": 0.35,
-  "analysis": "Amazon's technical outlook over the past 90 days suggests a mildly bearish trend. While the price experienced a significant surge in late June, peaking around $223, it has since retraced, falling below the 21-day EMA, which now acts as resistance. The MACD line is trending downwards, and while still positive, the MACD histogram has been negative for much of July and early August, indicating weakening bullish momentum. The RSI has also declined from overbought territory in late June to below 50, signaling reduced buying pressure. The ADX, while above 25 for a significant portion of the period, indicating a defined trend, has recently decreased, suggesting a possible weakening of the current downtrend. The OBV shows a significant drop corresponding with the price decline, confirming the selling pressure. The stock price remains above both the 50-day and 200-day SMAs, which is a moderately bullish sign, but the recent price action suggests a potential test of these levels. The stochastic oscillator is also signaling bearish momentum, with both %K and %D below 50. Recent price action has seen lower highs and lower lows, further reinforcing the bearish sentiment. The stock is currently trading closer to its lower Bollinger Band, indicating potential for continued downside. Overall, the confluence of negative momentum indicators, recent price declines, and weakening trend strength suggests a mildly bearish outlook for AMZN in the short term, with a potential for further declines if key support levels are breached."
+  "analysis": "Amazon's recent technicals suggest a mildly bearish trend. The price has fallen below its 21-day EMA, which is now acting as resistance, and momentum indicators like the MACD and RSI are showing signs of weakening. The negative MACD histogram and an RSI below 50 both signal reduced buying pressure. While the price remains above the longer-term 50-day and 200-day SMAs, the recent pattern of lower highs and lower lows suggests these levels could be tested soon. The overall picture points to a short-term downtrend with potential for further declines if key support levels are breached."
 }"""
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_technicals.json'."""
-    pattern = re.compile(r"([A-Z.]+)_technicals\.json$")
+    pattern = re.compile(r"([A-Z.]+)_technicals\\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return match.group(1) if match else None
 
@@ -28,7 +28,6 @@ def process_blob(technicals_blob_name: str):
     if not ticker:
         return None
     
-    # The output filename is consistent, so it will overwrite the previous day's analysis
     analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_technicals.json"
     logging.info(f"[{ticker}] Generating technicals analysis")
     
@@ -37,50 +36,38 @@ def process_blob(technicals_blob_name: str):
         logging.warning(f"[{ticker}] No technicals content found for {technicals_blob_name}")
         return None
 
-    # --- New: Read Price Data ---
     price_blob_name = f"{PRICE_INPUT_PREFIX}{ticker}_90_day_prices.json"
     price_content = gcs.read_blob(config.GCS_BUCKET_NAME, price_blob_name)
-    if not price_content:
-        logging.warning(f"[{ticker}] No price data found for {price_blob_name}")
-        # Decide if you want to proceed without price data or fail
-        # For this example, we'll proceed but the prompt will not have price data
-        price_data_for_prompt = '"prices": []' # Provide empty price data
-    else:
-        price_data_for_prompt = price_content
+    price_data_for_prompt = price_content if price_content else '"prices": []'
 
 
-    # --- Updated Prompt ---
-    prompt = r"""You are a seasoned technical analyst evaluating a stock’s **technical indicators and 90-day price history** to assess likely direction over the next 1–3 months.
-Use **only** the JSON data provided — do **not** use external data or assumptions.
+    # --- MODIFIED: Updated prompt for a shorter, more direct analysis ---
+    prompt = r"""You are a sharp technical analyst writing for a fast-paced audience. Evaluate the provided technical indicators and 90-day price history to assess the likely direction over the next 1–3 months.
+Use **only** the JSON data provided.
 
 ### Key Interpretation Guidelines
-1. **Price Action** — Analyze the 90-day price data. Rising closes or breakouts above prior highs are bullish; declines toward lows are bearish. Identify trends, support, and resistance.
-2. **Moving Averages** — Price above SMA/EMA is bullish; below is bearish. Golden cross bullish; death cross bearish.
-3. **Trend Strength** — ADX >25 with DMP>DMN is bullish; DMN>DMP is bearish.
-4. **Momentum** — Positive MACD crossovers and rising RSI (40–70) are bullish; negative crossovers and falling RSI are bearish.
-5. **Oscillators** — RSI >70 or STOCH >80 is overbought (bearish reversal risk); RSI <30 or STOCH <20 is oversold (bullish reversal potential).
-6. **Volatility & Volume** — Rising OBV with uptrend is bullish; falling OBV with rising price is bearish divergence. Pay attention to volume spikes in the price data.
-7. **No Material Signals** — If mixed/neutral, output 0.50 and state technicals are neutral.
+1.  **Price Action**: What is the recent trend? Is it breaking out or breaking down?
+2.  **Moving Averages**: Is the price above or below key moving averages (e.g., 21-day EMA, 50/200-day SMA)?
+3.  **Momentum**: Are indicators like MACD and RSI showing strength or weakness?
+4.  **No Material Signals**: If mixed or neutral, output 0.50.
 
-### Example Output (for format only; do not copy values or wording)
-EXAMPLE_OUTPUT:
+### Example Output (for format only; do not copy wording)
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1. Evaluate recent changes in price, trend, momentum, volatility, and volume from both the technical indicators and the 90-day price history.
-2. Classify as bullish, bearish, or neutral.
-3. Map net result to probability bands:
-   - 0.00-0.30 → clearly bearish
-   - 0.31-0.49 → mildly bearish
-   - 0.50       → neutral / balanced
-   - 0.51-0.69 → moderately bullish
-   - 0.70-1.00 → strongly bullish
-4. Summarize key signals into one dense paragraph.
+1.  Evaluate changes in price, trend, and momentum.
+2.  Map the net result to probability bands:
+    -   0.00-0.30 → clearly bearish
+    -   0.31-0.49 → mildly bearish
+    -   0.50       → neutral / balanced
+    -   0.51-0.69 → moderately bullish
+    -   0.70-1.00 → strongly bullish
+3.  Summarize key signals into one dense paragraph.
 
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (200-400 words) summarizing key trends, bullish/bearish patterns, and technical reasoning on likely price trajectory.>"
+  "analysis": "<One dense paragraph (150-200 words) summarizing key trends, patterns, and technical reasoning.>"
 }
 
 Provided data:
