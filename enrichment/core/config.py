@@ -3,9 +3,6 @@ Central configuration for all Enrichment services.
 """
 import os
 
-# --- API Key Secret Names ---
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")  
-
 # --- Global Project ---
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
@@ -38,6 +35,23 @@ CANDIDATE_COUNT = int(os.getenv("CANDIDATE_COUNT", "1"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
 
 # --- Cloud Storage Prefixes ---
+PREFIXES = {
+    "mda_summarizer": {"input": "sec-mda/", "output": "mda-summaries/"},
+    "mda_analyzer": {"input": "mda-summaries/", "output": "mda-analysis/"},
+    "transcript_summarizer": {"input": "earnings-call-transcripts/", "output": "earnings-call-summaries/"},
+    "transcript_analyzer": {"input": "earnings-call-summaries/", "output": "transcript-analysis/"},
+    "financials_analyzer": {"input": "financial-statements/", "output": "financials-analysis/"},
+    "technicals_analyzer": {"input": "technicals/", "output": "technicals-analysis/"},
+    "news_analyzer": {"input": "headline-news/", "output": "news-analysis/"},
+    "news_fetcher": {"query_cache": "news-queries/"},
+    "business_summarizer": {"input": "sec-business/", "output": "business-summaries/"},
+    "fundamentals_analyzer": {
+        "input_metrics": "key-metrics/", 
+        "input_ratios": "ratios/", 
+        "output": "fundamentals-analysis/"
+    }
+}
+
 ANALYSIS_PREFIXES = {
     "business_summary": "business-summaries/", 
     "news": "news-analysis/",
@@ -47,7 +61,6 @@ ANALYSIS_PREFIXES = {
     "financials": "financials-analysis/",
     "fundamentals": "fundamentals-analysis/",
 }
-
 
 # --- Job Parameters ---
 MAX_WORKERS = 8
