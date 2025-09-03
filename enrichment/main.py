@@ -12,6 +12,7 @@ from core.pipelines import (
     news_fetcher, 
     business_summarizer,
     fundamentals_analyzer,
+    score_aggregator, # <-- ADD THIS IMPORT
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -66,3 +67,9 @@ def run_news_analyzer(request):
 def run_business_summarizer(request):
     business_summarizer.run_pipeline()
     return "Business summarizer pipeline finished.", 200
+
+@functions_framework.http
+def run_score_aggregator(request):
+    """Entry point for the score aggregation pipeline."""
+    score_aggregator.run_pipeline()
+    return "Score aggregation pipeline finished.", 200

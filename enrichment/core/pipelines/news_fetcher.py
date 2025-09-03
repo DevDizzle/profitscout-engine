@@ -2,18 +2,17 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import json
-import urllib.parse
-import requests
-import re
 import os
+import re
 
 from .. import config, gcs
 from ..clients import vertex_ai
+from .polygon import PolygonClient  # Assuming the client is in the same package
 
 PROFILE_INPUT_PREFIX = "sec-business/"
 NEWS_OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
 QUERY_CACHE_PREFIX = config.PREFIXES["news_fetcher"]["query_cache"]
-FMP_API_KEY = os.getenv("FMP_API_KEY") 
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
 
 def get_or_create_news_query(ticker: str, business_profile: str) -> str:
     """
@@ -45,29 +44,41 @@ Business Profile:
     
     return new_query
 
+def map_polygon_news(article: dict) -> dict:
+    return {
+        "title": article.get("title"),
+        "publishedDate": article.get("published"),
+        "image": article.get("images", [None])[0],
+        "site": article.get("author"),
+        "text": article.get("teaser") or article.get("body", "")[:500],  # Use teaser or truncated body to save tokens
+        "url": article.get("url"),
+    }
+
 def fetch_and_save_headlines(ticker: str, topics_str: str):
     """Fetches, filters, merges, saves, and cleans up news headlines for a given ticker."""
+    if not POLYGON_API_KEY:
+        logging.critical("POLYGON_API_KEY environment variable not set. Aborting news fetch.")
+        return None
+
+    client = PolygonClient(POLYGON_API_KEY)
     today = datetime.date.today()
     from_date = today - datetime.timedelta(days=7)
     today_str = today.strftime("%Y-%m-%d")
     from_date_str = from_date.strftime("%Y-%m-%d")
     
     # --- Part 1: Fetching ---
-    url_stock = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&from={from_date_str}&to={today_str}&limit=100&page=0&apikey={FMP_API_KEY}"
     try:
-        stock_news = requests.get(url_stock, timeout=30).json()
+        stock_news_raw = client.fetch_news(ticker=ticker, from_date=from_date_str, to_date=today_str, limit_per_page=10, paginate=False)
+        stock_news = [map_polygon_news(article) for article in stock_news_raw]
     except Exception:
         stock_news = []
 
-    url_press = f"https://financialmodelingprep.com/api/v3/press-releases/{ticker}?from={from_date_str}&to={today_str}&apikey={FMP_API_KEY}"
-    try:
-        press_news = requests.get(url_press, timeout=30).json()
-    except Exception:
-        press_news = []
+    # No separate press releases endpoint; assume included or skip
+    press_news = []
 
-    url_general = f"https://financialmodelingprep.com/api/v4/general_news?from={from_date_str}&to={today_str}&page=0&apikey={FMP_API_KEY}"
     try:
-        general_news = requests.get(url_general, timeout=30).json()
+        general_news_raw = client.fetch_news(from_date=from_date_str, to_date=today_str, limit_per_page=10, paginate=False, topics_str=topics_str)
+        general_news = [map_polygon_news(article) for article in general_news_raw]
     except Exception:
         general_news = []
         
@@ -76,29 +87,28 @@ def fetch_and_save_headlines(ticker: str, topics_str: str):
         if not article_date_str:
             return False
         try:
-            # Extract just the 'YYYY-MM-DD' part and convert to a date object
-            article_date = datetime.datetime.fromisoformat(article_date_str.split(' ')[0]).date()
+            if 'T' in article_date_str:
+                date_part = article_date_str.split('T')[0]
+            else:
+                date_part = article_date_str.split(' ')[0]
+            article_date = datetime.date.fromisoformat(date_part)
             return from_date <= article_date <= today
         except (ValueError, TypeError):
             return False
 
     stock_news = [article for article in stock_news if is_within_range(article.get('publishedDate'))]
-    # Handle different possible date fields for press releases
     press_news = [article for article in press_news if is_within_range(article.get('date') or article.get('publishedDate'))]
     general_news = [article for article in general_news if is_within_range(article.get('publishedDate'))]
 
     # --- Part 3: Topic Filtering and Merging ---
-    filtered_general = []
-    if topics_str and general_news:
-        topics = [topic.strip().lower() for topic in topics_str.split(',')]
-        filtered_general = [
-            article for article in general_news
-            if any(topic in (str(article.get('title', '')) + str(article.get('text', ''))).lower() for topic in topics)
-        ]
+    filtered_general = general_news  # Already filtered by tags in fetch
 
     all_news = (stock_news or []) + (press_news or []) + filtered_general
-    merged = {(article["title"], article.get("site") or article.get("source")): article for article in all_news}
-    headlines = list(merged.values())
+    merged = {(article["title"], article.get("site") or article.get("author")): article for article in all_news if article.get("publishedDate")}
+    
+    # Sort by publishedDate desc and take only the most recent 1
+    sorted_news = sorted(list(merged.values()), key=lambda x: x['publishedDate'], reverse=True)
+    headlines = sorted_news[:1]
     
     # --- Part 4: Saving and Cleaning Up ---
     output_path = f"{NEWS_OUTPUT_PREFIX}{ticker}_{today_str}.json"
@@ -130,8 +140,8 @@ def process_profile_blob(blob_name: str):
 
 def run_pipeline():
     """Main pipeline execution logic."""
-    if not FMP_API_KEY:
-        logging.critical("FMP_API_KEY environment variable not set. Aborting news_fetcher.")
+    if not POLYGON_API_KEY:
+        logging.critical("POLYGON_API_KEY environment variable not set. Aborting news_fetcher.")
         return
 
     logging.info("--- Starting News Fetcher Pipeline (with Caching and Client-Side Filtering) ---")
