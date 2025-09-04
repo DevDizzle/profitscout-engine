@@ -57,7 +57,7 @@ Summarize the most critical information regarding:
 3.  **Outlook & Guidance**: What is management's tone and what guidance was provided?
 
 ### Final Output Instructions
-- Produce one continuous, dense narrative of **250-350 words**.
+- Produce one continuous, dense narrative of **150-250 words**.
 - Do NOT include any topic keywords.
 - Integrate specific figures and percentages where they are most impactful.
 

@@ -60,7 +60,7 @@ Use **only** the JSON array supplied.
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (150-200 words) weaving together the most influential headlines and their expected price impact.>"
+  "analysis": "<One dense paragraph (150-250 words) weaving together the most influential headlines and their expected price impact.>"
 }
 
 Provided data:

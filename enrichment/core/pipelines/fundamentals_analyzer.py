@@ -66,7 +66,7 @@ Use **only** the JSON data provided.
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (150-200 words) summarizing the company's fundamental health, combining insights from its key metrics and financial ratios.>"
+  "analysis": "<One dense paragraph (150-250 words) summarizing the company's fundamental health, combining insights from its key metrics and financial ratios.>"
 }
 
 ### Provided Data
