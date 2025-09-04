@@ -37,7 +37,6 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
 # --- Cloud Storage Prefixes ---
 PREFIXES = {
     "mda_analyzer": {"input": "sec-mda/", "output": "mda-analysis/"},
-    "transcript_summarizer": {"input": "earnings-call-transcripts/", "output": "earnings-call-summaries/"},
     "transcript_analyzer": {"input": "earnings-call-transcripts/", "output": "transcript-analysis/"},
     "financials_analyzer": {"input": "financial-statements/", "output": "financials-analysis/"},
     "technicals_analyzer": {"input": "technicals/", "output": "technicals-analysis/"},
