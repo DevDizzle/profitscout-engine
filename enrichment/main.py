@@ -2,9 +2,7 @@
 import logging
 import functions_framework
 from core.pipelines import (
-    mda_summarizer, 
     mda_analyzer, 
-    transcript_summarizer, 
     transcript_analyzer,
     financials_analyzer, 
     technicals_analyzer, 
@@ -12,25 +10,15 @@ from core.pipelines import (
     news_fetcher, 
     business_summarizer,
     fundamentals_analyzer,
-    score_aggregator, # <-- ADD THIS IMPORT
+    score_aggregator,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 @functions_framework.http
-def run_mda_summarizer(request):
-    mda_summarizer.run_pipeline()
-    return "MD&A summarizer pipeline finished.", 200
-
-@functions_framework.http
 def run_mda_analyzer(request):
     mda_analyzer.run_pipeline()
     return "MD&A analyzer pipeline finished.", 200
-
-@functions_framework.http
-def run_transcript_summarizer(request):
-    transcript_summarizer.run_pipeline()
-    return "Transcript summarizer pipeline finished.", 200
 
 @functions_framework.http
 def run_transcript_analyzer(request):
