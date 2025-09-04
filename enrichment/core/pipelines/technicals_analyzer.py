@@ -12,8 +12,8 @@ OUTPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["output"]
 
 # --- MODIFIED: A more concise one-shot example ---
 _EXAMPLE_OUTPUT = """{
-  "score": 0.35,
-  "analysis": "Amazon's recent technicals suggest a mildly bearish trend. The price has fallen below its 21-day EMA, which is now acting as resistance, and momentum indicators like the MACD and RSI are showing signs of weakening. The negative MACD histogram and an RSI below 50 both signal reduced buying pressure. While the price remains above the longer-term 50-day and 200-day SMAs, the recent pattern of lower highs and lower lows suggests these levels could be tested soon. The overall picture points to a short-term downtrend with potential for further declines if key support levels are breached."
+  "score": 0.40,
+  "analysis": "AAON's recent technicals suggest a mildly bearish outlook. After a sharp decline to $70.87, the stock price recovered to close recently at $80.26, which is above its 50-day SMA of $79.14 but still well below the 200-day SMA of $97.79. This indicates short-term strength but a longer-term downtrend remains intact. Momentum is showing signs of weakness; the most recent RSI reading is 49.44, indicating neutral sentiment, and the MACD at 0.90 is trending down towards its signal line. The price action shows a failed attempt to break recent highs, suggesting that overhead resistance is significant and pointing to a potential for further consolidation or declines."
 }"""
 
 def parse_filename(blob_name: str):

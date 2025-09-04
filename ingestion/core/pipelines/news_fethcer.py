@@ -7,7 +7,7 @@ import re
 
 from .. import config, gcs
 from ..clients import vertex_ai
-from .polygon import PolygonClient  # Assuming the client is in the same package
+from .polygon_client import PolygonClient
 
 PROFILE_INPUT_PREFIX = "sec-business/"
 NEWS_OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
