@@ -1,10 +1,10 @@
+# enrichment/workflow.yaml
 main:
   steps:
     - init:
         assign:
           - project_id: "profitscout-lx6bb"
           - region: "us-central1"
-          - news_fetcher_name: "news-fetcher"
           - financials_analyzer_name: "financials-analyzer"
           - fundamentals_analyzer_name: "fundamentals-analyzer"
           - technicals_analyzer_name: "technicals-analyzer"
@@ -13,59 +13,52 @@ main:
           - news_analyzer_name: "news-analyzer"
           - business_summarizer_name: "business-summarizer"
 
-    - call_news_fetcher:
-        call: http.post
-        args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_fetcher_name}
-          auth: { type: OIDC }
-          timeout: 900
-
     - call_financials_analyzer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/financials-analyzer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + financials_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
 
     - call_fundamentals_analyzer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/fundamentals-analyzer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
 
     - call_technicals_analyzer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/technicals-analyzer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
 
     - call_mda_analyzer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/mda-analyzer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
 
     - call_transcript_analyzer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/transcript-analyzer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
 
     - call_news_analyzer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/news-analyzer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}
           auth: { type: OIDC }
           timeout: 900
           
     - call_business_summarizer:
         call: http.post
         args:
-          url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/business-summarizer"}
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + business_summarizer_name}
           auth: { type: OIDC }
           timeout: 900
 

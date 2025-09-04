@@ -7,7 +7,6 @@ from core.pipelines import (
     financials_analyzer, 
     technicals_analyzer, 
     news_analyzer, 
-    news_fetcher, 
     business_summarizer,
     fundamentals_analyzer,
     score_aggregator,
@@ -32,7 +31,6 @@ def run_financials_analyzer(request):
 
 @functions_framework.http
 def run_fundamentals_analyzer(request):
-    """Entry point for the combined fundamentals analysis pipeline."""
     fundamentals_analyzer.run_pipeline()
     return "Fundamentals analyzer pipeline finished.", 200
 
@@ -58,6 +56,5 @@ def run_business_summarizer(request):
 
 @functions_framework.http
 def run_score_aggregator(request):
-    """Entry point for the score aggregation pipeline."""
     score_aggregator.run_pipeline()
     return "Score aggregation pipeline finished.", 200

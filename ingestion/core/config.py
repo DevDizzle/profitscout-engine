@@ -23,10 +23,17 @@ MASTER_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{MASTER_TABLE}"
 # For technicals_collector
 TECHNICALS_PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{PRICE_DATA_TABLE}"
 
+# --- Cloud Storage Prefixes (for News Fetcher) ---
+PREFIXES = {
+    # Path for the news analyzer to read from
+    "news_analyzer": {"input": "headline-news/"},
+    # Path for the news fetcher to cache its AI-generated queries
+    "news_fetcher": {"query_cache": "news-queries/"},
+}
 
 
 # --- Fundamentals / Statements / Ratios ---
-QUARTERS_TO_FETCH = 4
+QUARTERS_TO_FETCH = 8
 KEY_METRICS_FOLDER = "key-metrics/"
 RATIOS_FOLDER = "ratios/"
 FINANCIAL_STATEMENTS_FOLDER = "financial-statements/"
@@ -83,3 +90,12 @@ MAX_WORKERS_TIERING = {
     "transcript_collector": 6
 }
 BATCH_SIZE = 100 # Used by populate_price_data and technicals_collector
+
+# --- Vertex AI Gen AI ---
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.6"))
+TOP_P = float(os.getenv("TOP_P", "0.95"))
+TOP_K = int(os.getenv("TOP_K", "30"))
+SEED = int(os.getenv("SEED", "42"))
+CANDIDATE_COUNT = int(os.getenv("CANDIDATE_COUNT", "1"))
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))

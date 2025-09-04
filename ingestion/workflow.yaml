@@ -5,6 +5,7 @@ main:
       - project_id: "profitscout-lx6bb"
       - region: "us-central1"
       - price_updater_name: "refresh-prices"
+      - news_fetcher_name: "fetch-news"
       - fundamentals_name: "refresh-fundamentals"
       - technicals_name: "refresh-technicals"
       - sec_extractor_name: "extract-sec-filings"
@@ -52,6 +53,12 @@ main:
       call: http.post
       args:
           url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/refresh-stock-metadata"}
+          auth: {type: OIDC}
+          timeout: 900
+  - call_news_fetcher:
+      call: http.post
+      args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_fetcher_name}
           auth: {type: OIDC}
           timeout: 900
 

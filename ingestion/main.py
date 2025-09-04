@@ -15,6 +15,7 @@ from core.pipelines import (
     technicals_collector,
     transcript_collector,
     refresh_stock_metadata,
+    news_fetcher,
 )
 
 # --- Global Initialization (Shared Across Functions) ---
@@ -111,3 +112,10 @@ def refresh_transcripts(cloud_event):
         raise ConnectionError("Server config error: transcript clients not initialized.")
     transcript_collector.run_pipeline(fmp_client, bq_client, storage_client)
     return "Transcript collection pipeline finished successfully.", 200
+
+@functions_framework.http
+def fetch_news(request):
+    """Entry point for the news fetcher pipeline."""
+    # Note: news_fetcher does not need external clients passed in
+    news_fetcher.run_pipeline()
+    return "News fetcher pipeline started.", 202

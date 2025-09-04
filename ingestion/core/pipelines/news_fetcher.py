@@ -6,9 +6,10 @@ import os
 import re
 
 from .. import config, gcs
-from ..clients import vertex_ai
-from .polygon_client import PolygonClient
+from ..clients import vertex_ai  # <-- CORRECTED IMPORT
+from ..clients.ploygon_client import PolygonClient # <-- CORRECTED IMPORT
 
+# ... (the rest of the file is the same as what you provided)
 PROFILE_INPUT_PREFIX = "sec-business/"
 NEWS_OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
 QUERY_CACHE_PREFIX = config.PREFIXES["news_fetcher"]["query_cache"]
@@ -50,7 +51,7 @@ def map_polygon_news(article: dict) -> dict:
         "publishedDate": article.get("published"),
         "image": article.get("images", [None])[0],
         "site": article.get("author"),
-        "text": article.get("teaser") or article.get("body", "")[:500],  # Use teaser or truncated body to save tokens
+        "text": article.get("teaser") or article.get("body", "")[:500],
         "url": article.get("url"),
     }
 
@@ -66,14 +67,12 @@ def fetch_and_save_headlines(ticker: str, topics_str: str):
     today_str = today.strftime("%Y-%m-%d")
     from_date_str = from_date.strftime("%Y-%m-%d")
     
-    # --- Part 1: Fetching ---
     try:
         stock_news_raw = client.fetch_news(ticker=ticker, from_date=from_date_str, to_date=today_str, limit_per_page=10, paginate=False)
         stock_news = [map_polygon_news(article) for article in stock_news_raw]
     except Exception:
         stock_news = []
 
-    # No separate press releases endpoint; assume included or skip
     press_news = []
 
     try:
@@ -82,35 +81,25 @@ def fetch_and_save_headlines(ticker: str, topics_str: str):
     except Exception:
         general_news = []
         
-    # --- Part 2: Client-Side Date Filtering ---
     def is_within_range(article_date_str: str) -> bool:
-        if not article_date_str:
-            return False
+        if not article_date_str: return False
         try:
-            if 'T' in article_date_str:
-                date_part = article_date_str.split('T')[0]
-            else:
-                date_part = article_date_str.split(' ')[0]
+            date_part = article_date_str.split('T')[0] if 'T' in article_date_str else article_date_str.split(' ')[0]
             article_date = datetime.date.fromisoformat(date_part)
             return from_date <= article_date <= today
         except (ValueError, TypeError):
             return False
 
-    stock_news = [article for article in stock_news if is_within_range(article.get('publishedDate'))]
-    press_news = [article for article in press_news if is_within_range(article.get('date') or article.get('publishedDate'))]
-    general_news = [article for article in general_news if is_within_range(article.get('publishedDate'))]
+    stock_news = [a for a in stock_news if is_within_range(a.get('publishedDate'))]
+    press_news = [a for a in press_news if is_within_range(a.get('date') or a.get('publishedDate'))]
+    general_news = [a for a in general_news if is_within_range(a.get('publishedDate'))]
 
-    # --- Part 3: Topic Filtering and Merging ---
-    filtered_general = general_news  # Already filtered by tags in fetch
-
-    all_news = (stock_news or []) + (press_news or []) + filtered_general
-    merged = {(article["title"], article.get("site") or article.get("author")): article for article in all_news if article.get("publishedDate")}
+    all_news = (stock_news or []) + (press_news or []) + general_news
+    merged = {(a["title"], a.get("site") or a.get("author")): a for a in all_news if a.get("publishedDate")}
     
-    # Sort by publishedDate desc and take only the most recent 1
     sorted_news = sorted(list(merged.values()), key=lambda x: x['publishedDate'], reverse=True)
     headlines = sorted_news[:1]
     
-    # --- Part 4: Saving and Cleaning Up ---
     output_path = f"{NEWS_OUTPUT_PREFIX}{ticker}_{today_str}.json"
     gcs.write_text(config.GCS_BUCKET_NAME, output_path, json.dumps(headlines, indent=2), "application/json")
     logging.info(f"[{ticker}] Saved {len(headlines)} filtered headlines to {output_path}")
@@ -122,8 +111,7 @@ def fetch_and_save_headlines(ticker: str, topics_str: str):
 def process_profile_blob(blob_name: str):
     """Orchestrates the process for a single company profile."""
     match = re.search(r'sec-business/([A-Z.]+)_', blob_name)
-    if not match:
-        return None
+    if not match: return None
     ticker = match.group(1)
 
     profile_content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
@@ -144,7 +132,7 @@ def run_pipeline():
         logging.critical("POLYGON_API_KEY environment variable not set. Aborting news_fetcher.")
         return
 
-    logging.info("--- Starting News Fetcher Pipeline (with Caching and Client-Side Filtering) ---")
+    logging.info("--- Starting News Fetcher Pipeline ---")
     
     profile_blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=PROFILE_INPUT_PREFIX)
     if not profile_blobs:
