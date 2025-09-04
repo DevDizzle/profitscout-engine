@@ -87,7 +87,7 @@ Use **only** the JSON provided. Your analysis **must** be grounded in the data.
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense, informative paragraph (150-200 words) that summarizes key trends and financial health, **integrating specific dollar amounts and percentages** from the provided data.>"
+  "analysis": "<One dense, informative paragraph (150-250 words) that summarizes key trends and financial health, **integrating specific dollar amounts and percentages** from the provided data.>"
 }
 
 Provided data:

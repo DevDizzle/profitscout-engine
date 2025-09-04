@@ -8,10 +8,10 @@ import re
 INPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["output"]
 
-# --- MODIFIED: A more concise one-shot example ---
+# --- MODIFIED: A data-driven one-shot example ---
 _EXAMPLE_OUTPUT = """{
-  "score": 0.65,
-  "analysis": "The earnings call suggests a moderately bullish outlook. Management reported a 15% YoY revenue increase, driven by strong cloud division bookings, and raised its full-year EPS guidance on better-than-expected margin expansion. The overall tone was optimistic, citing 'accelerating momentum' and a strong product pipeline to counter competitive pressures. Despite some caution on European headwinds, a confident Q&A session and consistent buybacks signal a positive near-term outlook."
+  "score": 0.38,
+  "analysis": "The earnings call for AAON presents a mildly bearish outlook, dominated by significant operational challenges. Management explicitly stated that Q2 results 'fall short of our expectations' due to a problematic ERP system rollout that disrupted production. Consequently, the company is 'revising our full year 2025 outlook lower,' now anticipating low-teens sales growth and a gross margin of 28% to 29%. While the BasX data center business remains a strong point with sales up 127%, this was offset by declines in the core AAON brand. The combination of a clear earnings miss, lowered guidance, and ongoing operational headwinds signals near-term pressure on the stock."
 }"""
 
 def process_summary(ticker: str, date_str: str):
@@ -29,21 +29,22 @@ def process_summary(ticker: str, date_str: str):
         logging.error(f"[{ticker}] Could not read summary content from {input_blob_name}")
         return None
     
-    # --- MODIFIED: Updated prompt for a shorter, more direct analysis ---
+    # --- MODIFIED: Updated prompt to require specific data points and quotes ---
     prompt = r"""You are a sharp financial analyst evaluating an earnings call summary to find signals that may influence the stock over the next 1–3 months.
-Use **only** the summary provided.
+Use **only** the summary provided. Your analysis **must** be grounded in the data.
 
-### Key Interpretation Guidelines
-1.  **Guidance & Outlook**: Was guidance raised, lowered, or maintained?
-2.  **Performance vs. Expectations**: Did the company beat or miss on key metrics?
-3.  **Tone & Sentiment**: Was management's tone confident or cautious?
-4.  **No Material Signals**: If balanced or neutral, output 0.50.
+### Key Interpretation Guidelines & Data Integration
+1.  **Guidance & Outlook**: Was guidance changed? You **must** cite the specific guidance revision (e.g., "revising our full year 2025 outlook lower").
+2.  **Performance vs. Expectations**: Did the company beat or miss? Cite specific metrics if available (e.g., "net sales declined 0.6%").
+3.  **Tone & Sentiment**: What was management's tone? You **must** include a short, direct quote that captures their sentiment (e.g., "fall short of our expectations").
+4.  **Synthesis**: Combine these data points into a cohesive narrative.
+5.  **No Material Signals**: If balanced or neutral, output 0.50.
 
-### Example Output (for format only; do not copy wording)
+### Example Output (for format and tone; do not copy values)
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1.  Identify forward-looking statements (guidance).
+1.  Identify and extract the specific data points and quotes required by the guidelines.
 2.  Assess the overall tone and key performance metrics.
 3.  Synthesize these points into a net bullish/bearish score.
 4.  Map the net result to probability bands:
@@ -52,12 +53,12 @@ Use **only** the summary provided.
     -   0.50       → neutral / balanced
     -   0.51-0.69 → moderately bullish
     -   0.70-1.00 → strongly bullish
-5.  Summarize the key drivers into one dense paragraph.
+5.  Summarize the key drivers into one dense paragraph, integrating the specific data points you identified.
 
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (150-200 words) summarizing the key themes from the call, management's tone, and the likely impact on the stock.>"
+  "analysis": "<One dense paragraph (150-250 words) summarizing the key themes from the call, **integrating specific figures and direct quotes** to support the analysis.>"
 }
 
 Provided data:
