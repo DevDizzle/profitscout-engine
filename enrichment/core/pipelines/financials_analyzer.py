@@ -33,36 +33,61 @@ def process_blob(blob_name: str):
     if not content:
         return None
     
-    # --- MODIFIED: Updated prompt for a shorter, more direct analysis ---
-    prompt = r"""You are a sharp financial analyst writing for a fast-paced audience. Evaluate the provided quarterly financial data to assess the company's health and trajectory over the next 6-12 months.
+# --- MODIFIED: A data-driven one-shot example ---
+_EXAMPLE_OUTPUT = """{
+  "score": 0.45,
+  "analysis": "AAON's financials present a mixed outlook. While revenue shows an upward trend from $262.1M in Q1 2024 to $311.6M in Q2 2025, profitability has been volatile, with gross margins peaking in Q3 2024 before declining. A key concern is the highly variable and recently negative operating cash flow, which registered at -$23.2M in the latest quarter. The balance sheet is weakening due to a substantial increase in total debt from $17.2M to $352M over the last year, suggesting a significant rise in leverage. Despite top-line growth, the inconsistent cash flow and heavier debt load raise questions about the company's near-term financial stability."
+}"""
 
-Use **only** the JSON provided.
+def parse_filename(blob_name: str):
+    """Parses filenames like 'AAL_2025-06-30.json'."""
+    pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
+    match = pattern.search(os.path.basename(blob_name))
+    return (match.group(1), match.group(2)) if match else (None, None)
+
+def process_blob(blob_name: str):
+    """Processes one financial statement file."""
+    ticker, date_str = parse_filename(blob_name)
+    if not ticker or not date_str:
+        return None
+    
+    analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
+    logging.info(f"[{ticker}] Generating financials analysis for {date_str}")
+    
+    content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
+    if not content:
+        return None
+    
+    # --- MODIFIED: Updated prompt to require specific data points ---
+    prompt = r"""You are a sharp financial analyst evaluating quarterly financial data to assess a company's health and trajectory over the next 6-12 months.
+
+Use **only** the JSON provided. Your analysis **must** be grounded in the data.
 
 ### Key Interpretation Guidelines
-1.  **Growth**: Is revenue and profit growth sustained or declining?
-2.  **Profitability**: Are margins expanding or contracting?
-3.  **Cash Flow**: Is the company generating or burning cash? Is it consistent?
-4.  **Solvency**: Is debt rising to dangerous levels? Can they cover liabilities?
-5.  **No Material Signals**: If balanced, output 0.50 and state fundamentals are neutral.
+1.  **Growth**: Is revenue growing? Cite the revenue figures from the first and last quarters provided.
+2.  **Profitability**: Are margins expanding or contracting? Reference the `grossProfitRatio`.
+3.  **Cash Flow**: Is the company generating or burning cash? Cite the `operatingCashFlow` from the most recent quarter.
+4.  **Solvency**: How is the company's debt changing? Cite the `totalDebt` from the first and last quarters.
+5.  **Synthesis**: Combine these points into a cohesive narrative.
 
-### Example Output (for format only; do not copy values or wording)
+### Example Output (for format and tone; do not copy values)
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1.  Compute and compare quarterly changes for key metrics.
-2.  Classify each as bullish, bearish, or neutral.
+1.  Compute and compare quarterly changes for key metrics (Revenue, Gross Margin, Operating Cash Flow, Total Debt).
+2.  Classify each as bullish, bearish, or neutral, citing the specific numbers.
 3.  Map net findings to probability bands:
     -   0.00-0.30 - clearly bearish
     -   0.31-0.49 - mildly bearish
     -   0.50       - neutral / balanced
     -   0.51-0.69 - moderately bullish
     -   0.70-1.00 - strongly bullish
-4.  Summarize into one dense paragraph.
+4.  Summarize into one dense paragraph, integrating the specific data points you identified.
 
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense, informative paragraph (150-200 words) summarizing key trends, anomalies, and implications for financial health.>"
+  "analysis": "<One dense, informative paragraph (150-200 words) that summarizes key trends and financial health, **integrating specific dollar amounts and percentages** from the provided data.>"
 }
 
 Provided data:
