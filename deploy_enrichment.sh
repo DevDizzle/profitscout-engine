@@ -57,17 +57,6 @@ gcloud functions deploy mda-analyzer \
   --trigger-http \
   --allow-unauthenticated
 
-echo "Deploying mda-summarizer..."
-gcloud functions deploy mda-summarizer \
-  --gen2 \
-  --runtime=$RUNTIME \
-  --project=$PROJECT_ID \
-  --region=$REGION \
-  --source=$SOURCE_DIR \
-  --entry-point=run_mda_summarizer \
-  --trigger-http \
-  --allow-unauthenticated
-
 echo "Deploying news-analyzer..."
 gcloud functions deploy news-analyzer \
   --gen2 \
@@ -78,18 +67,6 @@ gcloud functions deploy news-analyzer \
   --entry-point=run_news_analyzer \
   --trigger-http \
   --allow-unauthenticated 
-
-echo "Deploying news-fetcher..."
-gcloud functions deploy news-fetcher \
-  --gen2 \
-  --runtime=$RUNTIME \
-  --project=$PROJECT_ID \
-  --region=$REGION \
-  --source=$SOURCE_DIR \
-  --entry-point=run_news_fetcher \
-  --trigger-http \
-  --allow-unauthenticated
-  --set-secrets="POLYGON_API_KEY=${POLYGON_SECRET}:latest"
 
 echo "Deploying score-aggregator..."
 gcloud functions deploy score-aggregator \
@@ -123,16 +100,5 @@ gcloud functions deploy transcript-analyzer \
   --entry-point=run_transcript_analyzer \
   --trigger-http \
   --allow-unauthenticated
-
-echo "Deploying transcript-summarizer..."
-gcloud functions deploy transcript-summarizer \
-  --gen2 \
-  --runtime=$RUNTIME \
-  --project=$PROJECT_ID \
-  --region=$REGION \
-  --source=$SOURCE_DIR \
-  --entry-point=run_transcript_summarizer \
-  --trigger-http \
-  --allow-unauthenticated 
 
 echo "All enrichment functions deployed."

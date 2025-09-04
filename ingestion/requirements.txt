@@ -1,10 +1,11 @@
-# Combined requirements for all ingestion functions
+# ingestion/requirements.txt
 functions-framework
 google-cloud-storage
 google-cloud-bigquery
 google-cloud-bigquery-storage
 google-cloud-pubsub
 google-cloud-logging
+google-genai>=1.22.0
 requests
 tenacity
 sec-api
