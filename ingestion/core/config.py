@@ -22,6 +22,9 @@ MASTER_TABLE = "stock_metadata"
 MASTER_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{MASTER_TABLE}"
 # For technicals_collector
 TECHNICALS_PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{PRICE_DATA_TABLE}"
+# For calendar events
+CALENDAR_EVENTS_TABLE = "calendar_events"
+CALENDAR_EVENTS_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{CALENDAR_EVENTS_TABLE}"
 
 # --- Cloud Storage Prefixes (for News Fetcher) ---
 PREFIXES = {

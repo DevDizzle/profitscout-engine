@@ -115,7 +115,13 @@ class FMPClient:
         except requests.RequestException as e:
             logging.error(f"Failed to fetch prices for {ticker}: {e}")
             return pd.DataFrame()
-            
+
+    def fetch_calendar(self, endpoint: str, start: datetime.date, end: datetime.date) -> list[dict]:
+        """Fetches calendar data from FMP for a date range."""
+        params = {"from": start.isoformat(), "to": end.isoformat()}
+        data = self._make_request(endpoint, params=params)
+        return data if isinstance(data, list) else []
+
     def fetch_transcript(self, ticker: str, year: int, quarter: int) -> dict | None:
         """ Fetches a specific earnings call transcript."""
         params = {'quarter': quarter, 'year': year}
