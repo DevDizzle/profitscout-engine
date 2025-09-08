@@ -1,4 +1,3 @@
-# ingestion/requirements.txt
 functions-framework
 google-cloud-storage
 google-cloud-bigquery
@@ -14,5 +13,4 @@ pandas-ta
 pandas-gbq
 pyarrow
 db-dtypes
-numpy==1.26.4
 beautifulsoup4

@@ -2,9 +2,9 @@
 import logging
 import datetime
 from typing import List, Dict
-from google.cloud import bigquery
+from google.cloud import bigquery, storage
 from ..clients.fmp_client import FMPClient
-from .. import config
+from .. import config, gcs
 
 
 def _table_schema() -> List[bigquery.SchemaField]:
@@ -55,6 +55,17 @@ def _to_int(value):
         return None
 
 
+def _format_date(date_str: str) -> str | None:
+    """Safely formats a string into YYYY-MM-DD, handling timestamps."""
+    if not date_str or not isinstance(date_str, str):
+        return None
+    try:
+        # Split on space to remove the time part if it exists
+        return date_str.split(" ")[0]
+    except Exception:
+        return None
+
+
 def _load_rows(client: bigquery.Client, rows: List[Dict]):
     temp_table_id = f"{config.CALENDAR_EVENTS_TABLE_ID}_temp"
     job_config = bigquery.LoadJobConfig(schema=_table_schema(), write_disposition="WRITE_TRUNCATE")
@@ -96,7 +107,8 @@ def _load_rows(client: bigquery.Client, rows: List[Dict]):
     client.delete_table(temp_table_id, not_found_ok=True)
 
 
-def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client):
+def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_client: storage.Client):
+    """Fetches calendar events, filtering for tickers in tickerlist.txt."""
     today = datetime.date.today()
     start = today - datetime.timedelta(days=30)
     end = today + datetime.timedelta(days=90)
@@ -104,30 +116,87 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client):
     _ensure_table(bq_client)
     now = datetime.datetime.utcnow().isoformat()
 
+    # Get the official list of tickers to filter against
+    tickers_to_track = set(gcs.get_tickers(storage_client))
+    if not tickers_to_track:
+        logging.warning("No tickers found in tickerlist.txt. Only fetching economic data.")
+
     rows: List[Dict] = []
 
+    # --- Ticker-Specific Events (Filtered) ---
+    
     earnings = fmp_client.fetch_calendar("earning_calendar", start, end)
     for e in earnings:
-        rows.append({
-            "event_type": "Earnings",
-            "description": f"{e.get('symbol')} Earnings Report",
-            "event_date": e.get("date"),
-            "ticker": e.get("symbol"),
-            "eps_estimated": _to_float(e.get("epsEstimated")),
-            "eps_actual": _to_float(e.get("eps")),
-            "revenue_estimated": _to_float(e.get("revenueEstimated")),
-            "revenue_actual": _to_float(e.get("revenue")),
-            "source": "earning_calendar",
-            "last_updated": now,
-            "additional_details": {k: e.get(k) for k in ["time", "updatedFromDate", "fiscalDateEnding"] if e.get(k) is not None},
-        })
+        if e.get("symbol") in tickers_to_track:
+            rows.append({
+                "event_type": "Earnings",
+                "description": f"{e.get('symbol')} Earnings Report",
+                "event_date": _format_date(e.get("date")),
+                "ticker": e.get("symbol"),
+                "eps_estimated": _to_float(e.get("epsEstimated")),
+                "eps_actual": _to_float(e.get("eps")),
+                "revenue_estimated": _to_float(e.get("revenueEstimated")),
+                "revenue_actual": _to_float(e.get("revenue")),
+                "source": "earning_calendar",
+                "last_updated": now,
+                "additional_details": {k: e.get(k) for k in ["time", "updatedFromDate", "fiscalDateEnding"] if e.get(k) is not None},
+            })
 
+    dividends = fmp_client.fetch_calendar("stock_dividend_calendar", start, end)
+    for d in dividends:
+        if d.get("symbol") in tickers_to_track:
+            rows.append({
+                "event_type": "Dividend",
+                "description": f"{d.get('symbol')} Dividend Announcement",
+                "event_date": _format_date(d.get("date")),
+                "ticker": d.get("symbol"),
+                "dividend_amount": _to_float(d.get("adjDividend")),
+                "ex_dividend_date": _format_date(d.get("date")),
+                "payment_date": _format_date(d.get("paymentDate")),
+                "declaration_date": _format_date(d.get("declarationDate")),
+                "source": "stock_dividend_calendar",
+                "last_updated": now,
+                "additional_details": {k: d.get(k) for k in ["label", "recordDate", "dividend"] if d.get(k) is not None},
+            })
+
+    ipos = fmp_client.fetch_calendar("ipo_calendar", start, end)
+    for i in ipos:
+        if i.get("symbol") in tickers_to_track:
+            rows.append({
+                "event_type": "IPO",
+                "description": f"{i.get('company') or i.get('symbol')} IPO",
+                "event_date": _format_date(i.get("date")),
+                "ticker": i.get("symbol"),
+                "shares": _to_int(i.get("shares")),
+                "offer_amount": _to_float(i.get("offerAmount")),
+                "source": "ipo_calendar",
+                "last_updated": now,
+                "additional_details": {k: i.get(k) for k in ["exchange", "actions", "priceRangeLow", "priceRangeHigh", "totalSharesValue"] if i.get(k) is not None},
+            })
+
+    splits = fmp_client.fetch_calendar("stock_split_calendar", start, end)
+    for s in splits:
+        if s.get("symbol") in tickers_to_track:
+            rows.append({
+                "event_type": "Stock Split",
+                "description": f"{s.get('symbol')} Stock Split",
+                "event_date": _format_date(s.get("date")),
+                "ticker": s.get("symbol"),
+                "numerator": _to_float(s.get("numerator")),
+                "denominator": _to_float(s.get("denominator")),
+                "source": "stock_split_calendar",
+                "last_updated": now,
+                "additional_details": {k: s.get(k) for k in ["label"] if s.get(k) is not None},
+            })
+
+    # --- Global Economic Events (Not Filtered) ---
+    
     economic = fmp_client.fetch_calendar("economic_calendar", start, end)
     for e in economic:
         rows.append({
             "event_type": "Economic",
             "description": e.get("event"),
-            "event_date": e.get("date"),
+            "event_date": _format_date(e.get("date")),
             "country": e.get("country"),
             "impact_level": e.get("impact"),
             "actual_value": _to_float(e.get("actual")),
@@ -136,50 +205,6 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client):
             "source": "economic_calendar",
             "last_updated": now,
             "additional_details": {k: e.get(k) for k in ["change", "changePercentage"] if e.get(k) is not None},
-        })
-
-    dividends = fmp_client.fetch_calendar("stock_dividend_calendar", start, end)
-    for d in dividends:
-        rows.append({
-            "event_type": "Dividend",
-            "description": f"{d.get('symbol')} Dividend Announcement",
-            "event_date": d.get("date"),
-            "ticker": d.get("symbol"),
-            "dividend_amount": _to_float(d.get("adjDividend")),
-            "ex_dividend_date": d.get("date"),
-            "payment_date": d.get("paymentDate"),
-            "declaration_date": d.get("declarationDate"),
-            "source": "stock_dividend_calendar",
-            "last_updated": now,
-            "additional_details": {k: d.get(k) for k in ["label", "recordDate", "dividend"] if d.get(k) is not None},
-        })
-
-    ipos = fmp_client.fetch_calendar("ipo_calendar", start, end)
-    for i in ipos:
-        rows.append({
-            "event_type": "IPO",
-            "description": f"{i.get('company') or i.get('symbol')} IPO",
-            "event_date": i.get("date"),
-            "ticker": i.get("symbol"),
-            "shares": _to_int(i.get("shares")),
-            "offer_amount": _to_float(i.get("offerAmount")),
-            "source": "ipo_calendar",
-            "last_updated": now,
-            "additional_details": {k: i.get(k) for k in ["exchange", "actions", "priceRangeLow", "priceRangeHigh", "totalSharesValue"] if i.get(k) is not None},
-        })
-
-    splits = fmp_client.fetch_calendar("stock_split_calendar", start, end)
-    for s in splits:
-        rows.append({
-            "event_type": "Stock Split",
-            "description": f"{s.get('symbol')} Stock Split",
-            "event_date": s.get("date"),
-            "ticker": s.get("symbol"),
-            "numerator": _to_float(s.get("numerator")),
-            "denominator": _to_float(s.get("denominator")),
-            "source": "stock_split_calendar",
-            "last_updated": now,
-            "additional_details": {k: s.get(k) for k in ["label"] if s.get(k) is not None},
         })
 
     if not rows:

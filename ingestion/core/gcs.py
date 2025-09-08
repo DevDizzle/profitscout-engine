@@ -1,11 +1,12 @@
-# enrichment/core/gcs.py
+# ingestion/core/gcs.py
 """
-Shared helper functions for reading and writing blobs in GCS for all Enrichment services.
+Shared helper functions for reading and writing blobs in GCS for all Ingestion services.
 """
-
 from typing import Dict, List, Optional
 import logging
 from google.cloud import storage
+import json
+from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,28 @@ def _client() -> storage.Client:
     return storage.Client()
 
 
-def blob_exists(bucket_name: str, blob_name: str) -> bool:
+def get_tickers(storage_client: storage.Client) -> list[str]:
+    """Loads the official ticker list from the GCS bucket."""
+    try:
+        bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
+        blob = bucket.blob(config.TICKER_LIST_PATH)
+        if not blob.exists():
+            logger.error(f"Ticker file not found in GCS: gs://{config.GCS_BUCKET_NAME}/{config.TICKER_LIST_PATH}")
+            return []
+        
+        content = blob.download_as_text(encoding="utf-8")
+        tickers = [line.strip().upper() for line in content.splitlines() if line.strip()]
+        logger.info(f"Successfully loaded {len(tickers)} tickers from GCS.")
+        return tickers
+    except Exception as e:
+        logger.critical(f"Failed to load tickers from GCS: {e}", exc_info=True)
+        return []
+
+
+def blob_exists(storage_client: storage.Client, blob_name: str) -> bool:
     """Checks if a blob exists in GCS."""
     try:
-        bucket = _client().bucket(bucket_name)
+        bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
         blob = bucket.blob(blob_name)
         return blob.exists()
     except Exception as e:
@@ -26,38 +45,16 @@ def blob_exists(bucket_name: str, blob_name: str) -> bool:
         return False
 
 
-def read_blob(bucket_name: str, blob_name: str, encoding: str = "utf-8") -> Optional[str]:
-    """Reads a blob from GCS and returns its content as a string."""
-    try:
-        bucket = _client().bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        return blob.download_as_text(encoding=encoding)
-    except Exception as e:
-        logger.error(f"Failed to read blob {blob_name}: {e}")
-        return None
+def upload_json_to_gcs(storage_client: storage.Client, data: dict, blob_path: str):
+    """Uploads a dictionary as a JSON file to GCS."""
+    bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
+    blob = bucket.blob(blob_path)
+    blob.upload_from_string(json.dumps(data, indent=2), content_type="application/json")
 
 
-def write_text(bucket_name: str, blob_name: str, data: str, content_type: str = "text/plain") -> None:
-    """Writes a string to a blob in GCS."""
-    try:
-        _client().bucket(bucket_name).blob(blob_name).upload_from_string(
-            data, content_type=content_type
-        )
-    except Exception as e:
-        logger.error(f"Failed to write blob {blob_name}: {e}")
-        raise
-
-
-def list_blobs(bucket_name: str, prefix: Optional[str] = None) -> List[str]:
-    """Lists all the blob names in a GCS bucket with a given prefix."""
-    blobs = _client().list_blobs(bucket_name, prefix=prefix)
-    return [blob.name for blob in blobs]
-
-
-def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename: str) -> None:
+def cleanup_old_files(storage_client: storage.Client, folder: str, ticker: str, keep_filename: str) -> None:
     """Deletes all files for a ticker in a folder except for the one to keep."""
-    client = _client()
-    bucket = client.bucket(bucket_name)
+    bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
     prefix = f"{folder}{ticker}_"
 
     blobs_to_delete = [
@@ -73,17 +70,17 @@ def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename:
             logger.error(f"Failed to delete blob {blob.name}: {e}")
 
 
-def list_blobs_with_content(bucket_name: str, prefix: str, encoding: str = "utf-8") -> Dict[str, str]:
-    """Returns a mapping of blob name -> text content for blobs under a prefix."""
-    client = _client()
-    blobs = client.list_blobs(bucket_name, prefix=prefix)
-    content_map: Dict[str, str] = {}
-
+def list_existing_transcripts(storage_client: storage.Client) -> set:
+    """Lists existing transcripts in GCS and returns a set of (ticker, date_str) tuples."""
+    bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
+    blobs = bucket.list_blobs(prefix=config.TRANSCRIPT_OUTPUT_FOLDER)
+    existing_set = set()
     for blob in blobs:
         try:
-            content = blob.download_as_text(encoding=encoding)
-            content_map[blob.name] = content
-        except Exception as e:
-            logger.error(f"Failed to read blob {blob.name}: {e}")
-
-    return content_map
+            # Assumes filename format is TICKER_YYYY-MM-DD.json
+            file_name = blob.name.split('/')[-1]
+            ticker, date_str = file_name.replace('.json', '').split('_')
+            existing_set.add((ticker, date_str))
+        except Exception:
+            continue
+    return existing_set

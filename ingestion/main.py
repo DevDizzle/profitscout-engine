@@ -124,7 +124,11 @@ def fetch_news(request):
 @functions_framework.http
 def refresh_calendar_events(request):
     """Entry point for the FMP calendar events pipeline."""
-    if not all([bq_client, fmp_client]):
+    if not all([bq_client, fmp_client, storage_client]):
         return "Server config error: calendar events clients not initialized.", 500
-    calendar_events.run_pipeline(fmp_client=fmp_client, bq_client=bq_client)
+    calendar_events.run_pipeline(
+        fmp_client=fmp_client, 
+        bq_client=bq_client, 
+        storage_client=storage_client
+    )
     return "Calendar events pipeline started.", 202
