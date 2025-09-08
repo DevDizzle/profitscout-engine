@@ -52,3 +52,15 @@ def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename:
     for blob in blobs_to_delete:
         logging.info(f"[{ticker}] Deleting old file: {blob.name}")
         blob.delete()
+        
+def list_blobs_with_content(bucket_name: str, prefix: str) -> dict:
+    client = _client()
+    blobs = client.list_blobs(bucket_name, prefix=prefix)
+    content_map = {}
+    for blob in blobs:
+        try:
+            content = blob.download_as_text()
+            content_map[blob.name] = content
+        except Exception as e:
+            logging.error(f"Failed to read blob {blob.name}: {e}")
+    return content_map
