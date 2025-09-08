@@ -50,8 +50,7 @@ def fetch_and_save_headlines(ticker: str, storage_client: storage.Client):
             ticker=ticker, 
             from_date=from_date_str, 
             to_date=to_date_str, 
-            limit_per_page=4,
-            sort="published.desc"
+            limit_per_page=4
         )
         stock_news = [map_polygon_news(article) for article in stock_news_raw]
         logging.info(f"[{ticker}] Fetched {len(stock_news)} stock-specific articles.")
@@ -65,8 +64,7 @@ def fetch_and_save_headlines(ticker: str, storage_client: storage.Client):
             from_date=from_date_str, 
             to_date=to_date_str, 
             limit_per_page=4,
-            sort="published.desc",
-            channels="economy,markets,federal reserve,inflation,gdp,geopolitics"  # Fixed macro filters
+            topics_str="economy,markets,federal reserve,inflation,gdp,geopolitics"  # Fixed macro filters
         )
         macro_news = [map_polygon_news(article) for article in macro_news_raw]
         logging.info(f"[{ticker}] Fetched {len(macro_news)} macro articles.")
