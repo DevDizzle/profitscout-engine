@@ -18,7 +18,8 @@ _EXAMPLE_OUTPUT = """{
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_technicals.json'."""
-    pattern = re.compile(r"([A-Z.]+)_technicals\\.json$")
+    # Corrected the regular expression to properly match the filenames.
+    pattern = re.compile(r"([A-Z.]+)_technicals\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return match.group(1) if match else None
 
