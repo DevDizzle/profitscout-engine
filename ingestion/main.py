@@ -16,6 +16,7 @@ from core.pipelines import (
     transcript_collector,
     refresh_stock_metadata,
     news_fetcher,
+    calendar_events,
 )
 
 # --- Global Initialization (Shared Across Functions) ---
@@ -119,3 +120,11 @@ def fetch_news(request):
     # Note: news_fetcher does not need external clients passed in
     news_fetcher.run_pipeline()
     return "News fetcher pipeline started.", 202
+
+@functions_framework.http
+def refresh_calendar_events(request):
+    """Entry point for the FMP calendar events pipeline."""
+    if not all([bq_client, fmp_client]):
+        return "Server config error: calendar events clients not initialized.", 500
+    calendar_events.run_pipeline(fmp_client=fmp_client, bq_client=bq_client)
+    return "Calendar events pipeline started.", 202
