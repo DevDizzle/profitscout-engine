@@ -12,6 +12,7 @@ main:
       - refresh_financials_name: "refresh-financials"
       - price_data_populator_name: "populate-price-data"
       - refresh_stock_metadata_name: "refresh-stock-metadata"
+      - calendar_events_name: "refresh-calendar-events"
 
   - call_price_updater:
       call: http.post
@@ -53,6 +54,12 @@ main:
       call: http.post
       args:
           url: ${"https://us-central1-profitscout-lx6bb.cloudfunctions.net/refresh-stock-metadata"}
+          auth: {type: OIDC}
+          timeout: 900
+  - call_calendar_events:
+      call: http.post
+      args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + calendar_events_name}
           auth: {type: OIDC}
           timeout: 900
   - call_news_fetcher:
