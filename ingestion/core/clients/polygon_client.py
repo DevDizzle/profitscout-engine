@@ -107,7 +107,12 @@ class PolygonClient:
         if to_date:
             params["published.lte"] = to_date
         if topics_str:
-            params["tags"] = topics_str  # comma-separated for OR filter
+            # Polygon's Benzinga endpoint filters general (macro) topics using the
+            # ``topics`` query parameter. The previous implementation used
+            # ``tags`` which resulted in the API ignoring our filter and
+            # returning no articles. Switching to ``topics`` ensures macro news
+            # headlines (e.g. economy, markets) are returned when requested.
+            params["topics"] = topics_str  # comma-separated for OR filter
         out: list[dict] = []
 
         while True:
