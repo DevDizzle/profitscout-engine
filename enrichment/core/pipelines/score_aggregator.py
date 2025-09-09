@@ -3,53 +3,81 @@ import pandas as pd
 from datetime import datetime
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from .. import config, gcs
 from google.cloud import bigquery
 
+logging.basicConfig(level=logging.INFO)
+
+
+def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple | None:
+    """Helper function to read and parse a single blob in a thread pool."""
+    try:
+        content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
+        if not content:
+            return None
+
+        ticker = blob_name.split('/')[-1].split('_')[0]
+        parsed_data = {"ticker": ticker}
+
+        if analysis_type == "business_summary":
+            summary_match = re.search(r'"summary"\s*:\s*"(.*?)"', content, re.DOTALL)
+            if summary_match:
+                parsed_data["about"] = summary_match.group(1).replace('\\n', ' ').strip()
+        else:
+            score_match = re.search(r'"score"\s*:\s*([0-9.]+)', content)
+            analysis_match = re.search(r'"analysis"\s*:\s*"(.*?)"', content, re.DOTALL)
+            if score_match:
+                parsed_data[f"{analysis_type}_score"] = float(score_match.group(1))
+            if analysis_match:
+                parsed_data[f"{analysis_type}_analysis"] = analysis_match.group(1).replace('\\n', ' ').strip()
+        
+        return parsed_data
+    except Exception as e:
+        print(f"WARNING: Worker could not process blob {blob_name}: {e}")
+        return None
+
 def _gather_analysis_data() -> dict:
     """
-    Gathers both scores and analysis text from all analysis files in GCS.
+    Gathers both scores and analysis text from all analysis files in GCS in parallel.
     """
     ticker_data = {}
-    score_regex = re.compile(r'"score"\s*:\s*([0-9.]+)')
-    analysis_regex = re.compile(r'"analysis"\s*:\s*"(.*?)"', re.DOTALL)
-
-    # Include business_summary now to fetch the 'about' text
     all_prefixes = config.ANALYSIS_PREFIXES
 
-    for analysis_type, prefix in all_prefixes.items():
-        blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
-        for blob_name in blobs:
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS * 2) as executor:
+        future_to_blob = {}
+        print("--> Starting to list and submit files for each analysis type...")
+        for analysis_type, prefix in all_prefixes.items():
+            print(f"    Lising blobs for analysis type: '{analysis_type}'...")
+            blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
+            print(f"    Found {len(blobs)} blobs for '{analysis_type}'. Submitting to workers...")
+            for blob_name in blobs:
+                future = executor.submit(_read_and_parse_blob, blob_name, analysis_type)
+                future_to_blob[future] = blob_name
+
+        processed_count = 0
+        total_futures = len(future_to_blob)
+        print(f"--> All {total_futures} read tasks submitted. Now processing results as they complete...")
+        
+        for future in as_completed(future_to_blob):
+            blob_name_for_log = future_to_blob[future]
             try:
-                content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-                if not content:
-                    continue
-
-                ticker = blob_name.split('/')[-1].split('_')[0]
-                if ticker not in ticker_data:
-                    ticker_data[ticker] = {}
-
-                # For business summaries, just get the text
-                if analysis_type == "business_summary":
-                    summary_match = re.search(r'"summary"\s*:\s*"(.*?)"', content, re.DOTALL)
-                    if summary_match:
-                        ticker_data[ticker]["about"] = summary_match.group(1).replace('\\n', ' ').strip()
-                    continue
-
-                # For all others, get score and analysis
-                score_match = score_regex.search(content)
-                analysis_match = analysis_regex.search(content)
-
-                if score_match:
-                    score = float(score_match.group(1))
-                    ticker_data[ticker][f"{analysis_type}_score"] = score
-                
-                if analysis_match:
-                    analysis_text = analysis_match.group(1).replace('\\n', ' ').strip()
-                    ticker_data[ticker][f"{analysis_type}_analysis"] = analysis_text
-
+                result = future.result(timeout=15)
+                if result:
+                    ticker = result.pop("ticker")
+                    if ticker not in ticker_data:
+                        ticker_data[ticker] = {}
+                    ticker_data[ticker].update(result)
+            except TimeoutError:
+                print(f"HARD TIMEOUT: Worker for blob {blob_name_for_log} took longer than 15 seconds. Skipping.")
             except Exception as e:
-                logging.error(f"Error processing data from {blob_name}: {e}")
+                print(f"ERROR: Worker for blob {blob_name_for_log} failed with an unexpected error: {e}")
+
+            processed_count += 1
+            if processed_count % 500 == 0:
+                print(f"    ..... Progress: Processed {processed_count} of {total_futures} files...")
+
+    print(f"--> Finished processing all {total_futures} files.")
     return ticker_data
 
 def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
@@ -84,13 +112,11 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
         
         df.update(df_complete[["weighted_score"]])
 
-    # --- RE-IMPLEMENTED: Aggregate Text Section ---
     def aggregate_text(row):
         text_parts = []
         if pd.notna(row.get("about")):
             text_parts.append(f"## About\n\n{row['about']}")
         
-        # Define the order and title for each analysis type
         analysis_order = {
             "news": "News", "technicals": "Technicals", "mda": "MD&A",
             "transcript": "Transcript", "financials": "Financials",
@@ -103,7 +129,6 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
         return "\n\n---\n\n".join(text_parts)
 
     df["aggregated_text"] = df.apply(aggregate_text, axis=1)
-    # --- END of re-implementation ---
 
     final_cols = ['ticker', 'run_date', 'weighted_score', 'aggregated_text'] + score_cols
     return df.reindex(columns=final_cols)
@@ -111,26 +136,31 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
 
 def run_pipeline():
     """Main pipeline for score aggregation."""
-    logging.info("--- Starting Score Aggregation Pipeline ---")
+    print("--- Starting Score Aggregation Pipeline ---")
     client = bigquery.Client(project=config.PROJECT_ID)
+
+    print("STEP 1: Starting to gather analysis data from GCS...")
     ticker_scores = _gather_analysis_data()
-
     if not ticker_scores:
-        logging.info("No analysis files found to aggregate.")
+        print("WARNING: No ticker data was gathered from GCS. Exiting.")
         return
+    print(f"STEP 1 COMPLETE: Gathered data for {len(ticker_scores)} tickers.")
 
+    print("STEP 2: Starting to process and score data with pandas...")
     final_df = _process_and_score_data(ticker_scores)
     if final_df.empty:
-        logging.info("No data to load after processing.")
+        print("WARNING: DataFrame is empty after processing. Exiting.")
         return
+    print(f"STEP 2 COMPLETE: Processed data into a DataFrame with shape {final_df.shape}.")
     
-    # Use WRITE_TRUNCATE to ensure the schema is updated correctly
+    print("STEP 3: Starting to load DataFrame to BigQuery...")
+    # --- MODIFIED: Changed to APPEND and reinstated schema updates ---
     job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_TRUNCATE",
+        write_disposition="WRITE_APPEND",
         schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
     )
     job = client.load_table_from_dataframe(final_df, config.SCORES_TABLE_ID, job_config=job_config)
     job.result()
-    logging.info(f"Loaded {job.output_rows} rows into BigQuery table: {config.SCORES_TABLE_ID}")
+    print(f"STEP 3 COMPLETE: Loaded {job.output_rows} rows into BigQuery table: {config.SCORES_TABLE_ID}")
     
-    logging.info("--- Score Aggregation Pipeline Finished ---")
+    print("--- Score Aggregation Pipeline Finished ---")
