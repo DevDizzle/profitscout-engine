@@ -8,6 +8,8 @@ from google.cloud import storage, bigquery
 from .. import config
 from ..gcs import get_tickers, upload_json_to_gcs
 
+PRICE_TABLE_ID = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.price_data"  # For MERGE inserts
+
 def _get_price_history_for_chunk(tickers: list[str], bq_client: bigquery.Client) -> pd.DataFrame:
     """Fetches OHLCV data for a chunk of tickers."""
     logging.info(f"Querying BigQuery for price history of {len(tickers)} tickers...")
@@ -54,6 +56,57 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
     price_df.dropna(inplace=True)
     recent_df = price_df.tail(90).copy()
     if recent_df.empty: return None
+
+    # Extract latest KPIs (from max_date row)
+    latest = price_df.iloc[-1]
+    max_date = latest['date'].date()
+    kpis = {
+        'latest_rsi': latest.get('RSI_14', None),
+        'latest_macd': latest.get('MACD_12_26_9', None),
+        'latest_sma50': latest.get('SMA_50', None),
+        'latest_sma200': latest.get('SMA_200', None),
+        # Add more based on your ta.strategy: e.g., 'latest_adx': latest.get('ADX_14', None),
+        # 'latest_atr': latest.get(atr_col_name, None),
+    }
+
+    # Compute deltas (30-day and 90-day; use approx row indices assuming daily data)
+    if len(price_df) >= 30:
+        ago_30 = price_df.iloc[-31]  # 30 days back (iloc[-1] is today, -31 is ~30 days ago)
+        ago_90 = price_df.iloc[-91] if len(price_df) >= 90 else price_df.iloc[0]  # Fallback to earliest if <90
+
+        deltas = {
+            'close_30d_delta_pct': ((latest['close'] - ago_30['close']) / ago_30['close']) * 100 if ago_30['close'] else None,
+            'rsi_30d_delta': latest.get('RSI_14', 0) - ago_30.get('RSI_14', 0),
+            'macd_30d_delta': latest.get('MACD_12_26_9', 0) - ago_30.get('MACD_12_26_9', 0),
+            # Add more: e.g., 'sma50_30d_delta_pct': ((latest['SMA_50'] - ago_30['SMA_50']) / ago_30['SMA_50']) * 100,
+            
+            'close_90d_delta_pct': ((latest['close'] - ago_90['close']) / ago_90['close']) * 100 if ago_90['close'] else None,
+            'rsi_90d_delta': latest.get('RSI_14', 0) - ago_90.get('RSI_14', 0),
+            'macd_90d_delta': latest.get('MACD_12_26_9', 0) - ago_90.get('MACD_12_26_9', 0),
+            # Add more as needed
+        }
+    else:
+        deltas = {k: None for k in ['close_30d_delta_pct', 'rsi_30d_delta', ...]}  # Null if insufficient data
+
+    # MERGE KPIs and deltas into price_data for max_date
+    bq_client = bigquery.Client(project=config.PROJECT_ID)
+    merge_values = ', '.join([f"{v or 'NULL'} AS {k}" for k, v in {**kpis, **deltas}.items()])
+    merge_sets = ', '.join([f"{k} = S.{k}" for k in {**kpis, **deltas}])
+    insert_cols = ', '.join([k for k in {**kpis, **deltas}])
+    insert_vals = ', '.join([f"S.{k}" for k in {**kpis, **deltas}])
+    
+    merge_q = f"""
+        MERGE `{PRICE_TABLE_ID}` T
+        USING (SELECT '{ticker}' AS ticker, DATE('{max_date}') AS date, {merge_values})
+        S ON T.ticker = S.ticker AND T.date = S.date
+        WHEN MATCHED THEN
+            UPDATE SET {merge_sets}
+        WHEN NOT MATCHED THEN
+            INSERT (ticker, date, {insert_cols}) 
+            VALUES (S.ticker, S.date, {insert_vals})
+    """
+    bq_client.query(merge_q).result()
+    logging.info(f"[{ticker}] Inserted/updated KPIs and deltas in price_data for {max_date}.")
 
     recent_df['date'] = recent_df['date'].dt.strftime('%Y-%m-%d')
     output_data = recent_df.to_dict(orient="records")
