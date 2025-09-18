@@ -1,4 +1,3 @@
-# enrichment/workflow.yaml
 main:
   steps:
     - init:
@@ -12,55 +11,66 @@ main:
           - transcript_analyzer_name: "transcript-analyzer"
           - news_analyzer_name: "news-analyzer"
           - business_summarizer_name: "business-summarizer"
+          - price_chart_generator_name: "price-chart-generator"
 
     - call_financials_analyzer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + financials_analyzer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + financials_analyzer_name}'
           auth: { type: OIDC }
           timeout: 900
 
     - call_fundamentals_analyzer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_analyzer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_analyzer_name}'
           auth: { type: OIDC }
           timeout: 900
 
     - call_technicals_analyzer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_analyzer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_analyzer_name}'
           auth: { type: OIDC }
           timeout: 900
 
     - call_mda_analyzer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_analyzer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_analyzer_name}'
           auth: { type: OIDC }
           timeout: 900
 
     - call_transcript_analyzer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_analyzer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_analyzer_name}'
           auth: { type: OIDC }
           timeout: 900
 
     - call_news_analyzer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}'
           auth: { type: OIDC }
           timeout: 900
-          
+
     - call_business_summarizer:
         call: http.post
         args:
-          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + business_summarizer_name}
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + business_summarizer_name}'
           auth: { type: OIDC }
           timeout: 900
+
+    # new step added here
+    - call_price_chart_generator:
+        call: http.post
+        args:
+          url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_chart_generator_name}'
+          auth:
+            type: OIDC
+          timeout: 900
+        result: price_chart_result
 
     - log_finish:
         call: sys.log

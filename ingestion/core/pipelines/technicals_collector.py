@@ -2,20 +2,16 @@
 import datetime
 import logging
 import math
-import random
-import time
-import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 import pandas_ta as ta
-from google.api_core.exceptions import BadRequest
 from google.cloud import bigquery, storage
 
 from .. import config
 from ..gcs import get_tickers, upload_json_to_gcs
 
-PRICE_TABLE_ID = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.price_data"  # MERGE target
+# Note: Removed PRICE_TABLE_ID and all MERGE/write logic
 
 
 # ----------------------------
@@ -33,97 +29,6 @@ def _safe_float(x):
         return xf
     except Exception:
         return None
-
-
-def _build_schema_from_rows(rows):
-    """
-    Build a BigQuery schema from a list of dict rows.
-    Assumes 'ticker' STRING, 'date' DATE, others FLOAT64.
-    """
-    assert rows, "No rows to build schema"
-    keys = list(rows[0].keys())
-    schema = []
-    for k in keys:
-        if k == "ticker":
-            schema.append(bigquery.SchemaField(k, "STRING"))
-        elif k == "date":
-            schema.append(bigquery.SchemaField(k, "DATE"))
-        else:
-            schema.append(bigquery.SchemaField(k, "FLOAT"))
-    return schema
-
-
-def _merge_updates_in_batch(bq_client: bigquery.Client, rows: list[dict]):
-    """
-    Load rows (ticker, date, KPI columns) into a temp staging table, then single MERGE into PRICE_TABLE_ID.
-    Retries on 'Could not serialize access...' with exponential backoff.
-    """
-    if not rows:
-        return
-
-    # Ensure types are JSON-loadable (date as YYYY-MM-DD string, floats or None)
-    for r in rows:
-        # normalize date -> YYYY-MM-DD
-        if isinstance(r.get("date"), (datetime.date, datetime.datetime)):
-            r["date"] = r["date"].strftime("%Y-%m-%d")
-        # normalize floats
-        for k, v in list(r.items()):
-            if k in ("ticker", "date"):
-                continue
-            r[k] = _safe_float(v)
-
-    staging_id = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}._tmp_price_updates_{uuid.uuid4().hex}"
-
-    # Create staging
-    schema = _build_schema_from_rows(rows)
-    bq_client.create_table(bigquery.Table(staging_id, schema=schema))
-
-    try:
-        # Load JSON to staging
-        load_job = bq_client.load_table_from_json(rows, staging_id)
-        load_job.result()
-
-        # Build dynamic clauses
-        example = rows[0]
-        nonkey_cols = [c for c in example.keys() if c not in ("ticker", "date")]
-        if not nonkey_cols:
-            # Nothing to merge
-            bq_client.delete_table(staging_id, not_found_ok=True)
-            return
-
-        set_clause = ", ".join([f"{c} = COALESCE(S.{c}, T.{c})" for c in nonkey_cols])
-        insert_cols = ", ".join(["ticker", "date"] + nonkey_cols)
-        insert_vals = ", ".join([f"S.{c}" for c in ["ticker", "date"] + nonkey_cols])
-
-        merge_sql = f"""
-            MERGE `{PRICE_TABLE_ID}` T
-            USING `{staging_id}` S
-            ON T.ticker = S.ticker AND T.date = S.date
-            WHEN MATCHED THEN
-              UPDATE SET {set_clause}
-            WHEN NOT MATCHED THEN
-              INSERT ({insert_cols}) VALUES ({insert_vals})
-        """
-
-        # Retry on serialization conflicts
-        for attempt in range(6):
-            try:
-                bq_client.query(merge_sql).result()
-                break
-            except BadRequest as e:
-                msg = getattr(e, "message", str(e))
-                if "Could not serialize access" in msg:
-                    sleep_s = (2 ** attempt) + random.random()
-                    logging.warning(f"MERGE serialization conflict; retrying in {sleep_s:.2f}s (attempt {attempt+1})")
-                    time.sleep(sleep_s)
-                    continue
-                raise
-    finally:
-        # Best-effort cleanup
-        try:
-            bq_client.delete_table(staging_id, not_found_ok=True)
-        except Exception:
-            pass
 
 
 # ----------------------------
@@ -161,7 +66,7 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
         "ticker": <str>,
         "as_of": <YYYY-MM-DD>,
         "technicals_timeseries": <list[dict]>,   # last 90 rows enriched
-        "update_row": {                          # row to merge into price_data
+        "update_row": {                          # row to persist later (NOT written here)
            "ticker": <str>, "date": <YYYY-MM-DD>,
            "latest_rsi": <float>, ... deltas ...
         }
@@ -190,7 +95,6 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             func = getattr(ta, kind)
 
             # Build arg map only for supported parameters in this function
-            # Many ta funcs accept these names; only pass what the func supports.
             arg_map = {}
             for name in ("close", "open", "high", "low", "volume"):
                 if name in func.__code__.co_varnames:
@@ -205,7 +109,6 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             if isinstance(result, pd.Series):
                 price_df[ind_name] = result
             elif isinstance(result, pd.DataFrame):
-                # Use the returned column names directly
                 price_df = price_df.join(result)
             else:
                 logging.warning(f"[{ticker}] Unexpected result type for {kind}: {type(result)}")
@@ -216,7 +119,6 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
 
         # Optional percent ATR if present
         atr_col = None
-        # Try common ATR column names
         for c in price_df.columns:
             if c.upper().startswith("ATR") or c.upper().startswith("ATRR_"):
                 atr_col = c
@@ -224,7 +126,7 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
         if atr_col and "close" in price_df:
             price_df["percent_atr"] = (price_df[atr_col] / price_df["close"]) * 100
 
-        # Prepare a "valid" df requiring only KPIs we need (do not drop rows for unrelated cols)
+        # Require KPI columns
         needed_for_kpis = ["RSI_14", "MACD_12_26_9", "SMA_50", "SMA_200"]
         valid = price_df.dropna(subset=["open", "high", "low", "close", "volume"] + needed_for_kpis)
         if valid.empty:
@@ -241,7 +143,7 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             "latest_sma200": _safe_float(latest.get("SMA_200")),
         }
 
-        # Deltas (guard lengths so we don't compute bad values)
+        # Deltas
         deltas = {}
         if len(valid) >= 31:
             ago_30 = valid.iloc[-31]
@@ -261,11 +163,11 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             except Exception:
                 pass
 
-        # Build update_row for BigQuery (no writes here)
+        # Build row to persist later (NOT written here)
         update_row = {"ticker": ticker, "date": max_date}
         update_row.update({**kpis, **deltas})
 
-        # Build timeseries JSON (last 90 rows of the *enriched* frame)
+        # Enriched last-90 rows for UI/API
         recent_df = price_df.tail(90).copy()
         if not recent_df.empty:
             recent_df["date"] = recent_df["date"].dt.strftime("%Y-%m-%d")
@@ -275,11 +177,10 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             "ticker": ticker,
             "as_of": datetime.date.today().isoformat(),
             "technicals_timeseries": timeseries_records,
-            "update_row": update_row,
+            "update_row": update_row,  # collected for later write by shared helper
         }
 
     except Exception as e:
-        # Never let exceptions escape from worker
         return {"ticker": ticker, "error": str(e)}
 
 
@@ -288,7 +189,15 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
 # ----------------------------
 
 def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
-    """Runs the full pipeline, processing tickers in parallel chunks with batched MERGE writes."""
+    """
+    Runs the full pipeline:
+      - Fetch list of tickers
+      - For each chunk:
+          - Query price history
+          - Compute technicals in parallel
+          - Upload JSON to GCS
+          - Collect KPI/delta rows (no DB writes here)
+    """
     logging.info("--- Parallel Technicals Pipeline Started ---")
     tickers = get_tickers(storage_client)
     if not tickers:
@@ -299,6 +208,10 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
     chunk_size = config.BATCH_SIZE or 50
     logging.info(f"Processing {len(tickers)} tickers in chunks of {chunk_size} (max_workers={max_workers}).")
 
+    total_uploaded = 0
+    total_errors = 0
+    total_rows_collected = 0  # rows prepared for future persistence (same table as IV)
+
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for i in range(0, len(tickers), chunk_size):
             chunk = tickers[i : i + chunk_size]
@@ -308,19 +221,18 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
                 continue
 
             grouped_by_ticker = {t: df for t, df in price_data_chunk.groupby("ticker")}
-
             futures = {
                 executor.submit(_calculate_technicals_for_ticker, t, df.copy()): t
                 for t, df in grouped_by_ticker.items()
             }
 
-            update_rows = []
             uploaded = 0
             errors = 0
+            update_rows = []
 
             for future in as_completed(futures):
                 t = futures[future]
-                result = future.result()  # worker never raises; returns error dict on failure
+                result = future.result()
 
                 if not result:
                     errors += 1
@@ -332,7 +244,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
                     logging.error(f"[{t}] Worker error: {result['error']}")
                     continue
 
-                # Upload JSON to GCS
+                # Upload JSON to GCS (UI/API consumption)
                 try:
                     blob_path = f"{config.TECHNICALS_OUTPUT_FOLDER}{t}_technicals.json"
                     upload_json_to_gcs(storage_client, {
@@ -345,18 +257,19 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
                     errors += 1
                     logging.error(f"[{t}] Upload to GCS failed: {e}")
 
-                # Queue row for batch MERGE
+                # Collect row for future write via shared metrics helper (no DB writes here)
                 if row := result.get("update_row"):
                     update_rows.append(row)
 
-            # Single MERGE for this chunk (with retry/backoff, COALESCE to avoid null-overwrites)
-            try:
-                _merge_updates_in_batch(bq_client, update_rows)
-                if update_rows:
-                    logging.info(f"Merged {len(update_rows)} KPI rows into price_data for chunk starting {i}.")
-            except Exception as e:
-                logging.error(f"Batch MERGE failed for chunk starting at {i}: {e}", exc_info=True)
+            # Accumulate stats and keep rows for later persistence (table TBD)
+            total_uploaded += uploaded
+            total_errors += errors
+            total_rows_collected += len(update_rows)
 
-            logging.info(f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}")
+            # Optionally: hand off here to a shared writer once table name is decided.
+            # from analysis.market_metrics_writer import write_technicals_metrics
+            # write_technicals_metrics(bq_client, update_rows, target_table="project.dataset.market_metrics")  # TODO: set name
 
-    logging.info("--- Technicals collector pipeline finished. ---")
+            logging.info(f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(update_rows)}")
+
+    logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={total_rows_collected} ---")
