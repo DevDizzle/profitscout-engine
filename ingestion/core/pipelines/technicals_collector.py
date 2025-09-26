@@ -1,4 +1,4 @@
-# ingestion/core/orchestrators/technicals_collector.py
+# ingestion/core/pipelines/technicals_collector.py
 import datetime
 import logging
 import math
@@ -11,15 +11,11 @@ from google.cloud import bigquery, storage
 from .. import config
 from ..gcs import get_tickers, upload_json_to_gcs
 
-# Note: Removed PRICE_TABLE_ID and all MERGE/write logic
-
-
 # ----------------------------
 # Utilities & helpers
 # ----------------------------
 
 def _safe_float(x):
-    """Convert to builtin float; nan/inf -> None; non-numeric -> None."""
     try:
         if x is None:
             return None
@@ -30,13 +26,131 @@ def _safe_float(x):
     except Exception:
         return None
 
+def _to_iso_date(d):
+    try:
+        s = str(d)
+        return s[:10]  # 'YYYY-MM-DD'
+    except Exception:
+        return None
+
+def _finite_float(x):
+    try:
+        xf = float(x)
+        return xf if math.isfinite(xf) else None
+    except Exception:
+        return None
+
+def _int_or_none(x):
+    try:
+        xi = int(x)
+        return xi if xi >= 0 else None
+    except Exception:
+        return None
+
+def _ensure_core_kpis(price_df: pd.DataFrame) -> pd.DataFrame:
+    if "close" not in price_df.columns:
+        raise KeyError("Expected 'close' column (aliased from adj_close) not found")
+    close = price_df["close"]
+    if "RSI_14" not in price_df.columns:
+        try:
+            price_df["RSI_14"] = ta.rsi(close, length=14)
+        except Exception as e:
+            logging.warning(f"RSI calc failed: {e}")
+            price_df["RSI_14"] = pd.NA
+    if "SMA_50" not in price_df.columns:
+        try:
+            price_df["SMA_50"] = ta.sma(close, length=50)
+        except Exception as e:
+            logging.warning(f"SMA_50 calc failed: {e}")
+            price_df["SMA_50"] = pd.NA
+    if "SMA_200" not in price_df.columns:
+        try:
+            price_df["SMA_200"] = ta.sma(close, length=200)
+        except Exception as e:
+            logging.warning(f"SMA_200 calc failed: {e}")
+            price_df["SMA_200"] = pd.NA
+    if "MACD_12_26_9" not in price_df.columns:
+        try:
+            macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+            if isinstance(macd_df, pd.DataFrame):
+                if "MACD_12_26_9" in macd_df.columns:
+                    price_df["MACD_12_26_9"] = macd_df["MACD_12_26_9"]
+                else:
+                    for c in macd_df.columns:
+                        cu = c.upper()
+                        if cu.startswith("MACD_") and not cu.startswith("MACDS_") and not cu.startswith("MACDH_"):
+                            price_df["MACD_12_26_9"] = macd_df[c]
+                            break
+                    if "MACD_12_26_9" not in price_df.columns:
+                        price_df["MACD_12_26_9"] = pd.NA
+            else:
+                price_df["MACD_12_26_9"] = macd_df
+        except Exception as e:
+            logging.warning(f"MACD calc failed: {e}")
+            price_df["MACD_12_26_9"] = pd.NA
+    return price_df
+
+# --- NEW: build a clean indicators-only 90d payload (no OHLCV, no ticker) ---
+def _build_technicals_payload(df: pd.DataFrame) -> list[dict]:
+    """
+    Return last-90 rows with only date + indicator fields (no OHLCV).
+    NaN/Inf -> None; drop rows without date.
+    """
+    if df.empty:
+        return []
+    # Preferred indicator columns (add/remove as needed)
+    prefer_cols = [
+        "SMA_50", "SMA_200", "EMA_21",
+        "MACD_12_26_9", "MACDs_12_26_9", "MACDh_12_26_9",
+        "RSI_14", "ADX_14", "ADXR_14_2", "DMP_14", "DMN_14",
+        "STOCHk_14_3_3", "STOCHd_14_3_3",
+        "ROC_20",
+        "BBL_20_2.0_2.0", "BBM_20_2.0_2.0", "BBU_20_2.0_2.0",
+        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
+        "ATR", "OBV",
+        "52w_high", "52w_low", "percent_atr",
+    ]
+    # Normalize aliases if present
+    alias_map = {
+        "ema_21": "EMA_21", "atr": "ATR", "obv": "OBV",
+        "rsi_14": "RSI_14", "sma_50": "SMA_50", "sma_200": "SMA_200",
+        "roc_20": "ROC_20"
+    }
+    df = df.copy()
+    for src, dst in alias_map.items():
+        if src in df.columns and dst not in df.columns:
+            df[dst] = df[src]
+
+    keep_cols = ["date"] + [c for c in prefer_cols if c in df.columns]
+    snap = df.tail(90)[keep_cols].copy()
+
+    out = []
+    for _, r in snap.iterrows():
+        date = _to_iso_date(r.get("date"))
+        if not date:
+            continue
+        row = {"date": date}
+        for c in keep_cols[1:]:
+            v = r.get(c)
+            if isinstance(v, (int,)) and not isinstance(v, bool):
+                row[c] = int(v)
+            elif isinstance(v, float):
+                row[c] = v if math.isfinite(v) else None
+            else:
+                # Pandas NA or other types
+                try:
+                    fv = float(v)
+                    row[c] = fv if math.isfinite(fv) else None
+                except Exception:
+                    row[c] = None if pd.isna(v) else v
+        out.append(row)
+    return out
 
 # ----------------------------
 # Data access & indicator calc
 # ----------------------------
 
 def _get_price_history_for_chunk(tickers: list[str], bq_client: bigquery.Client) -> pd.DataFrame:
-    """Fetches OHLCV data for a chunk of tickers."""
     logging.info(f"Querying BigQuery for price history of {len(tickers)} tickers...")
     query = f"""
         SELECT ticker, date, open, high, low, adj_close AS close, volume
@@ -52,60 +166,39 @@ def _get_price_history_for_chunk(tickers: list[str], bq_client: bigquery.Client)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"])
-    # Ensure numeric
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     logging.info(f"Query complete. Found data for {df['ticker'].nunique()} unique tickers.")
     return df
 
-
 def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dict | None:
-    """
-    CPU-bound work for a single ticker. Returns a dict:
-      {
-        "ticker": <str>,
-        "as_of": <YYYY-MM-DD>,
-        "technicals_timeseries": <list[dict]>,   # last 90 rows enriched
-        "update_row": {                          # row to persist later (NOT written here)
-           "ticker": <str>, "date": <YYYY-MM-DD>,
-           "latest_rsi": <float>, ... deltas ...
-        }
-      }
-    Never raises; on error returns {"ticker": ticker, "error": "..."} to keep workers picklable.
-    """
     try:
         if price_df is None or price_df.empty:
             return {"ticker": ticker, "error": "no price data"}
 
         core_columns = ["open", "high", "low", "close", "volume"]
-        # Impute / clean core OHLCV
         price_df[core_columns] = price_df[core_columns].ffill().bfill()
         price_df.dropna(subset=core_columns, inplace=True)
         if price_df.empty:
             return {"ticker": ticker, "error": "no valid OHLCV rows"}
 
-        # Compute indicators specified in config.INDICATORS
+        # Compute configured indicators
         for ind_name, ind in config.INDICATORS.items():
             kind = ind.get("kind")
             params = ind.get("params", {})
             if not hasattr(ta, kind):
                 logging.warning(f"[{ticker}] pandas_ta has no function '{kind}'")
                 continue
-
             func = getattr(ta, kind)
-
-            # Build arg map only for supported parameters in this function
             arg_map = {}
             for name in ("close", "open", "high", "low", "volume"):
-                if name in func.__code__.co_varnames:
+                if name in getattr(func, "__code__", type("x", (), {"co_varnames": ()})).co_varnames:
                     arg_map[name] = price_df[name]
-
             try:
                 result = func(**params, **arg_map)
             except Exception as e:
                 logging.warning(f"[{ticker}] Indicator '{kind}' failed: {e}")
                 continue
-
             if isinstance(result, pd.Series):
                 price_df[ind_name] = result
             elif isinstance(result, pd.DataFrame):
@@ -113,29 +206,35 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             else:
                 logging.warning(f"[{ticker}] Unexpected result type for {kind}: {type(result)}")
 
+        # Ensure core KPIs
+        price_df = _ensure_core_kpis(price_df)
+
         # 52w high/low
         price_df["52w_high"] = price_df["high"].rolling(window=config.ROLLING_52_WEEK_WINDOW, min_periods=1).max()
         price_df["52w_low"] = price_df["low"].rolling(window=config.ROLLING_52_WEEK_WINDOW, min_periods=1).min()
 
-        # Optional percent ATR if present
+        # percent ATR if present
         atr_col = None
         for c in price_df.columns:
-            if c.upper().startswith("ATR") or c.upper().startswith("ATRR_"):
+            cu = c.upper()
+            if cu.startswith("ATR") or cu.startswith("ATRR_"):
                 atr_col = c
                 break
         if atr_col and "close" in price_df:
             price_df["percent_atr"] = (price_df[atr_col] / price_df["close"]) * 100
 
-        # Require KPI columns
+        # Valid KPI rows (optional for deltas; not used for the per-row payload)
         needed_for_kpis = ["RSI_14", "MACD_12_26_9", "SMA_50", "SMA_200"]
         valid = price_df.dropna(subset=["open", "high", "low", "close", "volume"] + needed_for_kpis)
-        if valid.empty:
-            return {"ticker": ticker, "error": "no row with required KPIs"}
 
-        latest = valid.iloc[-1]
+        use_df = valid if not valid.empty else price_df.dropna(subset=["open", "high", "low", "close", "volume"])
+        if use_df.empty:
+            return {"ticker": ticker, "error": "no row with required OHLCV"}
+
+        latest = use_df.iloc[-1]
         max_date = latest["date"].date()
 
-        # KPIs
+        # KPIs (may be None if fallback path)
         kpis = {
             "latest_rsi": _safe_float(latest.get("RSI_14")),
             "latest_macd": _safe_float(latest.get("MACD_12_26_9")),
@@ -143,61 +242,50 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             "latest_sma200": _safe_float(latest.get("SMA_200")),
         }
 
-        # Deltas
+        # Deltas (optional; retained for future persistence)
         deltas = {}
-        if len(valid) >= 31:
-            ago_30 = valid.iloc[-31]
-            try:
-                deltas["close_30d_delta_pct"] = _safe_float((latest["close"] - ago_30["close"]) / ago_30["close"] * 100)
-                deltas["rsi_30d_delta"] = _safe_float(latest.get("RSI_14", 0) - ago_30.get("RSI_14", 0))
-                deltas["macd_30d_delta"] = _safe_float(latest.get("MACD_12_26_9", 0) - ago_30.get("MACD_12_26_9", 0))
-            except Exception:
-                pass
+        if not valid.empty:
+            if len(valid) >= 31:
+                ago_30 = valid.iloc[-31]
+                try:
+                    deltas["close_30d_delta_pct"] = _safe_float((valid.iloc[-1]["close"] - ago_30["close"]) / ago_30["close"] * 100)
+                    deltas["rsi_30d_delta"] = _safe_float(valid.iloc[-1].get("RSI_14", 0) - ago_30.get("RSI_14", 0))
+                    deltas["macd_30d_delta"] = _safe_float(valid.iloc[-1].get("MACD_12_26_9", 0) - ago_30.get("MACD_12_26_9", 0))
+                except Exception:
+                    pass
+            if len(valid) >= 91:
+                ago_90 = valid.iloc[-91]
+                try:
+                    deltas["close_90d_delta_pct"] = _safe_float((valid.iloc[-1]["close"] - ago_90["close"]) / ago_90["close"] * 100)
+                    deltas["rsi_90d_delta"] = _safe_float(valid.iloc[-1].get("RSI_14", 0) - ago_90.get("RSI_14", 0))
+                    deltas["macd_90d_delta"] = _safe_float(valid.iloc[-1].get("MACD_12_26_9", 0) - ago_90.get("MACD_12_26_9", 0))
+                except Exception:
+                    pass
 
-        if len(valid) >= 91:
-            ago_90 = valid.iloc[-91]
-            try:
-                deltas["close_90d_delta_pct"] = _safe_float((latest["close"] - ago_90["close"]) / ago_90["close"] * 100)
-                deltas["rsi_90d_delta"] = _safe_float(latest.get("RSI_14", 0) - ago_90.get("RSI_14", 0))
-                deltas["macd_90d_delta"] = _safe_float(latest.get("MACD_12_26_9", 0) - ago_90.get("MACD_12_26_9", 0))
-            except Exception:
-                pass
-
-        # Build row to persist later (NOT written here)
         update_row = {"ticker": ticker, "date": max_date}
         update_row.update({**kpis, **deltas})
 
-        # Enriched last-90 rows for UI/API
-        recent_df = price_df.tail(90).copy()
-        if not recent_df.empty:
-            recent_df["date"] = recent_df["date"].dt.strftime("%Y-%m-%d")
-        timeseries_records = recent_df.to_dict(orient="records")
+        # --- NEW: indicators-only 90d payload for LLM (no OHLCV here) ---
+        technicals_payload = _build_technicals_payload(price_df)
+
+        # --- Keep building a 90d prices payload elsewhere in your pipeline (unchanged) ---
+        # (If you already added a prices_payload helper, keep it; omitted here for brevity)
 
         return {
             "ticker": ticker,
-            "as_of": datetime.date.today().isoformat(),
-            "technicals_timeseries": timeseries_records,
-            "update_row": update_row,  # collected for later write by shared helper
+            "as_of_date": datetime.date.today().isoformat(),
+            "technicals": technicals_payload,
+            "update_row": update_row,
         }
 
     except Exception as e:
         return {"ticker": ticker, "error": str(e)}
-
 
 # ----------------------------
 # Orchestrator
 # ----------------------------
 
 def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
-    """
-    Runs the full pipeline:
-      - Fetch list of tickers
-      - For each chunk:
-          - Query price history
-          - Compute technicals in parallel
-          - Upload JSON to GCS
-          - Collect KPI/delta rows (no DB writes here)
-    """
     logging.info("--- Parallel Technicals Pipeline Started ---")
     tickers = get_tickers(storage_client)
     if not tickers:
@@ -210,7 +298,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
     total_uploaded = 0
     total_errors = 0
-    total_rows_collected = 0  # rows prepared for future persistence (same table as IV)
+    total_rows_collected = 0
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for i in range(0, len(tickers), chunk_size):
@@ -244,32 +332,26 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
                     logging.error(f"[{t}] Worker error: {result['error']}")
                     continue
 
-                # Upload JSON to GCS (UI/API consumption)
+                # --- Upload technicals in the same top-level shape as prices file ---
                 try:
-                    blob_path = f"{config.TECHNICALS_OUTPUT_FOLDER}{t}_technicals.json"
+                    tech_blob_path = f"{config.TECHNICALS_OUTPUT_FOLDER}{t}_technicals.json"
                     upload_json_to_gcs(storage_client, {
                         "ticker": result["ticker"],
-                        "as_of": result["as_of"],
-                        "technicals_timeseries": result["technicals_timeseries"],
-                    }, blob_path)
+                        "as_of_date": result["as_of_date"],
+                        "technicals": result["technicals"],
+                    }, tech_blob_path)
                     uploaded += 1
                 except Exception as e:
                     errors += 1
-                    logging.error(f"[{t}] Upload to GCS failed: {e}")
+                    logging.error(f"[{t}] Upload technicals failed: {e}")
 
-                # Collect row for future write via shared metrics helper (no DB writes here)
+                # (Optional) collect metrics row for future DB write
                 if row := result.get("update_row"):
                     update_rows.append(row)
 
-            # Accumulate stats and keep rows for later persistence (table TBD)
             total_uploaded += uploaded
             total_errors += errors
             total_rows_collected += len(update_rows)
-
-            # Optionally: hand off here to a shared writer once table name is decided.
-            # from analysis.market_metrics_writer import write_technicals_metrics
-            # write_technicals_metrics(bq_client, update_rows, target_table="project.dataset.market_metrics")  # TODO: set name
-
             logging.info(f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(update_rows)}")
 
     logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={total_rows_collected} ---")

@@ -54,8 +54,12 @@ Use **only** the provided MD&A text. Your analysis **must** be grounded in the d
 Summarize and analyze the most critical information, citing specific figures:
 1.  **Results of Operations**: How did total `Net Sales` change year-over-year for the three-month period? What was the `Gross Profit` margin for the current quarter versus the prior year?
 2.  **Liquidity & Cash Flow**: What was the `Net cash (used in) provided by operating activities` for the six-month period?
-3.  **Outlook & Guidance**: What is the qualitative outlook? Look for forward-looking statements, guidance, or commentary on market conditions (e.g., "strong demand," "slowing construction," "macroeconomic factors").
+3.  **Outlook & Guidance**: What is the qualitative outlook? Look for forward-looking statements, guidance, or commentary on market conditions (e.g., 'strong demand', 'slowing construction', 'macroeconomic factors').
 4.  **Synthesis**: Combine these data points into a cohesive narrative about the company's performance and outlook.
+
+### CRITICAL FORMATTING RULE
+- When including direct quotes or phrases in the 'analysis' text, you MUST use single quotes ('), not double quotes (").
+
 ### Example Output (for format and tone; do not copy values)
 {{example_output}}
 ### Step-by-Step Reasoning

@@ -31,7 +31,6 @@ def process_transcript(ticker: str, date_str: str):
     Processes a single, raw transcript file based on the
     ticker and date from the BigQuery work list.
     """
-    # The input blob is now the .json file, not the .txt summary
     input_blob_name = f"{INPUT_PREFIX}{ticker}_{date_str}.json"
     output_blob_name = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
     
@@ -49,14 +48,20 @@ def process_transcript(ticker: str, date_str: str):
     
     prompt = r"""You are a sharp financial analyst evaluating an earnings call transcript to find signals that may influence the stock over the next 1–3 months.
 Use **only** the full transcript provided. Your analysis **must** be grounded in the data.
+
 ### Key Interpretation Guidelines & Data Integration
-1.  **Guidance & Outlook**: Was guidance changed? You **must** cite the specific guidance revision (e.g., "revising our full year 2025 outlook lower").
-2.  **Performance vs. Expectations**: Did the company beat or miss? Cite specific metrics if available (e.g., "net sales declined 0.6%").
-3.  **Tone & Sentiment**: What was management's tone? You **must** include a short, direct quote that captures their sentiment (e.g., "fall short of our expectations").
+1.  **Guidance & Outlook**: Was guidance changed? You **must** cite the specific guidance revision (e.g., 'revising our full year 2025 outlook lower').
+2.  **Performance vs. Expectations**: Did the company beat or miss? Cite specific metrics if available (e.g., 'net sales declined 0.6%').
+3.  **Tone & Sentiment**: What was management's tone? You **must** include a short, direct quote that captures their sentiment (e.g., 'fall short of our expectations').
 4.  **Synthesis**: Combine these data points into a cohesive narrative.
 5.  **No Material Signals**: If balanced or neutral, output 0.50.
+
+### CRITICAL FORMATTING RULE
+- When including direct quotes in the 'analysis' text, you MUST use single quotes ('), not double quotes ("). This is to ensure the final JSON is clean and renders correctly.
+
 ### Example Output (for format and tone; do not copy values)
 {{example_output}}
+
 ### Step-by-Step Reasoning
 1.  Scan the full transcript to identify specific data points and quotes required by the guidelines.
 2.  Assess the overall tone and key performance metrics from both prepared remarks and the Q&A section.
@@ -68,6 +73,7 @@ Use **only** the full transcript provided. Your analysis **must** be grounded in
     -   0.51-0.69 → moderately bullish
     -   0.70-1.00 → strongly bullish
 5.  Summarize the key drivers into one dense paragraph, integrating the specific data points you identified.
+
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
