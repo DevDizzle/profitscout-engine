@@ -87,7 +87,7 @@ def populate_price_data(request):
     """Entry point for the price data populator pipeline."""
     if not all([bq_client, storage_client, fmp_client]):
         return "Server config error: price populator clients not initialized.", 500
-    populate_price_data.run_pipeline(bq_client, storage_client, fmp_client)
+    populate_price_data_pipeline.run_pipeline(bq_client, storage_client, fmp_client)
     return "Price data population pipeline started.", 202
 
 @functions_framework.http
