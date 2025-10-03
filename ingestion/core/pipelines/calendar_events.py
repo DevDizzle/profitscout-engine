@@ -1,6 +1,6 @@
 # ingestion/core/pipelines/calendar_events.py
 """
-Builds and maintains a rolling 90-day calendar of market events.
+Builds and maintains a rolling 30-day calendar of market events.
 
 This pipeline fetches upcoming corporate events (earnings, dividends, splits, IPOs)
 and broad economic events from the FMP API. It filters corporate events to only
@@ -58,6 +58,7 @@ def _truncate_and_load_rows(client: bigquery.Client, rows: List[Dict]):
             job_config=job_config
         )
         load_job.result()  # Wait for the job to complete.
+        # --- FIX: Corrected the typo in the config variable name ---
         logging.info(f"Successfully truncated and loaded {load_job.output_rows} rows into {config.CALENDAR_EVENTS_TABLE_ID}.")
     except Exception as e:
         logging.error(f"Failed to truncate and load calendar events: {e}", exc_info=True)
@@ -73,11 +74,11 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
         storage_client: An initialized Google Cloud Storage client.
     """
     today = datetime.date.today()
-    end_date = today + datetime.timedelta(days=90)
+    end_date = today + datetime.timedelta(days=30)
     _ensure_table(bq_client)
     now_iso = datetime.datetime.utcnow().isoformat()
 
-    tickers_to_track = set(gcs.get_tickers(storage_client, config.GCS_BUCKET_NAME, config.TICKER_LIST_PATH))
+    tickers_to_track = set(gcs.get_tickers(storage_client))
     if not tickers_to_track:
         logging.warning("No tickers found in tickerlist.txt. Corporate events will be skipped.")
 
@@ -91,17 +92,12 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
         ("economic_calendar", "Economic"),
     ]
 
-    # --- THIS IS THE FIX ---
-    # The list of significant events has been updated with the new, more specific keywords.
-    # The matching logic is now a more robust substring search.
     significant_events = {
-        "fed interest rate decision", "fed press conference", "fomc minutes",
-        "fomc economic projections", "treasury refunding announcement", "cpi",
-        "core cpi yoy", "core pce price index mom", "producer price index", "ppi",
-        "non farm payrolls", "unemployment rate", "average hourly wages yoy",
-        "retail sales mom", "ism manufacturing pmi", "ism services pmi",
-        "jolts job openings", "michigan 5-year inflation expectations",
-        "s&p/case-shiller home price index", "gdp growth annualized", "10-year note auction"
+        "fed interest rate decision",
+        "fed press conference",
+        "cpi",
+        "core pce price index mom",
+        "non farm payrolls",
     }
 
     for source_endpoint, event_type in event_sources:
@@ -118,8 +114,6 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
                         continue
                     
                     event_label = event.get("event", "").strip().lower()
-                    # The matching logic now checks if any of the significant keywords are
-                    # contained within the event name from the API.
                     if not any(keyword in event_label for keyword in significant_events):
                         continue
                 

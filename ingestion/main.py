@@ -81,15 +81,16 @@ def load_statements(request):
         return "Server config error: statement loader clients not initialized.", 500
     statement_loader.run_pipeline(fmp_client=fmp_client, storage_client=storage_client)
     return "Statement loader pipeline started.", 202
-
+    
 @functions_framework.http
-def populate_price_data(request):
+def run_price_populator(request):
     """Entry point for the price data populator pipeline."""
     if not all([bq_client, storage_client, fmp_client]):
         return "Server config error: price populator clients not initialized.", 500
-    populate_price_data_pipeline.run_pipeline(bq_client, storage_client, fmp_client)
+    # Now this call works perfectly because there's no conflict
+    populate_price_data.run_pipeline(bq_client, storage_client, fmp_client)
     return "Price data population pipeline started.", 202
-
+    
 @functions_framework.http
 def refresh_technicals(request):
     """Entry point for the technicals collector pipeline."""

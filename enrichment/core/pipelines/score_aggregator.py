@@ -44,7 +44,7 @@ def _gather_analysis_data() -> dict:
     ticker_data = {}
     all_prefixes = config.ANALYSIS_PREFIXES
 
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS * 2) as executor:
+    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS * 4) as executor:
         future_to_blob = {}
         print("--> Starting to list and submit files for each analysis type...")
         for analysis_type, prefix in all_prefixes.items():
