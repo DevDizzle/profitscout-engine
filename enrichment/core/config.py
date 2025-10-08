@@ -16,15 +16,16 @@ SCORES_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{SCORES_TABLE_NAME}"
 
 
 # --- Score Aggregator ---
-SCORE_WEIGHTS = {
-    "news_score": 0.25,
-    "technicals_score": 0.40,
-    "mda_score": 0.05,
-    "transcript_score": 0.07,
-    "financials_score": 0.08,
-    "fundamentals_score": 0.15,
-}
 
+# --- Score Aggregator ---
+SCORE_WEIGHTS = {
+    "news_score": 0.30,
+    "technicals_score": 0.50,
+    "mda_score": 0.05,
+    "transcript_score": 0.05,
+    "financials_score": 0.05,
+    "fundamentals_score": 0.05,
+}
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.6"))
