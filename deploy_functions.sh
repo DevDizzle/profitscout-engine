@@ -57,7 +57,7 @@ gcloud functions deploy populate-price-data \
   --project=$PROJECT_ID \
   --region=$REGION \
   --source=$INGESTION_SOURCE_DIR \
-  --entry-point=populate_price_data \
+  --entry-point=run_price_populator \
   --trigger-http \
   --allow-unauthenticated
 
