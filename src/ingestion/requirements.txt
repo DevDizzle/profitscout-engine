@@ -1,4 +1,5 @@
 functions-framework
+Flask
 google-cloud-storage
 google-cloud-bigquery
 google-cloud-bigquery-storage

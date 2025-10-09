@@ -1,145 +1,119 @@
-# ProfitScout-Engine — Serverless Financial Data Pipeline
+# ProfitScout — Serverless Financial Data Platform
 
-ProfitScout-Engine turns raw market data into actionable investment signals. It ingests public filings and prices, enriches them with AI, and serves ranked scores and pages for downstream apps.
+ProfitScout is an end-to-end AI platform for financial analysis, turning raw market data into actionable investment signals for the Russell 1000. It ingests public filings and prices, enriches them with AI, and serves ranked scores and pages for downstream apps.
 
-## Key features
+## Key Features
 
-- **Broad ingestion**: Cloud Functions pull SEC filings, fundamentals, prices, and technical indicators into Google Cloud Storage and BigQuery.
-- **AI enrichment**: Vertex AI summarizers and analyzers transform raw data into structured insights.
-- **Automated serving**: Score aggregation, recommendation generation, and site content are produced and synced to Firestore.
-- **Workflow-first**: Cloud Workflows coordinate each stage and run on a Cloud Scheduler trigger for fully serverless operation.
+- **Broad Ingestion**: Cloud Functions pull SEC filings, fundamentals, prices, and technical indicators into Google Cloud Storage and BigQuery.
+- **AI Enrichment**: Vertex AI summarizers and analyzers transform raw data into structured insights.
+- **Automated Serving**: Score aggregation, recommendation generation, and site content are produced and synced to Firestore.
+- **Workflow-First**: Cloud Workflows coordinate each stage and run on a Cloud Scheduler trigger for fully serverless operation.
 
-## How it works
+## How It Works
 
 On a schedule, a workflow fan-outs to ingestion jobs that collect raw data from external APIs and persist to Cloud Storage and BigQuery. A second workflow calls summarization and analysis functions that read that data, invoke Vertex AI, and write enriched artifacts. A final workflow aggregates scores, builds recommendation pages, and pushes data to Firestore for consumption.
 
 ```mermaid
 flowchart LR
-  Scheduler((Cloud Scheduler)) --> IngestWF[Workflow: ingestion/workflow.yaml]
+  Scheduler((Cloud Scheduler)) --> IngestWF[Workflow: src/ingestion/workflow.yaml]
   IngestWF --> IngestFns{{Ingestion Functions}}
   IngestFns --> GCS[(GCS: profit-scout-data)]
   IngestFns --> BQ[(BigQuery: profit_scout)]
-  GCS --> EnrichWF[Workflow: enrichment/workflow.yaml]
+  GCS --> EnrichWF[Workflow: src/enrichment/workflow.yaml]
   EnrichWF --> EnrichFns{{Summarizers & Analyzers}}
   EnrichFns --> GCS
   EnrichFns --> BQ
-  BQ --> ServeWF[Workflow: serving/workflow.yaml]
+  BQ --> ServeWF[Workflow: src/serving/workflow.yaml]
   ServeWF --> ServeFns{{Scoring & Pages}}
   ServeFns --> Firestore[(Firestore: tickers)]
   ServeFns --> DestGCS[(GCS: profit-scout)]
 ```
 
-## Data flow details
+## Repository Structure
 
-```mermaid
-sequenceDiagram
-  participant S as Cloud Scheduler
-  participant IW as Ingestion WF
-  participant IF as Ingestion Functions
-  participant G as Cloud Storage
-  participant BQ as BigQuery
-  participant EW as Enrichment WF
-  participant EF as Enrichment Functions
-  participant SW as Serving WF
-  participant SF as Serving Functions
-  participant FS as Firestore
-  S->>IW: Trigger daily run
-  IW->>IF: call price_updater, sec_filing_extractor...
-  IF->>G: persist raw objects
-  IF->>BQ: upsert tables
-  EW->>EF: run transcript_summarizer & analyzers
-  EF->>G: read inputs / write analysis
-  EF->>BQ: update analysis tables
-  SW->>SF: aggregate scores & generate pages
-  SF->>BQ: read analysis_scores
-  SF->>FS: sync tickers collection
-  SF->>G: publish recommendations and pages
-```
-
-## Repo structure
+The repository is organized into a `src` directory containing all application code and a `tests` directory for unit tests.
 
 ```
 .
-├── ingestion/
-│   ├── core/
-│   └── workflow.yaml
-├── enrichment/
-│   ├── core/
-│   └── workflow.yaml
-├── serving/
-│   ├── core/
-│   └── workflow.yaml
-├── fetch_images.py
-└── reanme_recs.py
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── src/
+│   ├── ingestion/
+│   ├── enrichment/
+│   ├── serving/
+│   ├── options/
+│   └── utils/
+├── tests/
+│   ├── ingestion/
+│   └── enrichment/
+├── .gitignore
+└── README.md
 ```
 
-- `ingestion/` — collects filings, fundamentals, prices, and metadata.
-- `enrichment/` — summarizers and analyzers powered by Vertex AI.
-- `serving/` — aggregates scores and publishes recommendations.
-- `fetch_images.py` — utility to pull logos for assets.
-- `reanme_recs.py` — helper script for renaming recommendation files.
+- **`src/ingestion/`**: Cloud Functions and pipelines for collecting raw data.
+- **`src/enrichment/`**: AI-powered summarizers and analyzers.
+- **`src/serving/`**: (Placeholder) Aggregates scores and publishes recommendations.
+- **`src/options/`**: (Placeholder) Code for the options-related features.
+- **`src/utils/`**: Helper scripts for deployment and data management.
+- **`tests/`**: Unit tests for all application code.
 
 ## Quickstart
 
-1. **Prereqs**: Python 3.12, `gcloud` CLI, access to a Google Cloud project.
-2. **Setup**
-   ```bash
-   python -m venv .venv && source .venv/bin/activate
-   pip install -r ingestion/requirements.txt
-   pip install -r enrichment/requirements.txt
-   pip install -r serving/requirements.txt
-   ```
-3. **Run a sample pipeline**
-   ```bash
-   python -m ingestion.core.pipelines.price_updater
-   ```
-4. **View outputs**: processed files appear in `gs://profit-scout-data` and tables in the `profit_scout` dataset.
+### Prerequisites
+- Python 3.12+
+- `gcloud` CLI, authenticated to a Google Cloud project.
+- An environment variable `FMP_API_KEY` set with your Financial Modeling Prep API key.
+
+### Setup
+1.  **Create a virtual environment:**
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate
+    ```
+
+2.  **Install all dependencies:**
+    ```bash
+    pip install -r src/ingestion/requirements.txt
+    pip install -r src/enrichment/requirements.txt
+    # Add other requirements files as they become available
+    ```
+
+### Running Tests
+To run the full suite of unit tests, use `pytest`:
+```bash
+pytest
+```
 
 ## Configuration
 
-| Variable | Default | Description | Location |
-| --- | --- | --- | --- |
-| `PROJECT_ID` | `profitscout-lx6bb` | Source Google Cloud project | `ingestion/core/config.py` |
-| `GCS_BUCKET_NAME` | `profit-scout-data` | Raw data bucket | `ingestion/core/config.py` |
-| `BIGQUERY_DATASET` | `profit_scout` | Dataset for ingestion outputs | `ingestion/core/config.py` |
-| `FMP_API_KEY_SECRET` | `FMP_API_KEY` | Secret name for FMP API key | `ingestion/core/config.py` |
-| `SEC_API_KEY_SECRET` | `SEC_API_KEY` | Secret name for SEC API key | `ingestion/core/config.py` |
-| `MODEL_NAME` | `gemini-2.0-flash` | Vertex model for summaries | `enrichment/core/config.py` |
-| `DESTINATION_PROJECT_ID` | `profitscout-fida8` | Target project for serving assets | `serving/core/config.py` |
-| `DESTINATION_GCS_BUCKET_NAME` | `profit-scout` | Bucket for public artifacts | `serving/core/config.py` |
-| `FIRESTORE_COLLECTION` | `tickers` | Firestore collection synced by serving workflow | `serving/core/config.py` |
+Configuration for each component is managed within its respective `config.py` file.
 
-## Pipelines & jobs
+| Variable                  | Default             | Description                               | Location                            |
+| ------------------------- | ------------------- | ----------------------------------------- | ----------------------------------- |
+| `PROJECT_ID`              | `profitscout-lx6bb` | Source Google Cloud project               | `src/ingestion/core/config.py`      |
+| `GCS_BUCKET_NAME`         | `profit-scout-data` | Raw data bucket                           | `src/ingestion/core/config.py`      |
+| `BIGQUERY_DATASET`        | `profit_scout`      | Dataset for ingestion outputs             | `src/ingestion/core/config.py`      |
+| `FMP_API_KEY_SECRET`      | `FMP_API_KEY`       | Secret name for FMP API key               | `src/ingestion/core/config.py`      |
+| `SEC_API_KEY_SECRET`      | `SEC_API_KEY`       | Secret name for SEC API key               | `src/ingestion/core/config.py`      |
+| `MODEL_NAME`              | `gemini-2.0-flash`  | Vertex model for summaries                | `src/enrichment/core/config.py`     |
+| `DESTINATION_PROJECT_ID`  | `profitscout-fida8` | Target project for serving assets         | `src/serving/core/config.py`        |
+| `DESTINATION_GCS_BUCKET`  | `profit-scout`      | Bucket for public artifacts               | `src/serving/core/config.py`        |
+| `FIRESTORE_COLLECTION`    | `tickers`           | Firestore collection for serving          | `src/serving/core/config.py`        |
 
-- **Ingestion workflow** (`ingestion/workflow.yaml`)
-  - **Trigger**: Cloud Scheduler → Cloud Workflow
-  - **Inputs**: FMP & SEC APIs
-  - **Outputs**: raw files in `gs://profit-scout-data`, tables in `profit_scout`
-  - **Logs**: Cloud Logging
-- **Enrichment workflow** (`enrichment/workflow.yaml`)
-  - **Trigger**: manual or downstream from ingestion completion
-  - **Inputs**: previously ingested artifacts
-  - **Outputs**: AI summaries and analysis in Cloud Storage and BigQuery
-  - **Logs**: Cloud Logging
-- **Serving workflow** (`serving/workflow.yaml`)
-  - **Trigger**: manual or scheduled
-  - **Inputs**: analysis tables and GCS artifacts
-  - **Outputs**: `analysis_scores`, recommendations, pages, Firestore docs
-  - **Logs**: Cloud Logging
-
-## Observability & artifacts
-
-- **Metrics & tables**: BigQuery dataset `profit_scout` (e.g., `analysis_scores`).
-- **Logs**: Cloud Logging for each Cloud Function and workflow step.
-- **Artifacts**: raw and enriched files in `gs://profit-scout-data`; published pages and recommendations in `gs://profit-scout`.
+## CI/CD
+This repository uses GitHub Actions for continuous integration. The workflow, defined in `.github/workflows/ci.yml`, runs automatically on every push and pull request to:
+1.  Install all dependencies.
+2.  Run the `black` formatter to check for code style.
+3.  Execute the `pytest` suite to ensure code quality and correctness.
 
 ## Contributing
 
-1. Create a feature branch off `main`.
-2. Format code with `black` and run `pytest` before committing.
-3. Submit a pull request describing the change and referencing any related issues.
+1.  Create a feature branch off `main`.
+2.  Make your changes and ensure they are well-documented.
+3.  Format your code with `black .` and run tests with `pytest` before committing.
+4.  Submit a pull request describing the change and referencing any related issues.
 
-## License & contact
+## License
 
-This repository currently has no explicit open-source license. For questions or partnership inquiries, please open an issue in this repo.
-
+This project is licensed under the MIT License. See the `LICENSE` file for details.
