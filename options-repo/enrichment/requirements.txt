@@ -1,0 +1,13 @@
+# enrichment/requirements.txt
+functions-framework
+google-cloud-storage
+google-cloud-bigquery
+google-cloud-bigquery-storage
+google-genai
+tenacity
+pandas
+pyarrow
+db-dtypes
+requests
+pandas-ta
+pandas-gbq 
