@@ -1,0 +1,22 @@
+# requirements.txt
+Flask
+functions-framework
+google-cloud-bigquery
+google-cloud-bigquery-storage
+google-cloud-firestore
+google-cloud-logging
+google-cloud-pubsub
+google-cloud-storage
+google-genai>=1.22.0
+matplotlib
+mplfinance
+pandas
+pandas-gbq
+pandas-ta
+pyarrow>=10.0.0
+python-dateutil
+requests
+sec-api
+tenacity>=8.2.0
+db-dtypes
+beautifulsoup4

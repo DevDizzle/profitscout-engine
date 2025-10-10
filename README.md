@@ -7,26 +7,41 @@ ProfitScout is an end-to-end AI platform for financial analysis, turning raw mar
 - **Broad Ingestion**: Cloud Functions pull SEC filings, fundamentals, prices, and technical indicators into Google Cloud Storage and BigQuery.
 - **AI Enrichment**: Vertex AI summarizers and analyzers transform raw data into structured insights.
 - **Automated Serving**: Score aggregation, recommendation generation, and site content are produced and synced to Firestore.
+- **Options Analysis**: Ingests options chain data, enriches it with feature engineering, and generates daily buy/sell recommendations.
 - **Workflow-First**: Cloud Workflows coordinate each stage and run on a Cloud Scheduler trigger for fully serverless operation.
 
 ## How It Works
 
-On a schedule, a workflow fan-outs to ingestion jobs that collect raw data from external APIs and persist to Cloud Storage and BigQuery. A second workflow calls summarization and analysis functions that read that data, invoke Vertex AI, and write enriched artifacts. A final workflow aggregates scores, builds recommendation pages, and pushes data to Firestore for consumption.
+On a schedule, a workflow fan-outs to ingestion jobs that collect raw data from external APIs and persist to Cloud Storage and BigQuery. A second workflow calls summarization and analysis functions that read that data, invoke Vertex AI, and write enriched artifacts. A final workflow aggregates scores, builds recommendation pages, and pushes data to Firestore for consumption. A parallel set of workflows handles the options data pipeline.
 
 ```mermaid
 flowchart LR
-  Scheduler((Cloud Scheduler)) --> IngestWF[Workflow: src/ingestion/workflow.yaml]
-  IngestWF --> IngestFns{{Ingestion Functions}}
-  IngestFns --> GCS[(GCS: profit-scout-data)]
-  IngestFns --> BQ[(BigQuery: profit_scout)]
-  GCS --> EnrichWF[Workflow: src/enrichment/workflow.yaml]
-  EnrichWF --> EnrichFns{{Summarizers & Analyzers}}
-  EnrichFns --> GCS
-  EnrichFns --> BQ
-  BQ --> ServeWF[Workflow: src/serving/workflow.yaml]
-  ServeWF --> ServeFns{{Scoring & Pages}}
-  ServeFns --> Firestore[(Firestore: tickers)]
-  ServeFns --> DestGCS[(GCS: profit-scout)]
+  subgraph Core Pipeline
+    Scheduler((Cloud Scheduler)) --> IngestWF[Workflow: src/ingestion/workflow.yaml]
+    IngestWF --> IngestFns{{Ingestion Functions}}
+    IngestFns --> GCS[(GCS: profit-scout-data)]
+    IngestFns --> BQ[(BigQuery: profit_scout)]
+    GCS --> EnrichWF[Workflow: src/enrichment/workflow.yaml]
+    EnrichWF --> EnrichFns{{Summarizers & Analyzers}}
+    EnrichFns --> GCS
+    EnrichFns --> BQ
+    BQ --> ServeWF[Workflow: src/serving/workflow.yaml]
+    ServeWF --> ServeFns{{Scoring & Pages}}
+    ServeFns --> Firestore[(Firestore: tickers)]
+    ServeFns --> DestGCS[(GCS: profit-scout)]
+  end
+
+  subgraph Options Pipeline
+    Scheduler --> OptionsIngestWF[Workflow: src/options/ingestion/workflow.yaml]
+    OptionsIngestWF --> OptionsIngestFns{{Options Ingestion}}
+    OptionsIngestFns --> BQ
+    BQ --> OptionsEnrichWF[Workflow: src/options/enrichment/workflow.yaml]
+    OptionsEnrichWF --> OptionsEnrichFns{{Options Enrichment}}
+    OptionsEnrichFns --> BQ
+    BQ --> OptionsServeWF[Workflow: src/options/serving/workflow.yaml]
+    OptionsServeWF --> OptionsServeFns{{Options Serving}}
+    OptionsServeFns --> Firestore
+  end
 ```
 
 ## Repository Structure
@@ -53,8 +68,8 @@ The repository is organized into a `src` directory containing all application co
 
 - **`src/ingestion/`**: Cloud Functions and pipelines for collecting raw data.
 - **`src/enrichment/`**: AI-powered summarizers and analyzers.
-- **`src/serving/`**: (Placeholder) Aggregates scores and publishes recommendations.
-- **`src/options/`**: (Placeholder) Code for the options-related features.
+- **`src/serving/`**: Aggregates scores and publishes recommendations.
+- **`src/options/`**: Code for the options-related features.
 - **`src/utils/`**: Helper scripts for deployment and data management.
 - **`tests/`**: Unit tests for all application code.
 
@@ -74,9 +89,7 @@ The repository is organized into a `src` directory containing all application co
 
 2.  **Install all dependencies:**
     ```bash
-    pip install -r src/ingestion/requirements.txt
-    pip install -r src/enrichment/requirements.txt
-    # Add other requirements files as they become available
+    pip install -r requirements.txt
     ```
 
 ### Running Tests
@@ -89,6 +102,7 @@ pytest
 
 Configuration for each component is managed within its respective `config.py` file.
 
+### Core Configuration
 | Variable                  | Default             | Description                               | Location                            |
 | ------------------------- | ------------------- | ----------------------------------------- | ----------------------------------- |
 | `PROJECT_ID`              | `profitscout-lx6bb` | Source Google Cloud project               | `src/ingestion/core/config.py`      |
@@ -100,6 +114,16 @@ Configuration for each component is managed within its respective `config.py` fi
 | `DESTINATION_PROJECT_ID`  | `profitscout-fida8` | Target project for serving assets         | `src/serving/core/config.py`        |
 | `DESTINATION_GCS_BUCKET`  | `profit-scout`      | Bucket for public artifacts               | `src/serving/core/config.py`        |
 | `FIRESTORE_COLLECTION`    | `tickers`           | Firestore collection for serving          | `src/serving/core/config.py`        |
+
+### Options Configuration
+| Variable                  | Default             | Description                               | Location                            |
+| ------------------------- | ------------------- | ----------------------------------------- | ----------------------------------- |
+| `POLYGON_API_KEY`         | `None`              | Polygon API key                           | `src/options/ingestion/core/config.py` |
+| `OPTIONS_CHAIN_TABLE`     | `options_chain`     | BigQuery table for options chain data     | `src/options/ingestion/core/config.py` |
+| `SCORES_TABLE`            | `analysis_scores`   | BigQuery table for analysis scores        | `src/options/enrichment/core/config.py`|
+| `CAND_TABLE`              | `options_candidates`| BigQuery table for options candidates     | `src/options/enrichment/core/config.py`|
+| `PRICE_TABLE_ID`          | `price_data`        | BigQuery table for price data             | `src/options/enrichment/core/config.py`|
+| `OPTIONS_MD_PREFIX`       | `options-recommendations/` | GCS prefix for options recommendations | `src/options/serving/core/config.py`   |
 
 ## CI/CD
 This repository uses GitHub Actions for continuous integration. The workflow, defined in `.github/workflows/ci.yml`, runs automatically on every push and pull request to:
