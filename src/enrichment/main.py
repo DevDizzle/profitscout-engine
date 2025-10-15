@@ -21,6 +21,9 @@ from .core.pipelines import (
     fundamentals_analyzer,
     mda_analyzer,
     news_analyzer,
+    options_analyzer,
+    options_candidate_selector,
+    options_feature_engineering,
     score_aggregator,
     technicals_analyzer,
     transcript_analyzer,
@@ -153,3 +156,45 @@ def run_score_aggregator(request: Request):
     """
     score_aggregator.run_pipeline()
     return "Score aggregation pipeline finished.", 200
+
+
+@functions_framework.http
+def run_options_candidate_selector(request: Request):
+    """HTTP Cloud Function to run the options candidate selector pipeline.
+
+    Args:
+        request (flask.Request): The request object.
+
+    Returns:
+        A tuple containing a confirmation message and an HTTP status code.
+    """
+    options_candidate_selector.run_pipeline()
+    return "Options candidate selector pipeline finished.", 200
+
+
+@functions_framework.http
+def run_options_analyzer(request: Request):
+    """HTTP Cloud Function to run the options analyzer pipeline.
+
+    Args:
+        request (flask.Request): The request object.
+
+    Returns:
+        A tuple containing a confirmation message and an HTTP status code.
+    """
+    options_analyzer.run_pipeline()
+    return "Options analyzer pipeline finished.", 200
+
+
+@functions_framework.http
+def run_options_feature_engineering(request: Request):
+    """HTTP Cloud Function to run the options feature engineering pipeline.
+
+    Args:
+        request (flask.Request): The request object.
+
+    Returns:
+        A tuple containing a confirmation message and an HTTP status code.
+    """
+    options_feature_engineering.run_pipeline()
+    return "Options feature engineering pipeline finished.", 200

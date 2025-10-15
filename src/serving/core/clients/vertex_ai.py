@@ -1,5 +1,4 @@
-# enrichment/core/clients/vertex_ai.py
-
+# /serving/core/clients/vertex_ai.py
 import logging
 from tenacity import (
     retry,
@@ -7,8 +6,8 @@ from tenacity import (
     stop_after_attempt,
     retry_if_exception_type,
 )
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai import types
 from .. import config
 import google.auth
 import google.auth.transport.requests
@@ -17,10 +16,12 @@ logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
 
 
-def _init_client() -> genai.Client | None:
+def _init_client() -> genai.GenerativeModel | None:
     """Initializes the Vertex AI client."""
     try:
-        project = config.PROJECT_ID
+        # Use the project specified in the serving configuration
+        project = config.SOURCE_PROJECT_ID
+        # Force global for google.genai + Vertex routing
         location = "global"
 
         _log.info(
@@ -28,12 +29,7 @@ def _init_client() -> genai.Client | None:
             project,
             location,
         )
-        client = genai.Client(
-            vertexai=True,
-            project=project,
-            location=location,
-            http_options=types.HttpOptions(api_version="v1"),
-        )
+        client = genai.GenerativeModel(config.MODEL_NAME)
         _log.info("Vertex GenAI client initialized successfully.")
         return client
     except Exception as e:
@@ -68,23 +64,15 @@ def generate(prompt: str) -> str:
         len(prompt.split()),
     )
 
-    cfg = types.GenerateContentConfig(
+    cfg = types.GenerationConfig(
         temperature=config.TEMPERATURE,
         top_p=config.TOP_P,
         top_k=config.TOP_K,
-        seed=config.SEED,
         candidate_count=config.CANDIDATE_COUNT,
         max_output_tokens=config.MAX_OUTPUT_TOKENS,
     )
 
-    text = ""
-    for chunk in _client.models.generate_content_stream(
-        model=config.MODEL_NAME,
-        contents=prompt,
-        config=cfg,
-    ):
-        if chunk.text:
-            text += chunk.text
+    response = _client.generate_content(prompt, generation_config=cfg)
 
-    _log.info("Successfully received full streamed response from Vertex AI.")
-    return text.strip()
+    _log.info("Successfully received response from Vertex AI.")
+    return response.text.strip()
