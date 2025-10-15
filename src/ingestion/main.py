@@ -20,11 +20,13 @@ from google.cloud import bigquery, pubsub_v1, storage
 
 from .core import config
 from .core.clients.fmp_client import FMPClient
+from .core.clients.polygon_client import PolygonClient
 from .core.clients.sec_api_client import SecApiClient
 from .core.pipelines import (
     calendar_events,
     fundamentals,
     news_fetcher,
+    options_chain_fetcher,
     populate_price_data,
     price_updater,
     refresh_stock_metadata,
@@ -55,6 +57,8 @@ def _get_secret_or_env(name: str) -> str | None:
     Returns:
         The secret value as a string, or None if not found.
     """
+    if not name:
+        return None
     val = os.environ.get(name)
     if val:
         return val
@@ -68,16 +72,23 @@ def _get_secret_or_env(name: str) -> str | None:
 
 # --- Client Initialization ---
 # Initialize Google Cloud clients.
-storage_client = storage.Client(project=config.PROJECT_ID)
-bq_client = bigquery.Client(project=config.PROJECT_ID)
-publisher_client = pubsub_v1.PublisherClient()
+storage_client = None
+bq_client = None
+publisher_client = None
+
+if os.environ.get("ENV") != "test":
+    storage_client = storage.Client(project=config.PROJECT_ID)
+    bq_client = bigquery.Client(project=config.PROJECT_ID)
+    publisher_client = pubsub_v1.PublisherClient()
 
 # Initialize API clients with keys from Secret Manager or environment.
 fmp_api_key = _get_secret_or_env(config.FMP_API_KEY_SECRET)
 sec_api_key = _get_secret_or_env(config.SEC_API_KEY_SECRET)
+polygon_api_key = _get_secret_or_env(config.POLYGON_API_KEY)
 
 fmp_client = FMPClient(api_key=fmp_api_key) if fmp_api_key else None
 sec_api_client = SecApiClient(api_key=sec_api_key) if sec_api_key else None
+polygon_client = PolygonClient(api_key=polygon_api_key) if polygon_api_key else None
 
 
 # --- Cloud Function Entry Points ---
@@ -278,3 +289,35 @@ def refresh_calendar_events(request: Request):
         fmp_client=fmp_client, bq_client=bq_client, storage_client=storage_client
     )
     return "Calendar events pipeline started.", 202
+
+
+@functions_framework.http
+def fetch_options_chain(request: Request):
+    """
+    HTTP-triggered function to fetch options chain data.
+
+    This function is triggered by an HTTP request. It fetches options chain data
+    from the Polygon API and loads it into a BigQuery table.
+
+    Args:
+        request: The Flask request object (not used).
+
+    Returns:
+        A tuple containing a message and an HTTP status code.
+    """
+    try:
+        _bq_client = bq_client or bigquery.Client(project=config.PROJECT_ID)
+        _polygon_client = polygon_client or PolygonClient(
+            api_key=_get_secret_or_env(config.POLYGON_API_KEY)
+        )
+
+        if not all([_bq_client, _polygon_client]):
+            logging.error("Options chain clients not initialized.")
+            return "Server config error: options chain clients not initialized.", 500
+        options_chain_fetcher.run_pipeline(
+            polygon_client=_polygon_client, bq_client=_bq_client
+        )
+        return "Options chain fetch started.", 202
+    except ValueError as e:
+        logging.error(f"Failed to initialize PolygonClient: {e}")
+        return "Server config error: failed to initialize PolygonClient.", 500

@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import bigquery, storage
 
 from .. import config
-from ..clients.polygon import PolygonClient
+from ..clients.polygon_client import PolygonClient
 
 OPTIONS_TABLE = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_chain"
 PRICE_TABLE_ID = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.price_data"

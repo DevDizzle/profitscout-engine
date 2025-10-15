@@ -1,11 +1,11 @@
-# tests/options/enrichment/test_main.py
+# tests/enrichment/test_options_enrichment.py
 import pytest
 from unittest.mock import patch, MagicMock
 
-from src.options.enrichment import main
+from src.enrichment import main
 
 
-@patch("src.options.enrichment.main.candidate_selector_pipeline")
+@patch("src.enrichment.main.options_candidate_selector")
 def test_run_options_candidate_selector(mock_pipeline):
     """
     Tests the successful execution of the run_options_candidate_selector function.
@@ -18,7 +18,7 @@ def test_run_options_candidate_selector(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.enrichment.main.options_analyzer_pipeline")
+@patch("src.enrichment.main.options_analyzer")
 def test_run_options_analyzer(mock_pipeline):
     """
     Tests the successful execution of the run_options_analyzer function.
@@ -31,7 +31,7 @@ def test_run_options_analyzer(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.enrichment.main.options_feature_engineering_pipeline")
+@patch("src.enrichment.main.options_feature_engineering")
 def test_run_options_feature_engineering(mock_pipeline):
     """
     Tests the successful execution of the run_options_feature_engineering function.

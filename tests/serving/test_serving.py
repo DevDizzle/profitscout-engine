@@ -1,11 +1,11 @@
-# tests/options/serving/test_main.py
+# tests/serving/test_serving.py
 import pytest
 from unittest.mock import patch, MagicMock
 
-from src.options.serving import main
+from src.serving import main
 
 
-@patch("src.options.serving.main.performance_tracker_updater")
+@patch("src.serving.main.performance_tracker_updater")
 def test_run_performance_tracker_updater(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_performance_tracker_updater(mock_request)
@@ -14,7 +14,7 @@ def test_run_performance_tracker_updater(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.winners_dashboard_generator")
+@patch("src.serving.main.winners_dashboard_generator")
 def test_run_winners_dashboard_generator(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_winners_dashboard_generator(mock_request)
@@ -23,7 +23,7 @@ def test_run_winners_dashboard_generator(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.recommendations_generator")
+@patch("src.serving.main.recommendations_generator")
 def test_run_recommendations_generator(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_recommendations_generator(mock_request)
@@ -32,7 +32,7 @@ def test_run_recommendations_generator(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.sync_calendar_to_firestore")
+@patch("src.serving.main.sync_calendar_to_firestore")
 def test_run_sync_calendar_to_firestore(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_sync_calendar_to_firestore(mock_request)
@@ -41,7 +41,7 @@ def test_run_sync_calendar_to_firestore(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.sync_options_to_firestore")
+@patch("src.serving.main.sync_options_to_firestore")
 def test_run_sync_options_to_firestore(mock_pipeline):
     mock_request = MagicMock()
     mock_request.is_json = False
@@ -51,7 +51,7 @@ def test_run_sync_options_to_firestore(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once_with(full_reset=False)
 
 
-@patch("src.options.serving.main.sync_winners_to_firestore")
+@patch("src.serving.main.sync_winners_to_firestore")
 def test_run_sync_winners_to_firestore(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_sync_winners_to_firestore(mock_request)
@@ -60,7 +60,7 @@ def test_run_sync_winners_to_firestore(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.dashboard_generator")
+@patch("src.serving.main.dashboard_generator")
 def test_run_dashboard_generator(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_dashboard_generator(mock_request)
@@ -69,7 +69,7 @@ def test_run_dashboard_generator(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.data_cruncher")
+@patch("src.serving.main.data_cruncher")
 def test_run_data_cruncher(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_data_cruncher(mock_request)
@@ -78,7 +78,7 @@ def test_run_data_cruncher(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.page_generator")
+@patch("src.serving.main.page_generator")
 def test_run_page_generator(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_page_generator(mock_request)
@@ -87,7 +87,7 @@ def test_run_page_generator(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.price_chart_generator")
+@patch("src.serving.main.price_chart_generator")
 def test_run_price_chart_generator(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_price_chart_generator(mock_request)
@@ -96,7 +96,7 @@ def test_run_price_chart_generator(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.data_bundler")
+@patch("src.serving.main.data_bundler")
 def test_run_data_bundler(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_data_bundler(mock_request)
@@ -105,7 +105,7 @@ def test_run_data_bundler(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.sync_to_firestore")
+@patch("src.serving.main.sync_to_firestore")
 def test_run_sync_to_firestore(mock_pipeline):
     mock_request = MagicMock()
     mock_request.is_json = False
@@ -115,7 +115,7 @@ def test_run_sync_to_firestore(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once_with(full_reset=False)
 
 
-@patch("src.options.serving.main.sync_options_candidates_to_firestore")
+@patch("src.serving.main.sync_options_candidates_to_firestore")
 def test_run_sync_options_candidates_to_firestore(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_sync_options_candidates_to_firestore(mock_request)
@@ -124,7 +124,7 @@ def test_run_sync_options_candidates_to_firestore(mock_pipeline):
     mock_pipeline.run_pipeline.assert_called_once()
 
 
-@patch("src.options.serving.main.sync_performance_tracker_to_firestore")
+@patch("src.serving.main.sync_performance_tracker_to_firestore")
 def test_run_sync_performance_tracker_to_firestore(mock_pipeline):
     mock_request = MagicMock()
     result, status_code = main.run_sync_performance_tracker_to_firestore(mock_request)
