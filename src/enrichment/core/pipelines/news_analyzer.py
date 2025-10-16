@@ -146,6 +146,16 @@ Estimate the directional impact on **{ticker} ({company_name})** over the next *
 def run_pipeline():
     """Main pipeline entry point with robust timeout handling."""
     logging.info("--- Starting News Analysis Pipeline (with worker timeouts) ---")
+
+    # --- MINIMAL CHANGE IS HERE ---
+    # Wipe the output directory clean before starting the analysis.
+    logging.info(f"Clearing output directory: gs://{config.GCS_BUCKET_NAME}/{OUTPUT_PREFIX}")
+    gcs.delete_all_in_prefix(
+        bucket_name=config.GCS_BUCKET_NAME,
+        prefix=OUTPUT_PREFIX
+    )
+    # -----------------------------
+
     work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
     if not work_items:
         logging.info("No new news files to process.")

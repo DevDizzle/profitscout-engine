@@ -10,15 +10,13 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 
 # --- BigQuery ---
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
-BQ_METADATA_TABLE = f"{PROJECT_ID}.{BIGQUERY_DATASET}.stock_metadata"
+# This is the line we're fixing. Renamed from BQ_METADATA_TABLE
+STOCK_METADATA_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.stock_metadata"
 SCORES_TABLE_NAME = "analysis_scores"
 SCORES_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{SCORES_TABLE_NAME}"
 OPTIONS_CHAIN_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.options_chain"
 OPTIONS_CANDIDATES_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.options_candidates"
 PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.price_data"
-
-
-# --- Score Aggregator ---
 
 # --- Score Aggregator ---
 SCORE_WEIGHTS = {
@@ -29,6 +27,7 @@ SCORE_WEIGHTS = {
     "financials_score": 0.10,
     "fundamentals_score": 0.10,
 }
+
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.6"))
@@ -67,3 +66,6 @@ ANALYSIS_PREFIXES = {
 # --- Job Parameters ---
 MAX_WORKERS = 8
 HEADLINE_LIMIT = 25
+
+# Timeout for worker processes in seconds
+WORKER_TIMEOUT = 300

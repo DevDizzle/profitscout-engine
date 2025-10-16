@@ -64,3 +64,30 @@ def list_blobs_with_content(bucket_name: str, prefix: str) -> dict:
         except Exception as e:
             logging.error(f"Failed to read blob {blob.name}: {e}")
     return content_map
+
+def delete_all_in_prefix(bucket_name: str, prefix: str) -> None:
+    """
+    Deletes all blobs within a given prefix (folder) in a GCS bucket.
+    This is useful for clearing output directories before a pipeline run.
+    """
+    try:
+        logging.info(f"Starting cleanup for prefix: gs://{bucket_name}/{prefix}")
+        client = _client()
+        bucket = client.bucket(bucket_name)
+        blobs_to_delete = list(bucket.list_blobs(prefix=prefix))
+
+        if not blobs_to_delete:
+            logging.info("Prefix is already empty. No files to delete.")
+            return
+
+        with client.batch():
+            for blob in blobs_to_delete:
+                # To avoid deleting the "folder" placeholder itself
+                if blob.name != prefix:
+                    logging.info(f"Queueing for deletion: {blob.name}")
+                    blob.delete()
+        
+        logging.info(f"Successfully deleted {len(blobs_to_delete)} blobs from prefix '{prefix}'.")
+    except Exception as e:
+        logging.error(f"Failed to delete blobs in prefix '{prefix}': {e}", exc_info=True)
+        raise
