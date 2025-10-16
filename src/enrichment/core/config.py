@@ -22,12 +22,12 @@ PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.price_data"
 
 # --- Score Aggregator ---
 SCORE_WEIGHTS = {
-    "news_score": 0.30,
-    "technicals_score": 0.50,
+    "news_score": 0.25,
+    "technicals_score": 0.45,
     "mda_score": 0.05,
     "transcript_score": 0.05,
-    "financials_score": 0.05,
-    "fundamentals_score": 0.05,
+    "financials_score": 0.10,
+    "fundamentals_score": 0.10,
 }
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")

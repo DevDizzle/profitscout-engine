@@ -21,8 +21,8 @@ def _insert_candidates(bq: bigquery.Client):
       • Chain source = latest fetch_date per ticker from options_chain
       • Resolve underlying price with latest adj_close from price_data (max date)
       • Moneyness (direction-aware):
-            - Calls: strike / price in [1.05, 1.10]
-            - Puts : price / strike in [1.05, 1.10]
+            - Calls: strike / price in [1.02, 1.15]
+            - Puts : price / strike in [1.02, 1.15]
       • Keep DTE, OI, spread filters
       • Score/normalize as before
       • Compute rn (per ticker, option_type) but DO NOT filter by rn
@@ -41,13 +41,13 @@ def _insert_candidates(bq: bigquery.Client):
     WITH params AS (
       SELECT
         7     AS min_dte,
-        90    AS max_dte,
-        1.05  AS min_mny_call,
-        1.10  AS max_mny_call,
-        1.05  AS min_mny_put,
-        1.10  AS max_mny_put,
-        500   AS min_oi,
-        0.10  AS max_spread
+        120   AS max_dte,
+        1.02  AS min_mny_call,
+        1.15  AS max_mny_call,
+        1.02  AS min_mny_put,
+        1.15  AS max_mny_put,
+        250   AS min_oi,
+        0.15  AS max_spread
     ),
     latest_chain_per_ticker AS (
       SELECT ticker, MAX(fetch_date) AS fetch_date
