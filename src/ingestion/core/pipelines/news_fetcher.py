@@ -1,9 +1,8 @@
-# ingestion/core/pipelines/news_fetcher.py
 import logging
 import datetime
 import os
 import re
-from typing import List, Dict, Iterable, Set, Tuple
+from typing import List, Dict, Iterable, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from google.cloud import storage, bigquery
@@ -14,108 +13,71 @@ from ..clients.polygon_client import PolygonClient
 # --- Configuration ---
 NEWS_OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
-STOCK_METADATA_TABLE_ID = config.MASTER_TABLE_ID # Use master table from config
+STOCK_METADATA_TABLE_ID = config.MASTER_TABLE_ID  # Use master table from config
+UTC = datetime.timezone.utc
 
 # --- Tunables ---
+WINDOW_HOURS = int(os.getenv("NEWS_WINDOW_HOURS", "24"))
+
+# Quotas (sector goes into macro bucket for compatibility with your analyzer)
 TICKER_NEWS_LIMIT = int(os.getenv("NEWS_TICKER_LIMIT", "5"))
-MACRO_GLOBAL_LIMIT = int(os.getenv("NEWS_MACRO_GLOBAL_LIMIT", "5"))
-MACRO_SECTOR_LIMIT = int(os.getenv("NEWS_MACRO_SECTOR_LIMIT", "5"))
-V2_PER_PAGE = int(os.getenv("NEWS_V2_PER_PAGE", "1000"))
+SECTOR_NEWS_LIMIT = int(os.getenv("NEWS_SECTOR_LIMIT", "5"))
+MACRO_NEWS_LIMIT  = int(os.getenv("NEWS_MACRO_LIMIT",  "5"))
 
-# Minimum signal gates (lower = more throughput)
-MIN_GLOBAL_SCORE = int(os.getenv("NEWS_MIN_GLOBAL_SCORE", "1"))
-MIN_SECTOR_SCORE = int(os.getenv("NEWS_MIN_SECTOR_SCORE", "0"))
+# Macro array we emit (sector + macro combined)
+NEWS_MACRO_RETURN = int(os.getenv("NEWS_MACRO_RETURN", "10"))
 
+# Polygon v2
+V2_PER_PAGE = int(os.getenv("NEWS_V2_PER_PAGE", "100"))
+V2_MAX_PAGES = int(os.getenv("NEWS_V2_MAX_PAGES", "5"))  # NEW: small cap so we don’t overfetch
+
+# Publisher allow/block
 PUBLISHER_ALLOW = os.getenv(
     "NEWS_PUBLISHER_ALLOW",
-    "Reuters,CNBC,MarketWatch,The Wall Street Journal,Financial Times,Bloomberg,Investing.com,Barron's,Yahoo Finance"
+    # Expanded to include Benzinga; still tight by default
+    "Reuters,Bloomberg,The Wall Street Journal,Financial Times,CNBC,MarketWatch,Yahoo Finance,Benzinga"
 )
 PUBLISHER_BLOCK = os.getenv(
     "NEWS_PUBLISHER_BLOCK",
     "GlobeNewswire,PR Newswire,Business Wire,Accesswire,Seeking Alpha PR"
 )
 
-TITLE_EXCLUDES = {
-    "class action", "shareholder rights", "investors who lost money",
-    "deadline alert", "lawsuit", "whale activity", "options activity",
-    "press release"
+# Hard catalysts (Ticker bucket)
+HARD_CATALYST = {
+    "earnings", "guidance", "preliminary results", "8-k", "m&a", "acquisition",
+    "merger", "dividend", "buyback", "repurchase", "contract win", "terminated contract",
+    "downgrade", "upgrade", "price target", "layoffs", "restructuring",
+    "outage", "recall", "fda", "approval", "class action settlement"
 }
 
-# =========================
-# Global macro lexicon (expanded)
-# =========================
-MACRO_KEYWORDS = {
-    "cpi", "core cpi", "pce", "core pce", "ppi", "inflation", "deflation", "disinflation",
-    "fomc", "federal reserve", "powell", "rate hike", "rate cut", "interest rate",
-    "dot plot", "fed minutes", "qe", "qt", "jobs report", "nonfarm payroll", "nfp",
-    "unemployment", "jolts", "gdp", "recession", "soft landing", "ism", "pmi",
-    "treasury yield", "bond market", "curve", "inversion", "ecb", "boj", "boe", "pboc",
-    "geopolitics", "tariff", "sanction"
+# Macro (light)
+MACRO_TERMS = {
+    "fomc", "federal reserve", "rate hike", "rate cut", "cpi", "inflation",
+    "ppi", "jobs report", "nonfarm payroll", "jolts", "pce"
 }
 
-# =========================
-# Sector lexicon (sector-level; macro terms intentionally excluded)
-# Keys must be slugified sector names, e.g. "financial-services"
-# =========================
+# Sector lexicon (concise)
 SECTOR_KEYWORDS = {
-    "communication-services": {
-        "ad spend", "cpm", "roas", "streaming subs", "content spend",
-        "sports rights", "algorithm change", "engagement", "cord cutting",
-        "arpu", "churn"
-    },
-    "consumer-cyclical": {
-        "same-store sales", "comps", "traffic", "ticket size", "promotions",
-        "inventory turnover", "order cancellations", "preorders",
-        "e-commerce penetration", "loyalty members", "revpar", "adr"
-    },
-    "consumer-defensive": {
-        "price/mix", "private label", "trade-down", "elasticities",
-        "shelf resets", "input costs", "commodity hedges", "promo intensity",
-        "distribution deals"
-    },
-    "energy": {
-        "rig count", "frac spread", "day rates", "differentials",
-        "crack spread", "refinery utilization", "takeaway capacity",
-        "pipeline tariffs", "lng", "hedging", "turnarounds"
-    },
-    "financial-services": {
-        "net interest margin", "deposit beta", "fee income", "trading revenue",
-        "underwriting", "charge-offs", "delinquency rate", "provision for credit losses",
-        "capital ratio", "fund flows", "aum", "interchange"
-    },
-    "healthcare": {
-        "fda approval", "phase 1", "phase 2", "phase 3", "label expansion",
-        "biosimilar", "510(k)", "pma", "recall", "formulary access",
-        "reimbursement", "medical loss ratio", "star ratings"
-    },
-    "industrials": {
-        "backlog", "order intake", "book-to-bill", "utilization",
-        "capacity", "labor shortage", "supply chain", "operating ratio",
-        "psr", "freight rates", "intermodal", "lead times"
-    },
-    "technology": {
-        "saas", "arr", "net retention", "churn", "bookings",
-        "dau", "mau", "ai copilots", "design wins", "node shrink",
-        "hbm", "gpu demand", "cloud migration", "zero trust", "observability"
-    },
-    "utilities": {
-        "rate case", "allowed roe", "capex plan", "load growth",
-        "storm cost recovery", "outage", "interconnection queue",
-        "capacity market", "ppa", "grid hardening"
-    },
-    "basic-materials": {
-        "lme prices", "spot price", "spreads", "smelting",
-        "inventories", "grades", "tariffs", "capacity utilization",
-        "turnarounds", "input costs"
-    },
-    "real-estate": {
-        "ffo", "noi", "occupancy", "rent spreads", "leasing",
-        "same-property", "cap rates", "nav discount", "debt maturities",
-        "net absorption", "concessions"
-    },
+    "communication-services": {"ad spend", "cpm", "streaming", "subs", "arpu", "churn"},
+    "consumer-cyclical": {"same-store", "comps", "traffic", "revpar", "adr", "preorders"},
+    "consumer-defensive": {"price/mix", "private label", "trade-down", "promo"},
+    "energy": {"rig count", "frac spread", "day rates", "crack spread", "lng", "turnarounds"},
+    "financial-services": {"net interest margin", "nim", "charge-offs", "delinquency", "aum"},
+    "healthcare": {"fda", "phase 2", "phase 3", "recall", "reimbursement"},
+    "industrials": {"backlog", "book-to-bill", "freight", "intermodal", "lead times"},
+    "technology": {"saas", "arr", "retention", "hbm", "gpu", "node", "design wins"},
+    "utilities": {"rate case", "capex", "load growth", "grid"},
+    "basic-materials": {"lme", "smelting", "grades", "inventories"},
+    "real-estate": {"ffo", "noi", "occupancy", "rent spreads", "leasing", "cap rates"},
 }
 
-# --- Helpers ---
+TITLE_EXCLUDES = {
+    "class action", "investors who lost money", "deadline alert", "lawsuit advertising",
+    "whale activity", "options activity", "press release"
+}
+
+# --- Helpers ----------------------------------------------------------------
+
 def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
 
@@ -127,10 +89,7 @@ def _clean_html_to_text(html: str | None) -> str:
         return ""
     return BeautifulSoup(html, "html.parser").get_text(separator=" ", strip=True)
 
-UTC = datetime.timezone.utc
-
 def _parse_iso_utc(ts: str | None) -> datetime.datetime | None:
-    """Parse ISO8601 timestamps that may end with 'Z' into AWARE UTC datetimes."""
     if not ts:
         return None
     try:
@@ -141,29 +100,39 @@ def _parse_iso_utc(ts: str | None) -> datetime.datetime | None:
         return None
 
 def _is_recent(ts: str | None, cutoff: datetime.datetime) -> bool:
-    """True if ts >= cutoff (both aware UTC)."""
     dt = _parse_iso_utc(ts)
     return bool(dt and dt >= cutoff)
 
-def _mk_set_from_env(csv: str | None) -> Set[str]:
+def _mk_set_from_csv(csv: str | None) -> Set[str]:
     return {x.strip().lower() for x in (csv or "").split(",") if x.strip()}
 
-ALLOW_SET = _mk_set_from_env(PUBLISHER_ALLOW)
-BLOCK_SET = _mk_set_from_env(PUBLISHER_BLOCK)
+ALLOW_SET = _mk_set_from_csv(PUBLISHER_ALLOW)
+BLOCK_SET = _mk_set_from_csv(PUBLISHER_BLOCK)
 
-def _publisher_passes(a: dict) -> bool:
-    name = _norm((a.get("publisher") or {}).get("name"))
-    if name and any(b in name for b in BLOCK_SET):
+def _publisher_allowed(name: str, relax: bool = False) -> bool:
+    n = _norm(name)
+    if any(b in n for b in BLOCK_SET):
         return False
-    if ALLOW_SET:
-        return any(w in name for w in ALLOW_SET)
-    return True
+    if relax or not ALLOW_SET:
+        return True
+    return any(w in n for w in ALLOW_SET)
+
+def _publisher_passes(a: dict, relax: bool = False) -> bool:
+    name = _norm((a.get("publisher") or {}).get("name"))
+    if not name:
+        return False if not relax else True
+    return _publisher_allowed(name, relax=relax)
 
 def _title_is_noise(a: dict) -> bool:
     title = _norm(a.get("title"))
     return any(t in title for t in TITLE_EXCLUDES)
 
-# --- BigQuery helpers ---
+def _score_text(a: dict, keys: Iterable[str]) -> int:
+    txt = _norm((a.get("title") or "") + " " + (a.get("description") or ""))
+    return sum(1 for k in keys if k in txt)
+
+# --- BigQuery ---------------------------------------------------------------
+
 def get_sector_industry_map(bq_client: bigquery.Client, tickers: List[str]) -> Dict[str, Dict[str, str]]:
     if not tickers:
         return {}
@@ -182,135 +151,268 @@ def get_sector_industry_map(bq_client: bigquery.Client, tickers: List[str]) -> D
     df = bq_client.query(query, job_config=job_config).to_dataframe()
     return {r["ticker"]: {"industry": r["industry"], "sector": r["sector"]} for _, r in df.iterrows()}
 
-# --- Fetch macro pool for the last 24 hours (Polygon v2/reference/news) ---
-def fetch_v2_macro_pool(client: PolygonClient) -> List[dict]:
+# --- Polygon v2 pool with pagination & allowlist fallback -------------------
+# Docs: /v2/reference/news supports `ticker`, `published_utc` filter modifiers, `limit`, `order`, `sort`, and `next_url` pagination. :contentReference[oaicite:1]{index=1}
+def fetch_recent_news_pool(client: PolygonClient, hours: int) -> List[dict]:
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
-    cutoff = (now_utc - datetime.timedelta(hours=24))
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
     url = f"{client.BASE}/v2/reference/news"
     params = {
         "order": "desc",
-        "limit": V2_PER_PAGE,
+        "sort": "published_utc",
+        "limit": max(1, min(V2_PER_PAGE, 1000)),
         "published_utc.gte": cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "published_utc.lte": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+    out, pages = [], 0
     try:
-        j = client._get(url, params=params)
-        arts = j.get("results", []) or []
-        filtered = [
-            a for a in arts
+        local_url, local_params = url, dict(params)
+        while True:
+            j = client._get(local_url, local_params)
+            arts = j.get("results", []) or []
+            out.extend(arts)
+            pages += 1
+            next_url = j.get("next_url")
+            if not next_url or pages >= V2_MAX_PAGES:
+                break
+            local_url, local_params = next_url, {}
+
+        # Primary filter: allowlist + noise + time
+        primary = [
+            a for a in out
             if _is_recent(a.get("published_utc"), cutoff)
-            and _publisher_passes(a)
+            and _publisher_passes(a, relax=False)
             and not _title_is_noise(a)
         ]
-        logging.info(f"Fetched {len(filtered)} filtered macro articles (last 24h).")
-        return filtered
+        if primary:
+            logging.info(f"Fetched {len(primary)} pool items across {pages} page(s) (allowlist).")
+            return primary
+
+        # Fallback: relax allowlist, keep blocklist + noise filters
+        relaxed = [
+            a for a in out
+            if _is_recent(a.get("published_utc"), cutoff)
+            and _publisher_passes(a, relax=True)
+            and not _title_is_noise(a)
+        ]
+        logging.info(f"No items with allowlist; using relaxed pool of {len(relaxed)} across {pages} page(s).")
+        return relaxed
+
     except Exception as e:
-        logging.error(f"Failed to fetch macro pool: {e}")
+        logging.error(f"Failed to fetch recent Polygon v2 news pool: {e}")
         return []
 
-# --- Scoring ---
-def _score(a: dict, keys: Iterable[str]) -> int:
-    txt = _norm((a.get("title") or "") + " " + (a.get("description") or ""))
-    return sum(1 for k in keys if k in txt)
+# --- Bucket selectors -------------------------------------------------------
 
-def score_and_select_macro(arts: List[dict], sector_slug: str) -> Tuple[List[dict], List[dict]]:
-    """Scores by sector (sector-level keywords) + global macro keywords."""
+def select_ticker_news(client: PolygonClient, ticker: str, hours: int) -> List[dict]:
+    """Strict ticker match. If allowlist yields nothing, relax to blocklist-only."""
+    now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
+
+    stock_raw = client.fetch_news(
+        ticker=ticker,
+        from_date=cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        to_date=now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        limit_per_page=50,
+        paginate=True,  # allow pagination for sparse tickers
+    ) or []
+
+    def _filter(relax: bool) -> List[dict]:
+        items = []
+        for a in stock_raw:
+            if not _is_recent(a.get("published_utc"), cutoff):
+                continue
+            if not _publisher_passes(a, relax=relax) or _title_is_noise(a):
+                continue
+            if ticker not in (a.get("tickers") or []):
+                continue
+            # Prefer hard catalysts, but still accept reputable headlines if limited
+            has_hard = _score_text(a, HARD_CATALYST) > 0
+            if has_hard or relax:
+                items.append(a)
+        items.sort(key=lambda x: x.get("published_utc") or "", reverse=True)
+        return items
+
+    primary = _filter(relax=False)
+    chosen = primary if primary else _filter(relax=True)
+
+    out = [{
+        "title": it.get("title"),
+        "publishedDate": it.get("published_utc"),
+        "text": _clean_html_to_text(it.get("description")),
+        "url": it.get("article_url"),
+    } for it in chosen[:TICKER_NEWS_LIMIT]]
+
+    return out
+
+def select_sector_news_from_pool(pool: List[dict], ticker: str, sector_slug: str, peers: Set[str], hours: int) -> List[dict]:
+    """Require (peer ticker ∩ article.tickers) AND sector keyword."""
+    now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
     sector_keys = SECTOR_KEYWORDS.get(sector_slug, set())
 
-    global_hits = [a for a in arts if _score(a, MACRO_KEYWORDS) >= MIN_GLOBAL_SCORE]
-    sector_hits = [a for a in arts if sector_keys and _score(a, sector_keys) >= MIN_SECTOR_SCORE]
+    picks, seen_urls = [], set()
+    for a in pool:
+        if len(picks) >= SECTOR_NEWS_LIMIT:
+            break
+        if not _is_recent(a.get("published_utc"), cutoff):
+            continue
+        if not _publisher_passes(a, relax=False) or _title_is_noise(a):
+            continue
+        atickers = set(a.get("tickers") or [])
+        if not atickers:
+            continue
+        if not (atickers & (peers - {ticker})):
+            continue
+        if sector_keys and _score_text(a, sector_keys) < 1:
+            continue
+        u = a.get("article_url")
+        if not u or u in seen_urls:
+            continue
+        seen_urls.add(u)
+        picks.append(a)
 
-    global_sorted = sorted(global_hits, key=lambda x: _score(x, MACRO_KEYWORDS), reverse=True)
-    sector_sorted = sorted(sector_hits, key=lambda x: _score(x, sector_keys), reverse=True)
-    return global_sorted[:MACRO_GLOBAL_LIMIT], sector_sorted[:MACRO_SECTOR_LIMIT]
+    # Fallback: if empty, relax publisher allowlist for sector too
+    if not picks:
+        for a in pool:
+            if len(picks) >= SECTOR_NEWS_LIMIT:
+                break
+            if not _is_recent(a.get("published_utc"), cutoff):
+                continue
+            if not _publisher_passes(a, relax=True) or _title_is_noise(a):
+                continue
+            atickers = set(a.get("tickers") or [])
+            if not atickers or not (atickers & (peers - {ticker})):
+                continue
+            if sector_keys and _score_text(a, sector_keys) < 1:
+                continue
+            u = a.get("article_url")
+            if not u or u in seen_urls:
+                continue
+            seen_urls.add(u)
+            picks.append(a)
 
-# --- Per-ticker worker ---
+    out = [{
+        "title": it.get("title"),
+        "publishedDate": it.get("published_utc"),
+        "text": _clean_html_to_text(it.get("description")),
+        "url": it.get("article_url"),
+    } for it in picks]
+    return out
+
+def select_macro_news_from_pool(pool: List[dict], hours: int) -> List[dict]:
+    """At most 1 reputable macro item; if none, relax publisher filter."""
+    if MACRO_NEWS_LIMIT <= 0:
+        return []
+    now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
+
+    def _pick(relax: bool) -> List[dict]:
+        picks, seen = [], set()
+        for a in pool:
+            if len(picks) >= MACRO_NEWS_LIMIT:
+                break
+            if not _is_recent(a.get("published_utc"), cutoff):
+                continue
+            if not _publisher_passes(a, relax=relax) or _title_is_noise(a):
+                continue
+            if _score_text(a, MACRO_TERMS) < 1:
+                continue
+            u = a.get("article_url")
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            picks.append(a)
+        return picks
+
+    primary = _pick(relax=False)
+    chosen = primary if primary else _pick(relax=True)
+
+    out = [{
+        "title": it.get("title"),
+        "publishedDate": it.get("published_utc"),
+        "text": _clean_html_to_text(it.get("description")),
+        "url": it.get("article_url"),
+    } for it in chosen]
+    return out
+
+# --- Per-ticker worker ------------------------------------------------------
+
 def fetch_and_save_headlines(
     ticker: str,
     metadata_map: Dict[str, Dict[str, str]],
-    macro_pool: List[dict],
+    recent_pool: List[dict],
     polygon_client: PolygonClient,
     storage_client: storage.Client,
 ):
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
-    cutoff = now_utc - datetime.timedelta(hours=24)
+    out_date = now_utc.date().isoformat()
+
     try:
-        # --- 1) Ticker-specific (Polygon v2/reference/news) ---
-        stock_raw = polygon_client.fetch_news(ticker=ticker, limit_per_page=TICKER_NEWS_LIMIT * 5)
-        stock_filtered = [
-            a for a in (stock_raw or [])
-            if _is_recent(a.get("published_utc"), cutoff)
-            and _publisher_passes(a)
-            and not _title_is_noise(a)
-        ]
-        stock_news = [{
-            "title": a.get("title"),
-            "publishedDate": a.get("published_utc"),
-            "text": _clean_html_to_text(a.get("description")),
-            "url": a.get("article_url"),
-        } for a in stock_filtered[:TICKER_NEWS_LIMIT]]
+        meta = metadata_map.get(ticker, {}) or {}
+        sector = meta.get("sector", "") or ""
+        sector_slug = _slugify(sector) if sector else ""
 
-        # --- 2) Macro (global + sector) ---
-        sector = metadata_map.get(ticker, {}).get("sector", "")
-        sector_slug = _slugify(sector)
-        global_macro, sector_macro = score_and_select_macro(macro_pool, sector_slug)
+        # Peers: other tickers in same sector (cap 10)
+        peers = {t for t, m in metadata_map.items() if (m or {}).get("sector", "") == sector}
+        if len(peers) > 10:
+            peers = set(list(peers)[:10])
 
-        # Dedupe + ensure last 24h
-        seen: Dict[str, dict] = {}
-        for a in (global_macro + sector_macro):
-            if not _is_recent(a.get("published_utc"), cutoff):
-                continue
-            u = a.get("article_url")
-            if u and u not in seen:
-                seen[u] = a
+        stock_news = select_ticker_news(polygon_client, ticker, WINDOW_HOURS)
+        sector_news = select_sector_news_from_pool(recent_pool, ticker, sector_slug, peers, WINDOW_HOURS)
+        macro_news_only = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
 
-        macro_news = [{
-            "title": a.get("title"),
-            "publishedDate": a.get("published_utc"),
-            "text": _clean_html_to_text(a.get("description")),
-            "url": a.get("article_url"),
-        } for a in seen.values()]
+        # Sector first, then macro, cap total
+        macro_combined = (sector_news + macro_news_only)[:NEWS_MACRO_RETURN]
 
-        # --- 3) Save (match analyzer: TICKER_YYYY-MM-DD.json) ---
-        out_date = now_utc.date().isoformat()
         output_path = f"{NEWS_OUTPUT_PREFIX}{ticker}_{out_date}.json"
         gcs.cleanup_old_files(storage_client, NEWS_OUTPUT_PREFIX, ticker, output_path)
-        gcs.upload_json_to_gcs(storage_client, {"stock_news": stock_news, "macro_news": macro_news}, output_path)
+        gcs.upload_json_to_gcs(
+            storage_client,
+            {"stock_news": stock_news, "macro_news": macro_combined},
+            output_path,
+        )
 
-        logging.info(f"[{ticker}] saved {len(stock_news)} stock + {len(macro_news)} macro (last 24h).")
+        logging.info(f"[{ticker}] saved {len(stock_news)} stock + {len(macro_combined)} macro (sector+macro).")
         return ticker
+
     except Exception as e:
         logging.error(f"[{ticker}] failed: {e}", exc_info=True)
         return None
 
-# --- Entry ---
+# --- Entry ------------------------------------------------------------------
+
 def run_pipeline():
     if not POLYGON_API_KEY:
         logging.critical("POLYGON_API_KEY not set. aborting.")
         return
-    logging.info("--- Starting daily news_fetcher (last 24h, sector keywords) ---")
+
+    logging.info(f"--- Starting news_fetcher (Polygon News v2, last {WINDOW_HOURS}h) ---")
     storage_client = storage.Client()
     bq_client = bigquery.Client()
     polygon_client = PolygonClient(api_key=POLYGON_API_KEY)
 
-    # THIS IS THE CHANGE: Use the full ticker list from GCS
     tickers = gcs.get_tickers(storage_client)
     if not tickers:
         logging.warning("No tickers found in tickerlist.txt. exiting.")
         return
 
     metadata_map = get_sector_industry_map(bq_client, tickers)
-    macro_pool = fetch_v2_macro_pool(polygon_client)
+    recent_pool = fetch_recent_news_pool(polygon_client, WINDOW_HOURS)
 
     processed = 0
-    # Adjusted max_workers to use a safe default if not in config
     max_workers = config.MAX_WORKERS_TIERING.get("news_fetcher", 8)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {
-            ex.submit(fetch_and_save_headlines, t, metadata_map, macro_pool, polygon_client, storage_client): t
+            ex.submit(
+                fetch_and_save_headlines,
+                t, metadata_map, recent_pool, polygon_client, storage_client
+            ): t
             for t in tickers
         }
         for f in as_completed(futures):
             if f.result():
                 processed += 1
+
     logging.info(f"--- News Fetcher Finished. Processed {processed}/{len(tickers)} tickers ---")

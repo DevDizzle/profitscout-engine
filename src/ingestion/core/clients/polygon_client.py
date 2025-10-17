@@ -1,9 +1,8 @@
-# ingestion/core/clients/polygon_client.py
 import logging
 import time
 import requests
 from requests.adapters import HTTPAdapter
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone, datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
@@ -30,8 +29,7 @@ class PolygonClient:
       - Option Chain Snapshot: /v3/snapshot/options/{underlyingAsset}
       - Unified Snapshot: /v3/snapshot
       - Stocks Single-Ticker Snapshot (v2): /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
-      - Benzinga News: /benzinga/v1/news
-      - Polygon News v2: /v2/reference/news
+      - News (v2): /v2/reference/news
     """
 
     BASE = "https://api.polygon.io"
@@ -60,6 +58,7 @@ class PolygonClient:
             r = self._session.get(url, params=params, timeout=30)
             r.raise_for_status()
         except requests.HTTPError as e:
+            # r.text may be large; still useful for 4xx/5xx diagnosis
             logging.error("Polygon GET %s failed: %s | body=%s", url, e, r.text)
             raise
         return r.json()
@@ -258,9 +257,7 @@ class PolygonClient:
 
         return out
 
-    # -------------------------
-    # Benzinga News via Polygon
-    # -------------------------
+    # ------------------------- News (Polygon v2/reference/news) -------------------------
 
     def _as_iso_day(self, d: str, end: bool = False) -> str:
         if not d:
@@ -290,25 +287,6 @@ class PolygonClient:
             local_url, local_params = next_url, {}
         return acc
 
-    def _is_macro_like(self, article: dict) -> bool:
-        title = (article.get("title") or "").lower()
-        teaser = (article.get("teaser") or "").lower()
-        body = (article.get("body") or "").lower()
-        text = f"{title} {teaser} {body}"
-        keywords = (
-            "cpi","pce","ppi","core inflation","inflation","deflation",
-            "fomc","federal reserve","powell","rate hike","rate cut",
-            "interest rate","dot plot","minutes","qe","qt",
-            "jobs report","nonfarm payroll","unemployment","jolts",
-            "gdp","recession","soft landing","ism","pmi",
-            "treasury yield","bond market","boe","ecb","boj",
-            "macro","economy","markets","geopolitics","tariff"
-        )
-        if any(k in text for k in keywords):
-            return True
-        tickers = article.get("tickers") or []
-        return len(tickers) <= 1
-
     def fetch_news(
         self,
         ticker: str | None = None,
@@ -316,40 +294,29 @@ class PolygonClient:
         to_date: str | None = None,
         limit_per_page: int = 1000,
         paginate: bool = True,
-        topics_str: str | None = None,
-        channels_str: str | None = None,
+        topics_str: str | None = None,   # ignored for v2
+        channels_str: str | None = None, # ignored for v2
     ) -> list[dict]:
-        url = f"{self.BASE}/benzinga/v1/news"
-        params = {"limit": limit_per_page, "sort": "published.desc"}
+        """
+        Fetch news via Polygon News v2 (/v2/reference/news).
+        Returns items with fields like published_utc, article_url, publisher, description, and supports next_url pagination.
+        """
+        url = f"{self.BASE}/v2/reference/news"
+        params = {
+            "limit": max(1, min(limit_per_page, 1000)),
+            "order": "desc",
+            "sort": "published_utc",
+        }
         if ticker:
-            params["tickers"] = ticker
+            params["ticker"] = ticker
         if from_date:
-            params["published.gte"] = self._as_iso_day(from_date, end=False)
+            params["published_utc.gte"] = self._as_iso_day(from_date, end=False)
         if to_date:
-            params["published.lte"] = self._as_iso_day(to_date, end=True)
-        preferred_channels = channels_str or topics_str
-        if preferred_channels:
-            params["channels"] = self._csv(preferred_channels)
-        results = self._page_through(url, params, paginate)
-        if not results and (topics_str and not channels_str):
-            params.pop("channels", None)
-            params["tags"] = self._csv(topics_str)
-            results = self._page_through(url, params, paginate)
-        if not results and not ticker:
-            probe = {"limit": max(50, limit_per_page), "sort": "published.desc"}
-            if from_date:
-                probe["published.gte"] = self._as_iso_day(from_date, end=False)
-            if to_date:
-                probe["published.lte"] = self._as_iso_day(to_date, end=True)
-            broad = self._page_through(url, probe, paginate=False)
-            results = [a for a in broad if self._is_macro_like(a)]
-            results = results[:limit_per_page]
-        return results
+            params["published_utc.lte"] = self._as_iso_day(to_date, end=True)
 
-    # -------------------------
-    # Polygon v2/reference/news (macro)
-    # -------------------------
+        return self._page_through(url, params, paginate)
 
+    # (kept) Macro helper using v2/reference/news with keyword filtering
     def fetch_news_v2_macro(
         self,
         from_date: str,
@@ -360,10 +327,6 @@ class PolygonClient:
     ) -> list[dict]:
         """
         Fetch macro-like items from /v2/reference/news (faster & broad coverage).
-        - Time window via published_utc.gte/lte
-        - order=desc, limit up to 1000 supported
-        - next_url pagination
-        Docs show: max limit=1000, next_url, publisher fields, image_url, description. :contentReference[oaicite:0]{index=0}
         """
         url = f"{self.BASE}/v2/reference/news"
         params = {
