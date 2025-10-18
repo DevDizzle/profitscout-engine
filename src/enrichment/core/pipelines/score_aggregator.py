@@ -154,10 +154,10 @@ def run_pipeline():
     print(f"STEP 2 COMPLETE: Processed data into a DataFrame with shape {final_df.shape}.")
     
     print("STEP 3: Starting to load DataFrame to BigQuery...")
-    # --- MODIFIED: Changed to APPEND and reinstated schema updates ---
+    # --- THIS IS THE FIX ---
+    # Changed to TRUNCATE to only keep the latest day's scores.
     job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND",
-        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
+        write_disposition="WRITE_TRUNCATE",
     )
     job = client.load_table_from_dataframe(final_df, config.SCORES_TABLE_ID, job_config=job_config)
     job.result()

@@ -94,25 +94,26 @@ One short paragraph: synthesize why the setup, catalysts, and levels may favor a
 """
 
 
-def _get_signal_and_context(
-    score: float, momentum_pct: float | None
-) -> tuple[str, str]:
+def _get_signal_from_percentile(percentile: float) -> tuple[str, str]:
     """
-    Determines the 5-tier outlook signal and the momentum context.
+    Determines the 5-tier outlook signal from the score's percentile rank.
     """
-    # --- THIS IS THE FIX ---
-    # The scoring ranges have been adjusted to prevent any gaps.
-    if score >= 0.75:
-        outlook = "Strongly Bullish"
-    elif 0.60 <= score < 0.75:
-        outlook = "Moderately Bullish"
-    elif 0.40 <= score < 0.60:
-        outlook = "Neutral / Mixed"
-    elif 0.25 <= score < 0.40:
-        outlook = "Moderately Bearish"
-    else:  # score < 0.25
-        outlook = "Strongly Bearish"
+    if percentile >= 0.85:
+        return "Strongly Bullish", "Top 15%"
+    elif percentile >= 0.65:
+        return "Moderately Bullish", "Top 35%"
+    elif percentile >= 0.35:
+        return "Neutral / Mixed", "Middle 30%"
+    elif percentile >= 0.15:
+        return "Moderately Bearish", "Bottom 35%"
+    else:
+        return "Strongly Bearish", "Bottom 15%"
 
+
+def _get_momentum_context(outlook: str, momentum_pct: float | None) -> str:
+    """
+    Determines the momentum context string based on the outlook and 30-day price change.
+    """
     context = ""
     if momentum_pct is not None:
         is_bullish_outlook = "Bullish" in outlook
@@ -126,15 +127,13 @@ def _get_signal_and_context(
             context = "with confirming negative momentum."
         elif is_bearish_outlook and momentum_pct > 0:
             context = "encountering a short-term rally."
-
-    return outlook, context
+    return context
 
 
 def _get_daily_work_list() -> list[dict]:
     """
-    MODIFIED: Builds the work list from the GCS tickerlist.txt and enriches it
-    with the latest available data from BigQuery for each ticker.
-    This version now handles potential duplicate entries by selecting the one with the highest weighted_score.
+    Builds the work list from GCS tickers and enriches it with the latest data
+    and a percentile rank for the weighted_score from BigQuery.
     """
     logging.info("Fetching work list from GCS and enriching from BigQuery...")
     tickers = gcs.get_tickers()
@@ -144,8 +143,8 @@ def _get_daily_work_list() -> list[dict]:
 
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
 
-    # The query now de-duplicates the data by selecting the record with the highest
-    # `weighted_score` for each ticker on the most recent run date.
+    # --- THIS IS THE FIX ---
+    # The query now calculates the percentile rank on the fly.
     query = f"""
         WITH GCS_Tickers AS (
             SELECT ticker FROM UNNEST(@tickers) AS ticker
@@ -156,6 +155,7 @@ def _get_daily_work_list() -> list[dict]:
                 t2.company_name,
                 t1.weighted_score,
                 t1.aggregated_text,
+                PERCENT_RANK() OVER(ORDER BY t1.weighted_score ASC) as score_percentile,
                 ROW_NUMBER() OVER(PARTITION BY t1.ticker ORDER BY t1.run_date DESC, t1.weighted_score DESC) as rn
             FROM `{config.SCORES_TABLE_ID}` AS t1
             JOIN `{config.BUNDLER_STOCK_METADATA_TABLE_ID}` AS t2 ON t1.ticker = t2.ticker
@@ -183,6 +183,7 @@ def _get_daily_work_list() -> list[dict]:
             s.company_name,
             s.weighted_score,
             s.aggregated_text,
+            s.score_percentile,
             m.close_30d_delta_pct
         FROM GCS_Tickers g
         LEFT JOIN LatestScores s ON g.ticker = s.ticker
@@ -241,12 +242,13 @@ def _process_ticker(ticker_data: dict):
         if pd.isna(momentum_pct):
             momentum_pct = None
 
-        outlook_signal, momentum_context = _get_signal_and_context(
-            ticker_data["weighted_score"], momentum_pct
-        )
-
         # --- THIS IS THE FIX ---
-        # Added the emoji map and selected the correct emoji based on the signal.
+        # Use the new percentile-based function to get the signal and rank context.
+        outlook_signal, score_rank = _get_signal_from_percentile(
+            ticker_data["score_percentile"]
+        )
+        momentum_context = _get_momentum_context(outlook_signal, momentum_pct)
+
         emoji_map = {
             "Strongly Bullish": "🚀",
             "Moderately Bullish": "⬆️",
@@ -278,6 +280,8 @@ def _process_ticker(ticker_data: dict):
             "outlook_signal": outlook_signal,
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
+            "score_percentile": ticker_data["score_percentile"],
+            "score_rank_category": score_rank, # Add the rank category for context
             "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}",
         }
 
