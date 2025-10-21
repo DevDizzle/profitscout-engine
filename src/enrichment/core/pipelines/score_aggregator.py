@@ -31,7 +31,7 @@ def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple | None:
                 parsed_data[f"{analysis_type}_score"] = float(score_match.group(1))
             if analysis_match:
                 parsed_data[f"{analysis_type}_analysis"] = analysis_match.group(1).replace('\\n', ' ').strip()
-        
+
         return parsed_data
     except Exception as e:
         print(f"WARNING: Worker could not process blob {blob_name}: {e}")
@@ -58,7 +58,7 @@ def _gather_analysis_data() -> dict:
         processed_count = 0
         total_futures = len(future_to_blob)
         print(f"--> All {total_futures} read tasks submitted. Now processing results as they complete...")
-        
+
         for future in as_completed(future_to_blob):
             blob_name_for_log = future_to_blob[future]
             try:
@@ -82,7 +82,7 @@ def _gather_analysis_data() -> dict:
 
 def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
     """
-    Processes the gathered data, calculates scores, aggregates text, and returns a DataFrame.
+    Processes the gathered data, calculates scores and percentile, aggregates text, and returns a DataFrame.
     """
     if not ticker_data:
         return pd.DataFrame()
@@ -102,21 +102,24 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
 
     if complete_mask.any():
         df_complete = df[complete_mask].copy()
-        
+
         for col in score_cols:
             min_val, max_val = df_complete[col].min(), df_complete[col].max()
             df_complete[f"norm_{col}"] = (df_complete[col] - min_val) / (max_val - min_val) if (max_val - min_val) > 0 else 0.5
-        
+
         norm_cols = [f"norm_{col}" for col in score_cols]
         df_complete["weighted_score"] = sum(df_complete[norm_col] * config.SCORE_WEIGHTS[col] for col, norm_col in zip(score_cols, norm_cols))
-        
+
         df.update(df_complete[["weighted_score"]])
+
+    # Calculate percentile rank for non-null weighted scores
+    df['score_percentile'] = df['weighted_score'].rank(pct=True)
 
     def aggregate_text(row):
         text_parts = []
         if pd.notna(row.get("about")):
             text_parts.append(f"## About\n\n{row['about']}")
-        
+
         analysis_order = {
             "news": "News", "technicals": "Technicals", "mda": "MD&A",
             "transcript": "Transcript", "financials": "Financials",
@@ -125,12 +128,13 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
         for key, title in analysis_order.items():
             if pd.notna(row.get(f"{key}_analysis")):
                 text_parts.append(f"## {title} Analysis\n\n{row[f'{key}_analysis']}")
-        
+
         return "\n\n---\n\n".join(text_parts)
 
     df["aggregated_text"] = df.apply(aggregate_text, axis=1)
 
-    final_cols = ['ticker', 'run_date', 'weighted_score', 'aggregated_text'] + score_cols
+    # Add score_percentile to the final columns
+    final_cols = ['ticker', 'run_date', 'weighted_score', 'score_percentile', 'aggregated_text'] + score_cols
     return df.reindex(columns=final_cols)
 
 
@@ -152,15 +156,17 @@ def run_pipeline():
         print("WARNING: DataFrame is empty after processing. Exiting.")
         return
     print(f"STEP 2 COMPLETE: Processed data into a DataFrame with shape {final_df.shape}.")
-    
+
     print("STEP 3: Starting to load DataFrame to BigQuery...")
     # --- THIS IS THE FIX ---
-    # Changed to TRUNCATE to only keep the latest day's scores.
+    # Removed schema_update_options as it's incompatible with WRITE_TRUNCATE
+    # BigQuery will infer the schema (including the new column) automatically.
     job_config = bigquery.LoadJobConfig(
         write_disposition="WRITE_TRUNCATE",
     )
+    # --- END FIX ---
     job = client.load_table_from_dataframe(final_df, config.SCORES_TABLE_ID, job_config=job_config)
     job.result()
     print(f"STEP 3 COMPLETE: Loaded {job.output_rows} rows into BigQuery table: {config.SCORES_TABLE_ID}")
-    
+
     print("--- Score Aggregation Pipeline Finished ---")

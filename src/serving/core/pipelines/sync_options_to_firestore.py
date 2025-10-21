@@ -91,6 +91,7 @@ def run_pipeline(full_reset: bool = False):
     try:
         # --- THIS IS THE FIX ---
         # The query now explicitly casts the date fields to STRING to avoid conversion issues.
+        # It also replaces the old 'iv_signal' with 'volatility_comparison_signal'.
         signals_query = f"""
             WITH LatestMetadata AS (
                 SELECT 
@@ -105,7 +106,7 @@ def run_pipeline(full_reset: bool = False):
                 CAST(t1.expiration_date AS STRING) AS expiration_date,
                 t1.strike_price,
                 t1.implied_volatility,
-                t1.iv_signal,
+                t1.volatility_comparison_signal,
                 t1.stock_price_trend_signal,
                 t1.setup_quality_signal,
                 t1.summary,

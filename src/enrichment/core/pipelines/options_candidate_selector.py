@@ -17,16 +17,13 @@ def _truncate(bq: bigquery.Client, table_id: str):
 
 def _insert_candidates(bq: bigquery.Client):
     """
-    CALL + PUT filtering & scoring (no BUY/SELL universe gating, no top-5 cap):
-      • Chain source = latest fetch_date per ticker from options_chain
-      • Resolve underlying price with latest adj_close from price_data (max date)
-      • Moneyness (direction-aware):
-            - Calls: strike / price in [1.02, 1.15]
-            - Puts : price / strike in [1.02, 1.15]
-      • Keep DTE, OI, spread filters
-      • Score/normalize as before
-      • Compute rn (per ticker, option_type) but DO NOT filter by rn
-      • Insert all filtered, scored candidates
+    Tightened window with minimal changes:
+      • DTE: 10–60 (tilts toward better expectancy for long options)
+      • Moneyness: calls strike/price ∈ [1.02, 1.10], puts price/strike ∈ [1.02, 1.10]
+      • Liquidity: OI ≥ 300 (was 250), tighter spread cap 12% (was 15%)
+      • Price floor: mid_px ≥ $0.50 (avoid micro-premiums with punitive % spreads)
+      • Delta band: |delta| ∈ [0.25, 0.45]
+      • Edge realism: breakeven_distance_pct ≤ expected_move_pct (IV × sqrt(DTE/365) × 0.85)
     """
     price_table = f"{PROJECT}.{DATASET}.price_data"
 
@@ -40,14 +37,18 @@ def _insert_candidates(bq: bigquery.Client):
     )
     WITH params AS (
       SELECT
-        7     AS min_dte,
-        120   AS max_dte,
+        10    AS min_dte,      -- was 7
+        60    AS max_dte,      -- was 120
         1.02  AS min_mny_call,
-        1.15  AS max_mny_call,
+        1.10  AS max_mny_call, -- was 1.15
         1.02  AS min_mny_put,
-        1.15  AS max_mny_put,
-        250   AS min_oi,
-        0.15  AS max_spread
+        1.10  AS max_mny_put,  -- was 1.15
+        300   AS min_oi,       -- was 250
+        0.12  AS max_spread,   -- was 0.15 (12%)
+        0.50  AS min_mid,      -- new: price floor ($)
+        0.25  AS min_abs_delta,
+        0.45  AS max_abs_delta,
+        0.85  AS exp_move_haircut
     ),
     latest_chain_per_ticker AS (
       SELECT ticker, MAX(fetch_date) AS fetch_date
@@ -93,20 +94,46 @@ def _insert_candidates(bq: bigquery.Client):
         SAFE_DIVIDE(b.uprice, NULLIF(b.strike, 0)) AS mny_put
       FROM base b
     ),
-    filtered AS (
-      SELECT e.*,
-             CASE WHEN e.option_type_lc = 'call' THEN 'BUY' ELSE 'SELL' END AS signal
+    -- Edge math: expected move and breakeven distance (percent of underlying)
+    edge AS (
+      SELECT
+        e.*,
+        -- expected move % over DTE using annual IV (haircut for realism)
+        (e.implied_volatility * SQRT(SAFE_DIVIDE(e.dte, 365.0)) * p.exp_move_haircut) * 100.0
+          AS expected_move_pct,
+        CASE
+          WHEN e.option_type_lc = 'call' AND e.mid_px IS NOT NULL AND e.uprice > 0
+            THEN SAFE_MULTIPLY(
+                   SAFE_DIVIDE((e.strike + e.mid_px) - e.uprice, NULLIF(e.uprice, 0)),
+                   100.0)
+          WHEN e.option_type_lc = 'put'  AND e.mid_px IS NOT NULL AND e.uprice > 0
+            THEN SAFE_MULTIPLY(
+                   SAFE_DIVIDE(e.uprice - (e.strike - e.mid_px), NULLIF(e.uprice, 0)),
+                   100.0)
+          ELSE NULL
+        END AS breakeven_distance_pct
       FROM enriched e
-      CROSS JOIN params p -- <<< THIS IS THE FIX: Changed to explicit CROSS JOIN
-      WHERE e.dte BETWEEN p.min_dte AND p.max_dte
+      CROSS JOIN params p
+    ),
+    filtered AS (
+      SELECT x.*,
+             CASE WHEN x.option_type_lc = 'call' THEN 'BUY' ELSE 'SELL' END AS signal
+      FROM edge x
+      CROSS JOIN params p
+      WHERE x.dte BETWEEN p.min_dte AND p.max_dte
+        AND x.mid_px IS NOT NULL AND x.mid_px >= p.min_mid
+        AND ABS(x.delta) BETWEEN p.min_abs_delta AND p.max_abs_delta
         AND (
-              (e.option_type_lc = 'call'
-               AND e.mny_call BETWEEN p.min_mny_call AND p.max_mny_call)
-           OR (e.option_type_lc = 'put'
-               AND e.mny_put  BETWEEN p.min_mny_put  AND p.max_mny_put)
-         )
-        AND e.oi_nz >= p.min_oi
-        AND e.spread_pct IS NOT NULL AND e.spread_pct <= p.max_spread
+              (x.option_type_lc = 'call'
+               AND x.mny_call BETWEEN p.min_mny_call AND p.max_mny_call)
+           OR (x.option_type_lc = 'put'
+               AND x.mny_put  BETWEEN p.min_mny_put  AND p.max_mny_put)
+            )
+        AND x.oi_nz >= p.min_oi
+        AND x.spread_pct IS NOT NULL AND x.spread_pct <= p.max_spread
+        AND x.expected_move_pct IS NOT NULL
+        AND x.breakeven_distance_pct IS NOT NULL
+        AND x.breakeven_distance_pct <= x.expected_move_pct  -- edge realism
     ),
     prepared AS (
       SELECT f.*, 0.5 AS iv_percentile
