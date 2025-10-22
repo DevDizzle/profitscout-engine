@@ -92,28 +92,24 @@ One short paragraph: synthesize why the setup, catalysts, and levels may favor a
 ### Example Output (style only; do not copy content)
 {example_output}
 """
+def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[str, str]:
+    """
+    Determines the 5-tier outlook signal and the momentum context.
+    """
+    # --- THIS IS THE FIX ---
+    # The scoring ranges have been adjusted to prevent any gaps.
+    if score >= 0.75:
+        outlook = "Strongly Bullish"
+    elif 0.60 <= score < 0.75:
+        outlook = "Moderately Bullish"
+    elif 0.40 <= score < 0.60:
+        outlook = "Neutral / Mixed"
+    elif 0.25 <= score < 0.40:
+        outlook = "Moderately Bearish"
+    else: # score < 0.25
+        outlook = "Strongly Bearish"
 
 
-def _get_signal_from_percentile(percentile: float) -> tuple[str, str]:
-    """
-    Determines the 5-tier outlook signal from the score's percentile rank.
-    """
-    if percentile >= 0.85:
-        return "Strongly Bullish", "Top 15%"
-    elif percentile >= 0.65:
-        return "Moderately Bullish", "Top 35%"
-    elif percentile >= 0.35:
-        return "Neutral / Mixed", "Middle 30%"
-    elif percentile >= 0.15:
-        return "Moderately Bearish", "Bottom 35%"
-    else:
-        return "Strongly Bearish", "Bottom 15%"
-
-
-def _get_momentum_context(outlook: str, momentum_pct: float | None) -> str:
-    """
-    Determines the momentum context string based on the outlook and 30-day price change.
-    """
     context = ""
     if momentum_pct is not None:
         is_bullish_outlook = "Bullish" in outlook
@@ -127,24 +123,26 @@ def _get_momentum_context(outlook: str, momentum_pct: float | None) -> str:
             context = "with confirming negative momentum."
         elif is_bearish_outlook and momentum_pct > 0:
             context = "encountering a short-term rally."
-    return context
+
+    return outlook, context
 
 
 def _get_daily_work_list() -> list[dict]:
     """
-    Builds the work list from GCS tickers and enriches it with the latest data
-    and a percentile rank for the weighted_score from BigQuery.
+    MODIFIED: Builds the work list from the GCS tickerlist.txt and enriches it
+    with the latest available data from BigQuery for each ticker.
+    This version now handles potential duplicate entries by selecting the one with the highest weighted_score.
     """
     logging.info("Fetching work list from GCS and enriching from BigQuery...")
     tickers = gcs.get_tickers()
     if not tickers:
         logging.critical("Ticker list from GCS is empty. No work to do.")
         return []
-
+        
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-
-    # --- THIS IS THE FIX ---
-    # The query now calculates the percentile rank on the fly.
+    
+    # The query now de-duplicates the data by selecting the record with the highest
+    # `weighted_score` for each ticker on the most recent run date.
     query = f"""
         WITH GCS_Tickers AS (
             SELECT ticker FROM UNNEST(@tickers) AS ticker
@@ -155,7 +153,6 @@ def _get_daily_work_list() -> list[dict]:
                 t2.company_name,
                 t1.weighted_score,
                 t1.aggregated_text,
-                PERCENT_RANK() OVER(ORDER BY t1.weighted_score ASC) as score_percentile,
                 ROW_NUMBER() OVER(PARTITION BY t1.ticker ORDER BY t1.run_date DESC, t1.weighted_score DESC) as rn
             FROM `{config.SCORES_TABLE_ID}` AS t1
             JOIN `{config.BUNDLER_STOCK_METADATA_TABLE_ID}` AS t2 ON t1.ticker = t2.ticker
@@ -183,13 +180,12 @@ def _get_daily_work_list() -> list[dict]:
             s.company_name,
             s.weighted_score,
             s.aggregated_text,
-            s.score_percentile,
             m.close_30d_delta_pct
         FROM GCS_Tickers g
         LEFT JOIN LatestScores s ON g.ticker = s.ticker
         LEFT JOIN LatestMomentum m ON g.ticker = m.ticker
     """
-
+    
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("tickers", "STRING", tickers),
@@ -198,16 +194,12 @@ def _get_daily_work_list() -> list[dict]:
 
     try:
         df = client.query(query, job_config=job_config).to_dataframe()
-        df.dropna(
-            subset=["company_name", "weighted_score", "aggregated_text"], inplace=True
-        )
+        df.dropna(subset=['company_name', 'weighted_score', 'aggregated_text'], inplace=True)
         if df.empty:
-            logging.warning(
-                "No tickers with sufficient data found after enriching from BigQuery."
-            )
+            logging.warning("No tickers with sufficient data found after enriching from BigQuery.")
             return []
         logging.info(f"Successfully created work list for {len(df)} tickers.")
-        return df.to_dict("records")
+        return df.to_dict('records')
     except Exception as e:
         logging.critical(f"Failed to build and enrich work list: {e}", exc_info=True)
         return []
@@ -223,38 +215,35 @@ def _delete_old_recommendation_files(ticker: str):
         except Exception as e:
             logging.error(f"[{ticker}] Failed to delete old file {blob_name}: {e}")
 
-
 def _process_ticker(ticker_data: dict):
     """
     Generates recommendation markdown and its companion JSON metadata file.
     """
     ticker = ticker_data["ticker"]
-    today_str = date.today().strftime("%Y-%m-%d")
-
-    base_blob_path = (
-        f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}"
-    )
+    today_str = date.today().strftime('%Y-%m-%d')
+    
+    base_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}"
     md_blob_path = f"{base_blob_path}.md"
     json_blob_path = f"{base_blob_path}.json"
-
+    
     try:
         momentum_pct = ticker_data.get("close_30d_delta_pct")
         if pd.isna(momentum_pct):
             momentum_pct = None
 
-        # --- THIS IS THE FIX ---
-        # Use the new percentile-based function to get the signal and rank context.
-        outlook_signal, score_rank = _get_signal_from_percentile(
-            ticker_data["score_percentile"]
+        outlook_signal, momentum_context = _get_signal_and_context(
+            ticker_data["weighted_score"],
+            momentum_pct
         )
-        momentum_context = _get_momentum_context(outlook_signal, momentum_pct)
 
+        # --- THIS IS THE FIX ---
+        # Added the emoji map and selected the correct emoji based on the signal.
         emoji_map = {
             "Strongly Bullish": "🚀",
             "Moderately Bullish": "⬆️",
             "Neutral / Mixed": "⚖️",
             "Moderately Bearish": "⬇️",
-            "Strongly Bearish": "🧨",
+            "Strongly Bearish": "🧨"
         }
         signal_emoji = emoji_map.get(outlook_signal, "⚖️")
 
@@ -265,66 +254,51 @@ def _process_ticker(ticker_data: dict):
             outlook_signal=outlook_signal,
             momentum_context=momentum_context,
             aggregated_text=ticker_data["aggregated_text"],
-            example_output=_EXAMPLE_OUTPUT,
+            example_output=_EXAMPLE_OUTPUT
         )
-
+        
         recommendation_text = vertex_ai.generate(prompt)
 
         if not recommendation_text:
             logging.error(f"[{ticker}] LLM returned no text. Aborting.")
             return None
-
+        
         metadata = {
             "ticker": ticker,
             "run_date": today_str,
             "outlook_signal": outlook_signal,
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
-            "score_percentile": ticker_data["score_percentile"],
-            "score_rank_category": score_rank, # Add the rank category for context
-            "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}",
+            "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}"
         }
-
+        
         _delete_old_recommendation_files(ticker)
-
-        gcs.write_text(
-            config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown"
-        )
-        gcs.write_text(
-            config.GCS_BUCKET_NAME,
-            json_blob_path,
-            json.dumps(metadata, indent=2),
-            "application/json",
-        )
-
-        logging.info(
-            f"[{ticker}] Successfully generated and wrote recommendation files to {md_blob_path} and {json_blob_path}"
-        )
+        
+        gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown")
+        gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(metadata, indent=2), "application/json")
+        
+        logging.info(f"[{ticker}] Successfully generated and wrote recommendation files to {md_blob_path} and {json_blob_path}")
         return md_blob_path
-
+        
     except Exception as e:
-        logging.error(
-            f"[{ticker}] Unhandled exception in processing: {e}", exc_info=True
-        )
+        logging.error(f"[{ticker}] Unhandled exception in processing: {e}", exc_info=True)
         return None
-
 
 def run_pipeline():
     logging.info("--- Starting Advanced Recommendation Generation Pipeline ---")
-
+    
     work_list = _get_daily_work_list()
     if not work_list:
         return
-
+    
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_RECOMMENDER) as executor:
         future_to_ticker = {
-            executor.submit(_process_ticker, item): item["ticker"] for item in work_list
+            executor.submit(_process_ticker, item): item['ticker']
+            for item in work_list
         }
         for future in as_completed(future_to_ticker):
             if future.result():
                 processed_count += 1
-
-    logging.info(
-        f"--- Recommendation Pipeline Finished. Processed {processed_count} of {len(work_list)} tickers. ---"
-    )
+                
+    logging.info(f"--- Recommendation Pipeline Finished. Processed {processed_count} of {len(work_list)} tickers. ---")

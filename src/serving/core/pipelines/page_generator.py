@@ -14,7 +14,7 @@ from ..clients import vertex_ai
 
 INPUT_PREFIX = config.RECOMMENDATION_PREFIX
 OUTPUT_PREFIX = config.PAGE_JSON_PREFIX
-PREP_PREFIX = "prep/"  # For KPI JSON path
+PREP_PREFIX = 'prep/'  # For KPI JSON path
 
 # --- Updated Example (includes aiOptionsPicks) ---
 _EXAMPLE_JSON_FOR_LLM = """
@@ -84,7 +84,6 @@ You are an expert financial copywriter and SEO analyst specializing in AI-powere
 {example_json}
 """
 
-
 def _clean_aggregated_text(text: str) -> str:
     """
     A simple cleaning function to replace escaped double quotes with single quotes.
@@ -93,15 +92,14 @@ def _clean_aggregated_text(text: str) -> str:
         return ""
     return text.replace('\\"', "'")
 
-
 def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
     """Splits aggregated_text into a dictionary of its component sections."""
-    sections = re.split(r"\n\n---\n\n", aggregated_text.strip())
+    sections = re.split(r'\n\n---\n\n', aggregated_text.strip())
     section_dict = {}
     for section in sections:
-        match = re.match(r"## (.*?) Analysis\n\n(.*)", section, re.DOTALL)
+        match = re.match(r'## (.*?) Analysis\n\n(.*)', section, re.DOTALL)
         if match:
-            key = match.group(1).lower().replace(" ", "")
+            key = match.group(1).lower().replace(' ', '')
             text = match.group(2).strip()
             key_map = {
                 "news": "newsSummary",
@@ -109,14 +107,13 @@ def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
                 "mda": "mdAndA",
                 "transcript": "earningsCall",
                 "financials": "financials",
-                "fundamentals": "fundamentals",
+                "fundamentals": "fundamentals"
             }
             final_key = key_map.get(key, key)
             section_dict[final_key] = text
         elif section.startswith("## About"):
-            section_dict["about"] = re.sub(r"## About\n\n", "", section).strip()
+            section_dict["about"] = re.sub(r'## About\n\n', '', section).strip()
     return section_dict
-
 
 def _get_data_from_bq(ticker: str, run_date: str) -> Optional[Dict]:
     """
@@ -143,13 +140,10 @@ def _get_data_from_bq(ticker: str, run_date: str) -> Optional[Dict]:
             ]
         )
         df = client.query(query, job_config=job_config).to_dataframe()
-        return df.to_dict("records")[0] if not df.empty else None
+        return df.to_dict('records')[0] if not df.empty else None
     except Exception as e:
-        logging.error(
-            f"[{ticker}] Failed to fetch BQ data for {run_date}: {e}", exc_info=True
-        )
+        logging.error(f"[{ticker}] Failed to fetch BQ data for {run_date}: {e}", exc_info=True)
         return None
-
 
 def _delete_old_page_files(ticker: str):
     """Deletes all previous page JSON files for a given ticker."""
@@ -161,14 +155,11 @@ def _delete_old_page_files(ticker: str):
         except Exception as e:
             logging.error(f"[{ticker}] Failed to delete old page file {blob_name}: {e}")
 
-
 def process_blob(blob_name: str) -> Optional[str]:
     """
     Processes one recommendation blob to generate a page JSON.
     """
-    dated_format_regex = re.compile(
-        r"([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$"
-    )
+    dated_format_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$')
     file_name = os.path.basename(blob_name)
     match = dated_format_regex.match(file_name)
     if not match:
@@ -178,9 +169,7 @@ def process_blob(blob_name: str) -> Optional[str]:
 
     bq_data = _get_data_from_bq(ticker, run_date_str)
     if not bq_data or not bq_data.get("company_name"):
-        logging.error(
-            f"[{ticker}] Could not find BQ data or company name for {run_date_str}."
-        )
+        logging.error(f"[{ticker}] Could not find BQ data or company name for {run_date_str}.")
         return None
 
     # --- THIS IS THE FIX ---
@@ -191,18 +180,16 @@ def process_blob(blob_name: str) -> Optional[str]:
 
     full_analysis_sections = _split_aggregated_text(aggregated_text)
 
-    bullish_score = (
-        round((weighted_score - 0.5) * 20, 2) if weighted_score is not None else 0.0
-    )
+    bullish_score = round((weighted_score - 0.5) * 20, 2) if weighted_score is not None else 0.0
 
     final_json = {
         "symbol": ticker,
         "date": run_date_str,
         "bullishScore": bullish_score,
-        "fullAnalysis": full_analysis_sections,
+        "fullAnalysis": full_analysis_sections
     }
 
-    recommendation_json_path = blob_name.replace(".md", ".json")
+    recommendation_json_path = blob_name.replace('.md', '.json')
     recommendation_md = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
     try:
         rec_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, recommendation_json_path)
@@ -236,13 +223,13 @@ def process_blob(blob_name: str) -> Optional[str]:
 
     json_blob_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date_str}.json"
     logging.info(f"[{ticker}] Generating SEO/Teaser/Options JSON for {run_date_str}.")
-
+    
     llm_response_str = ""
     try:
         llm_response_str = vertex_ai.generate(prompt)
 
         if llm_response_str.strip().startswith("```json"):
-            match = re.search(r"\{.*\}", llm_response_str, re.DOTALL)
+            match = re.search(r'\{.*\}', llm_response_str, re.DOTALL)
             if match:
                 llm_response_str = match.group(0)
 
@@ -250,21 +237,12 @@ def process_blob(blob_name: str) -> Optional[str]:
         final_json.update(llm_generated_data)
 
         _delete_old_page_files(ticker)
-        gcs.write_text(
-            config.GCS_BUCKET_NAME,
-            json_blob_path,
-            json.dumps(final_json, indent=2),
-            "application/json",
-        )
-        logging.info(
-            f"[{ticker}] Successfully uploaded complete JSON file to {json_blob_path}"
-        )
+        gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(final_json, indent=2), "application/json")
+        logging.info(f"[{ticker}] Successfully uploaded complete JSON file to {json_blob_path}")
         return json_blob_path
 
     except (json.JSONDecodeError, ValueError, AttributeError) as e:
-        logging.error(
-            f"[{ticker}] Failed to generate/parse LLM JSON. Error: {e}. Response: '{llm_response_str}'"
-        )
+        logging.error(f"[{ticker}] Failed to generate/parse LLM JSON. Error: {e}. Response: '{llm_response_str}'")
         return None
     except Exception as e:
         logging.error(f"[{ticker}] An unexpected error occurred: {e}", exc_info=True)
@@ -284,7 +262,7 @@ def run_pipeline():
         return
 
     logging.info(f"Found {len(work_items)} recommendations to process into pages.")
-
+    
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_RECOMMENDER) as executor:
         futures = {executor.submit(process_blob, item) for item in work_items}
@@ -292,6 +270,4 @@ def run_pipeline():
             if future.result():
                 processed_count += 1
 
-    logging.info(
-        f"--- Page Generation Pipeline Finished. Processed {processed_count} new pages. ---"
-    )
+    logging.info(f"--- Page Generation Pipeline Finished. Processed {processed_count} new pages. ---")

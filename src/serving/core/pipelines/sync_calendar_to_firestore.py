@@ -8,14 +8,11 @@ import re
 
 # --------- Tunables ----------
 BATCH_SIZE = 500
-CALENDAR_TABLE_ID = (
-    f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.calendar_events"
-)
+CALENDAR_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.calendar_events"
 FIRESTORE_COLLECTION_NAME = "calendar_events"
 
 # Firestore document ID cannot contain '/' and should be non-empty & reasonably short.
 _ID_SANITIZE_RE = re.compile(r"[^\w\-\.:@]+")  # allow [A-Za-z0-9_] plus - . : @
-
 
 def _sanitize_id(s: str, fallback: str = "UNKNOWN") -> str:
     if not s:
@@ -25,7 +22,6 @@ def _sanitize_id(s: str, fallback: str = "UNKNOWN") -> str:
     cleaned = cleaned.strip("._-") or fallback
     # Firestore hard limit is ~1500 bytes; we keep it modest.
     return cleaned[:200]
-
 
 def _iter_batches(iterable, n):
     """Yield successive n-sized chunks from iterable."""
@@ -37,7 +33,6 @@ def _iter_batches(iterable, n):
             batch = []
     if batch:
         yield batch
-
 
 def _commit_ops(db: firestore.Client, ops):
     """Commits a list of Firestore operations in batches."""
@@ -56,7 +51,6 @@ def _commit_ops(db: firestore.Client, ops):
     if count:
         batch.commit()
 
-
 def _delete_collection_in_batches(db: firestore.Client, collection_ref):
     """Wipes all documents from a Firestore collection (including subcollections)."""
     logging.info(f"Wiping Firestore collection: '{collection_ref.id}'...")
@@ -71,7 +65,6 @@ def _delete_collection_in_batches(db: firestore.Client, collection_ref):
         logging.info(f"Deleted {deleted_count} docs...")
     logging.info(f"Wipe complete for collection '{collection_ref.id}'.")
 
-
 def _load_bq_df(bq: bigquery.Client, query: str) -> pd.DataFrame:
     """Loads data from a BigQuery query into a pandas DataFrame and cleans it."""
     df = bq.query(query).to_dataframe()
@@ -79,16 +72,11 @@ def _load_bq_df(bq: bigquery.Client, query: str) -> pd.DataFrame:
         # Convert datetimes/dates to strings for Firestore serialization
         for col in df.columns:
             dtype_str = str(df[col].dtype)
-            if (
-                dtype_str.startswith("datetime64")
-                or "datetimetz" in dtype_str
-                or dtype_str == "dbdate"
-            ):
+            if dtype_str.startswith("datetime64") or "datetimetz" in dtype_str or dtype_str == "dbdate":
                 df[col] = df[col].astype(str)
         df = df.replace({pd.NA: np.nan})
         df = df.where(pd.notna(df), None)
     return df
-
 
 def run_pipeline(full_reset: bool = False):
     """
@@ -111,18 +99,14 @@ def run_pipeline(full_reset: bool = False):
         """
         calendar_df = _load_bq_df(bq, calendar_query)
     except Exception as e:
-        logging.critical(
-            f"Failed to query calendar events from BigQuery: {e}", exc_info=True
-        )
+        logging.critical(f"Failed to query calendar events from BigQuery: {e}", exc_info=True)
         raise
 
     # Always wipe the collection to ensure it's a perfect mirror of the query
     _delete_collection_in_batches(db, collection_ref)
 
     if calendar_df.empty:
-        logging.warning(
-            "No upcoming calendar events found in BigQuery. Collection will be empty."
-        )
+        logging.warning("No upcoming calendar events found in BigQuery. Collection will be empty.")
         logging.info("--- Calendar Events Firestore Sync Pipeline Finished ---")
         return
 
@@ -138,14 +122,12 @@ def run_pipeline(full_reset: bool = False):
 
         # The document reference is now at the top level
         doc_ref = collection_ref.document(event_doc_id)
-
+        
         # The data is simply the content of the row
         event_data = row.to_dict()
         upsert_ops.append({"type": "set", "ref": doc_ref, "data": event_data})
 
-    logging.info(
-        f"Upserting {len(upsert_ops)} event documents to '{collection_ref.id}'..."
-    )
+    logging.info(f"Upserting {len(upsert_ops)} event documents to '{collection_ref.id}'...")
     for chunk in _iter_batches(upsert_ops, BATCH_SIZE):
         _commit_ops(db, chunk)
 

@@ -7,12 +7,9 @@ import numpy as np
 
 # --- Configuration ---
 BATCH_SIZE = 500
-TRACKER_TABLE_ID = (
-    f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.performance_tracker"
-)
+TRACKER_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.performance_tracker"
 FIRESTORE_COLLECTION_NAME = "performance_tracker"
-SUMMARY_COLLECTION_NAME = "performance_summary"  # For the single average document
-
+SUMMARY_COLLECTION_NAME = "performance_summary" # For the single average document
 
 def _iter_batches(iterable, n):
     """Yield successive n-sized chunks from iterable."""
@@ -25,10 +22,7 @@ def _iter_batches(iterable, n):
     if batch:
         yield batch
 
-
-def _delete_collection(
-    db: firestore.Client, collection_ref: firestore.CollectionReference
-):
+def _delete_collection(db: firestore.Client, collection_ref: firestore.CollectionReference):
     """Wipes all documents from a Firestore collection."""
     logging.info(f"Wiping Firestore collection: '{collection_ref.id}'...")
     deleted_count = 0
@@ -41,10 +35,7 @@ def _delete_collection(
             batch.delete(doc.reference)
         batch.commit()
         deleted_count += len(docs)
-    logging.info(
-        f"Wipe complete for collection '{collection_ref.id}'. Deleted {deleted_count} docs."
-    )
-
+    logging.info(f"Wipe complete for collection '{collection_ref.id}'. Deleted {deleted_count} docs.")
 
 def _load_bq_df(bq: bigquery.Client) -> pd.DataFrame:
     """Loads the performance tracker data and prepares it for Firestore."""
@@ -56,16 +47,11 @@ def _load_bq_df(bq: bigquery.Client) -> pd.DataFrame:
         # Convert date/time columns to string for Firestore compatibility.
         for col in df.columns:
             dtype_str = str(df[col].dtype)
-            if (
-                "datetime" in dtype_str
-                or "dbdate" in dtype_str
-                or "timestamp" in dtype_str
-            ):
+            if "datetime" in dtype_str or "dbdate" in dtype_str or "timestamp" in dtype_str:
                 df[col] = df[col].astype(str)
         # Handle NaN/NA values
         df = df.replace({pd.NA: np.nan}).where(pd.notna(df), None)
     return df
-
 
 def run_pipeline():
     """
@@ -86,16 +72,11 @@ def run_pipeline():
     try:
         tracker_df = _load_bq_df(bq)
     except Exception as e:
-        logging.critical(
-            f"Failed to query performance tracker table from BigQuery: {e}",
-            exc_info=True,
-        )
+        logging.critical(f"Failed to query performance tracker table from BigQuery: {e}", exc_info=True)
         raise
 
     if tracker_df.empty:
-        logging.warning(
-            "No performance data found in BigQuery. Firestore will be empty."
-        )
+        logging.warning("No performance data found in BigQuery. Firestore will be empty.")
         # Still write a default summary object
         summary_doc_ref = summary_collection_ref.document("summary")
         summary_doc_ref.set({"average_percent_gain": 0.0, "total_trades": 0})
@@ -103,9 +84,7 @@ def run_pipeline():
         return
 
     # 2. Upload all individual trade records
-    logging.info(
-        f"Upserting {len(tracker_df)} documents to '{tracker_collection_ref.id}'..."
-    )
+    logging.info(f"Upserting {len(tracker_df)} documents to '{tracker_collection_ref.id}'...")
     total_written = 0
     for batch_rows in _iter_batches(tracker_df.iterrows(), BATCH_SIZE):
         batch = db.batch()
@@ -119,12 +98,12 @@ def run_pipeline():
 
     # 3. Calculate and upload the summary statistics
     logging.info("Calculating and uploading performance summary...")
-    avg_gain = tracker_df["percent_gain"].mean()
+    avg_gain = tracker_df['percent_gain'].mean()
     total_trades = len(tracker_df)
-
+    
     summary_data = {
         "average_percent_gain": float(avg_gain) if pd.notna(avg_gain) else 0.0,
-        "total_trades": int(total_trades),
+        "total_trades": int(total_trades)
     }
 
     summary_doc_ref = summary_collection_ref.document("summary")
