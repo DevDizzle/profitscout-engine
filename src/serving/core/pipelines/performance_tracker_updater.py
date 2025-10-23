@@ -175,34 +175,33 @@ def _upsert_with_merge(bq_client: bigquery.Client, df: pd.DataFrame):
     # Match source columns to the order of insert columns
     source_columns_str = ", ".join([f"S.`{col.strip('`')}`" for col in all_columns])
 
+    # Construct the UPDATE SET clause dynamically based on available columns in the df, excluding the key
+    update_set_parts = []
+    key_col = 'contract_symbol'
+    for col in df.columns:
+        if col in expected_cols_for_table and col != key_col:
+            # Special handling for last_updated to use BQ's CURRENT_TIMESTAMP()
+            if col == 'last_updated':
+                 update_set_parts.append(f"T.`{col}` = CURRENT_TIMESTAMP()")
+            # Freeze initial values like run_date and initial_price
+            elif col in ['run_date', 'initial_price', 'ticker', 'expiration_date', 'option_type', 'strike_price', 'stock_price_trend_signal', 'setup_quality_signal', 'company_name', 'industry', 'image_uri']:
+                 update_set_parts.append(f"T.`{col}` = COALESCE(T.`{col}`, S.`{col}`)") # Keep existing if present, else take staging
+            # Update current price, gain, and status normally from staging
+            else:
+                 update_set_parts.append(f"T.`{col}` = S.`{col}`")
 
-    # --- FIX 2: Use COALESCE to "freeze" old values ---
-    # This modifies the UPDATE SET clause to only update price/gain
-    # if the source (S) has a non-null value. Otherwise, it keeps
-    # the existing target (T) value.
+    update_clause_str = ", ".join(update_set_parts)
+
     merge_sql = f"""
     MERGE `{TRACKER_TABLE_ID}` T
     USING `{temp_table_id}` S ON T.contract_symbol = S.contract_symbol
     WHEN MATCHED THEN
-        -- Only update fields relevant to ongoing tracking for existing active contracts
-        UPDATE SET
-            -- If S.current_price is NULL (delisted), keep T.current_price
-            T.current_price = COALESCE(S.current_price, T.current_price),
-            -- If S.percent_gain is NULL (delisted), keep T.percent_gain
-            T.percent_gain = COALESCE(S.percent_gain, T.percent_gain),
-            
-            T.status = S.status, -- Always update status (e.g., Active -> Expired/Delisted)
-            T.last_updated = CURRENT_TIMESTAMP() -- Use BQ function directly here for TIMESTAMP
-            -- Do NOT update initial_price, run_date, ticker etc. for matched rows
+        UPDATE SET {update_clause_str}
     WHEN NOT MATCHED THEN
-        -- Insert all columns for new contracts being added
-        -- Ensure last_updated is handled correctly for INSERT
         INSERT ({insert_columns_str})
-        VALUES ({source_columns_str}) -- Assumes last_updated column exists in S correctly typed,
-                                        -- BQ load handles Pandas Timestamp with TZ to BQ TIMESTAMP
+        VALUES ({source_columns_str})
     """
-    # --- END FIX 2 ---
-    
+
     try:
         logging.info(f"Executing MERGE into {TRACKER_TABLE_ID}...")
         merge_job = bq_client.query(merge_sql)
@@ -265,7 +264,7 @@ def run_pipeline():
             new_signals_df["current_price"] = new_signals_df["initial_price"] # Initially same
             new_signals_df["status"] = "Active"
             new_signals_df["percent_gain"] = 0.0
-            # FIX: Use timezone-aware UTC timestamp from Pandas
+            # Use timezone-aware UTC timestamp from Pandas
             new_signals_df["last_updated"] = pd.Timestamp.utcnow()
 
             # Filter out rows where initial price couldn't be fetched - cannot track without it
@@ -318,7 +317,7 @@ def run_pipeline():
             delisted_mask = active_contracts_df["current_price"].isna() & (~expired_mask)
             active_contracts_df.loc[delisted_mask, "status"] = "Delisted"
 
-            # FIX: Use timezone-aware UTC timestamp from Pandas
+            # Use timezone-aware UTC timestamp from Pandas
             active_contracts_df["last_updated"] = pd.Timestamp.utcnow()
 
             # Keep only the rows that need updating (status changed OR still Active/Delisted/Expired)
@@ -336,17 +335,16 @@ def run_pipeline():
             # Concatenate all processed dataframes
             final_df = pd.concat(all_processed_dfs, ignore_index=True, sort=False)
 
-            # --- FIX 1: Deduplicate to prevent MERGE error ---
-            # This ensures only one source row per contract_symbol.
-            # We keep 'last' because active contracts are concatenated last,
-            # prioritizing their updates over any new_signal overlap.
-            if not final_df.empty:
+            # --- FIX: Deduplicate before loading to staging ---
+            # This ensures only one source row per contract_symbol for the MERGE.
+            # Keep 'last' to prioritize updates from active_contracts_df over new_signals_df if overlap.
+            if not final_df.empty and 'contract_symbol' in final_df.columns:
                 initial_row_count = len(final_df)
                 final_df.drop_duplicates(subset=['contract_symbol'], keep='last', inplace=True)
                 dropped_row_count = initial_row_count - len(final_df)
                 if dropped_row_count > 0:
-                    logging.warning(f"Dropped {dropped_row_count} duplicate contract_symbol rows from final_df before upsert.")
-            # --- END FIX 1 ---
+                    logging.warning(f"Dropped {dropped_row_count} duplicate contract_symbol rows before upsert.")
+            # --- END FIX ---
 
             # Ensure essential columns exist, fill potentially missing metadata for active rows if needed (though unlikely)
             required_cols = [
@@ -380,3 +378,7 @@ def run_pipeline():
         logging.critical(f"Pipeline failed with error: {e}", exc_info=True)
         # Consider raising the exception if pipeline failure should halt workflow
         # raise e
+
+# Example of how to run (if needed locally, replace with actual Cloud Function trigger)
+# if __name__ == "__main__":
+#     run_pipeline()
