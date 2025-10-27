@@ -22,25 +22,35 @@ WINDOW_HOURS = int(os.getenv("NEWS_WINDOW_HOURS", "24"))
 # Quotas (sector goes into macro bucket for compatibility with your analyzer)
 TICKER_NEWS_LIMIT = int(os.getenv("NEWS_TICKER_LIMIT", "5"))
 SECTOR_NEWS_LIMIT = int(os.getenv("NEWS_SECTOR_LIMIT", "5"))
-MACRO_NEWS_LIMIT  = int(os.getenv("NEWS_MACRO_LIMIT",  "5"))
+MACRO_NEWS_LIMIT  = int(os.getenv("NEWS_MACRO_LIMIT",  "3"))  # bumped for better macro coverage
 
 # Macro array we emit (sector + macro combined)
 NEWS_MACRO_RETURN = int(os.getenv("NEWS_MACRO_RETURN", "10"))
 
 # Polygon v2
 V2_PER_PAGE = int(os.getenv("NEWS_V2_PER_PAGE", "100"))
-V2_MAX_PAGES = int(os.getenv("NEWS_V2_MAX_PAGES", "5"))  # NEW: small cap so we don’t overfetch
+V2_MAX_PAGES = int(os.getenv("NEWS_V2_MAX_PAGES", "5"))
 
-# Publisher allow/block
+# Publisher allow/block (used in v2 fallback path)
 PUBLISHER_ALLOW = os.getenv(
     "NEWS_PUBLISHER_ALLOW",
-    # Expanded to include Benzinga; still tight by default
     "Reuters,Bloomberg,The Wall Street Journal,Financial Times,CNBC,MarketWatch,Yahoo Finance,Benzinga"
 )
 PUBLISHER_BLOCK = os.getenv(
     "NEWS_PUBLISHER_BLOCK",
     "GlobeNewswire,PR Newswire,Business Wire,Accesswire,Seeking Alpha PR"
 )
+
+# --- Benzinga channels (via Polygon /benzinga/v2/news) ---
+BENZ_TICKER_CHANNELS = [c.strip() for c in os.getenv(
+    "BENZ_TICKER_CHANNELS",
+    "wiim,news,earnings,analyst-ratings,guidance"
+).split(",") if c.strip()]
+
+BENZ_MACRO_CHANNELS = [c.strip() for c in os.getenv(
+    "BENZ_MACRO_CHANNELS",
+    "economics,fed,rates,inflation,macro"
+).split(",") if c.strip()]
 
 # Hard catalysts (Ticker bucket)
 HARD_CATALYST = {
@@ -50,7 +60,7 @@ HARD_CATALYST = {
     "outage", "recall", "fda", "approval", "class action settlement"
 }
 
-# Macro (light)
+# Macro (kept for v2 fallback scoring)
 MACRO_TERMS = {
     "fomc", "federal reserve", "rate hike", "rate cut", "cpi", "inflation",
     "ppi", "jobs report", "nonfarm payroll", "jolts", "pce"
@@ -71,9 +81,11 @@ SECTOR_KEYWORDS = {
     "real-estate": {"ffo", "noi", "occupancy", "rent spreads", "leasing", "cap rates"},
 }
 
+# Expanded excludes to avoid evergreen content on relax path
 TITLE_EXCLUDES = {
     "class action", "investors who lost money", "deadline alert", "lawsuit advertising",
-    "whale activity", "options activity", "press release"
+    "whale activity", "options activity", "press release",
+    "forever stocks", "dividend payer", "how to invest", "etf to buy"
 }
 
 # --- Helpers ----------------------------------------------------------------
@@ -152,7 +164,7 @@ def get_sector_industry_map(bq_client: bigquery.Client, tickers: List[str]) -> D
     return {r["ticker"]: {"industry": r["industry"], "sector": r["sector"]} for _, r in df.iterrows()}
 
 # --- Polygon v2 pool with pagination & allowlist fallback -------------------
-# Docs: /v2/reference/news supports `ticker`, `published_utc` filter modifiers, `limit`, `order`, `sort`, and `next_url` pagination. :contentReference[oaicite:1]{index=1}
+# Docs: /v2/reference/news supports ticker/published_utc/limit/order/sort/next_url.
 def fetch_recent_news_pool(client: PolygonClient, hours: int) -> List[dict]:
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
     cutoff = (now_utc - datetime.timedelta(hours=hours))
@@ -178,7 +190,6 @@ def fetch_recent_news_pool(client: PolygonClient, hours: int) -> List[dict]:
                 break
             local_url, local_params = next_url, {}
 
-        # Primary filter: allowlist + noise + time
         primary = [
             a for a in out
             if _is_recent(a.get("published_utc"), cutoff)
@@ -189,7 +200,6 @@ def fetch_recent_news_pool(client: PolygonClient, hours: int) -> List[dict]:
             logging.info(f"Fetched {len(primary)} pool items across {pages} page(s) (allowlist).")
             return primary
 
-        # Fallback: relax allowlist, keep blocklist + noise filters
         relaxed = [
             a for a in out
             if _is_recent(a.get("published_utc"), cutoff)
@@ -203,51 +213,154 @@ def fetch_recent_news_pool(client: PolygonClient, hours: int) -> List[dict]:
         logging.error(f"Failed to fetch recent Polygon v2 news pool: {e}")
         return []
 
+# --- Benzinga via Polygon helper -------------------------------------------
+# IMPORTANT: Benzinga v2 expects `published` filters as epoch seconds OR 'YYYY-MM-DD' (date string).
+# We pass simple dates to avoid 400s. Docs + endpoint overview: Polygon Benzinga News, Polygon Stocks News. :contentReference[oaicite:1]{index=1}
+def _fetch_benzinga_news(
+    client: PolygonClient,
+    tickers: List[str] | None,
+    channels: List[str] | None,
+    published_gte_iso: str,
+    published_lte_iso: str,
+    limit: int = 500,
+    paginate: bool = True,
+) -> List[dict]:
+    url = f"{client.BASE}/benzinga/v2/news"
+    # FIX: convert ISO datetimes to simple YYYY-MM-DD strings
+    gte_date = published_gte_iso[:10]
+    lte_date = published_lte_iso[:10]
+
+    params = {
+        "limit": max(1, min(limit, 50000)),
+        "sort": "published.desc",
+        "published.gte": gte_date,   # e.g., '2025-10-23'
+        "published.lte": lte_date,   # e.g., '2025-10-24'
+    }
+    if tickers:
+        params["tickers"] = ",".join(tickers)
+    if channels:
+        params["channels"] = ",".join(channels)
+
+    results: List[dict] = []
+    local_url, local_params = url, dict(params)
+    while True:
+        j = client._get(local_url, local_params)
+        results.extend(j.get("results") or [])
+        if not paginate:
+            break
+        next_url = j.get("next_url")
+        if not next_url:
+            break
+        local_url, local_params = next_url, {}
+    return results
+
 # --- Bucket selectors -------------------------------------------------------
 
 def select_ticker_news(client: PolygonClient, ticker: str, hours: int) -> List[dict]:
-    """Strict ticker match. If allowlist yields nothing, relax to blocklist-only."""
+    """Benzinga-first ticker headlines; fall back to Polygon v2 strict, then relaxed."""
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
     cutoff = (now_utc - datetime.timedelta(hours=hours))
+    gte = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lte = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    stock_raw = client.fetch_news(
-        ticker=ticker,
-        from_date=cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        to_date=now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        limit_per_page=50,
-        paginate=True,  # allow pagination for sparse tickers
-    ) or []
+    # 1) Benzinga first
+    bz_raw = _fetch_benzinga_news(
+        client,
+        tickers=[ticker],
+        channels=BENZ_TICKER_CHANNELS,
+        published_gte_iso=gte,
+        published_lte_iso=lte,
+        limit=1000,
+        paginate=True,
+    )
 
-    def _filter(relax: bool) -> List[dict]:
-        items = []
-        for a in stock_raw:
-            if not _is_recent(a.get("published_utc"), cutoff):
-                continue
-            if not _publisher_passes(a, relax=relax) or _title_is_noise(a):
-                continue
-            if ticker not in (a.get("tickers") or []):
-                continue
-            # Prefer hard catalysts, but still accept reputable headlines if limited
-            has_hard = _score_text(a, HARD_CATALYST) > 0
-            if has_hard or relax:
-                items.append(a)
-        items.sort(key=lambda x: x.get("published_utc") or "", reverse=True)
-        return items
+    def _norm_bz(items: List[dict]) -> List[dict]:
+        out = []
+        for it in items:
+            out.append({
+                "title": it.get("title"),
+                "publishedDate": it.get("published"),
+                "text": (it.get("teaser") or "")[:1000],
+                "url": it.get("url"),
+                "_channels": [c.lower() for c in (it.get("channels") or [])],
+            })
+        # Prefer WIIM/Earnings/Guidance/Analyst by simple channel score; then recency
+        def _score(x):
+            ch = set(x.get("_channels") or [])
+            s = 0
+            if "wiim" in ch: s += 5
+            if "earnings" in ch: s += 4
+            if "guidance" in ch: s += 4
+            if "analyst-ratings" in ch: s += 3
+            if "news" in ch: s += 2
+            return (s, x.get("publishedDate") or "")
+        out.sort(key=_score, reverse=True)
+        return out
 
-    primary = _filter(relax=False)
-    chosen = primary if primary else _filter(relax=True)
+    picks = _norm_bz(bz_raw) if bz_raw else []
 
-    out = [{
-        "title": it.get("title"),
-        "publishedDate": it.get("published_utc"),
-        "text": _clean_html_to_text(it.get("description")),
-        "url": it.get("article_url"),
-    } for it in chosen[:TICKER_NEWS_LIMIT]]
+    # 2) Fallback: Polygon v2 strict allowlist (no relax yet)
+    if not picks:
+        stock_raw = client.fetch_news(
+            ticker=ticker,
+            from_date=gte,
+            to_date=lte,
+            limit_per_page=200,
+            paginate=True,
+        ) or []
 
-    return out
+        def _passes_strict(a: dict) -> bool:
+            return (
+                _is_recent(a.get("published_utc"), cutoff)
+                and _publisher_passes(a, relax=False)
+                and not _title_is_noise(a)
+                and ticker in (a.get("tickers") or [])
+            )
+
+        v2 = [{
+            "title": a.get("title"),
+            "publishedDate": a.get("published_utc"),
+            "text": _clean_html_to_text(a.get("description")),
+            "url": a.get("article_url"),
+        } for a in stock_raw if _passes_strict(a)]
+        v2.sort(key=lambda x: x.get("publishedDate") or "", reverse=True)
+        picks = v2
+
+    # 3) Last resort: relaxed v2 but exclude evergreen sources
+    if not picks:
+        RELAX_BLOCK = {"motley fool", "investing.com"}
+        stock_raw = client.fetch_news(
+            ticker=ticker,
+            from_date=gte,
+            to_date=lte,
+            limit_per_page=200,
+            paginate=True,
+        ) or []
+
+        def _relaxed(a: dict) -> bool:
+            pub = _norm((a.get("publisher") or {}).get("name"))
+            if any(b in pub for b in RELAX_BLOCK):
+                return False
+            return (
+                _is_recent(a.get("published_utc"), cutoff)
+                and _publisher_passes(a, relax=True)
+                and not _title_is_noise(a)
+                and ticker in (a.get("tickers") or [])
+            )
+
+        v2_relaxed = [{
+            "title": a.get("title"),
+            "publishedDate": a.get("published_utc"),
+            "text": _clean_html_to_text(a.get("description")),
+            "url": a.get("article_url"),
+        } for a in stock_raw if _relaxed(a)]
+        v2_relaxed.sort(key=lambda x: x.get("publishedDate") or "", reverse=True)
+        picks = v2_relaxed
+
+    return picks[:TICKER_NEWS_LIMIT]
 
 def select_sector_news_from_pool(pool: List[dict], ticker: str, sector_slug: str, peers: Set[str], hours: int) -> List[dict]:
-    """Require (peer ticker ∩ article.tickers) AND sector keyword."""
+    """Require (peer ticker ∩ article.tickers) AND sector keyword. (uses v2 pool)"""
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
     cutoff = (now_utc - datetime.timedelta(hours=hours))
     sector_keys = SECTOR_KEYWORDS.get(sector_slug, set())
@@ -273,7 +386,6 @@ def select_sector_news_from_pool(pool: List[dict], ticker: str, sector_slug: str
         seen_urls.add(u)
         picks.append(a)
 
-    # Fallback: if empty, relax publisher allowlist for sector too
     if not picks:
         for a in pool:
             if len(picks) >= SECTOR_NEWS_LIMIT:
@@ -301,40 +413,46 @@ def select_sector_news_from_pool(pool: List[dict], ticker: str, sector_slug: str
     } for it in picks]
     return out
 
-def select_macro_news_from_pool(pool: List[dict], hours: int) -> List[dict]:
-    """At most 1 reputable macro item; if none, relax publisher filter."""
+def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[dict]:
+    """
+    Benzinga macro channels (via Polygon). Signature unchanged; pool is ignored.
+    Return 0..MACRO_NEWS_LIMIT items; if none match, return [] (neutral).
+    """
     if MACRO_NEWS_LIMIT <= 0:
         return []
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
     cutoff = (now_utc - datetime.timedelta(hours=hours))
+    gte = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lte = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def _pick(relax: bool) -> List[dict]:
-        picks, seen = [], set()
-        for a in pool:
-            if len(picks) >= MACRO_NEWS_LIMIT:
-                break
-            if not _is_recent(a.get("published_utc"), cutoff):
-                continue
-            if not _publisher_passes(a, relax=relax) or _title_is_noise(a):
-                continue
-            if _score_text(a, MACRO_TERMS) < 1:
-                continue
-            u = a.get("article_url")
-            if not u or u in seen:
-                continue
-            seen.add(u)
-            picks.append(a)
-        return picks
+    try:
+        bz = _fetch_benzinga_news(
+            client=polygon_client,  # bound in run_pipeline()
+            tickers=None,
+            channels=BENZ_MACRO_CHANNELS,
+            published_gte_iso=gte,
+            published_lte_iso=lte,
+            limit=1000,
+            paginate=True,
+        )
+    except NameError:
+        logging.error("polygon_client not initialized for macro fetch.")
+        return []
 
-    primary = _pick(relax=False)
-    chosen = primary if primary else _pick(relax=True)
-
-    out = [{
-        "title": it.get("title"),
-        "publishedDate": it.get("published_utc"),
-        "text": _clean_html_to_text(it.get("description")),
-        "url": it.get("article_url"),
-    } for it in chosen]
+    out, seen = [], set()
+    for it in bz:
+        u = it.get("url")
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        out.append({
+            "title": it.get("title"),
+            "publishedDate": it.get("published"),
+            "text": (it.get("teaser") or "")[:1000],
+            "url": u,
+        })
+        if len(out) >= MACRO_NEWS_LIMIT:
+            break
     return out
 
 # --- Per-ticker worker ------------------------------------------------------
@@ -388,9 +506,12 @@ def run_pipeline():
         logging.critical("POLYGON_API_KEY not set. aborting.")
         return
 
-    logging.info(f"--- Starting news_fetcher (Polygon News v2, last {WINDOW_HOURS}h) ---")
+    logging.info(f"--- Starting news_fetcher (Benzinga via Polygon + v2 fallback, last {WINDOW_HOURS}h) ---")
     storage_client = storage.Client()
     bq_client = bigquery.Client()
+
+    # Make polygon_client available to select_macro_news_from_pool
+    global polygon_client
     polygon_client = PolygonClient(api_key=POLYGON_API_KEY)
 
     tickers = gcs.get_tickers(storage_client)
