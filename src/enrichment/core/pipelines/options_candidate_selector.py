@@ -20,7 +20,7 @@ def _insert_candidates(bq: bigquery.Client):
     Tightened window with minimal changes:
       • DTE: 10–60 (tilts toward better expectancy for long options)
       • Moneyness: calls strike/price ∈ [1.02, 1.10], puts price/strike ∈ [1.02, 1.10]
-      • Liquidity: OI ≥ 300 (was 250), Volume >= 50 (NEW), tighter spread cap 12% (was 15%) # MODIFIED
+      • Liquidity: OI ≥ 250 (MODIFIED), Volume >= 20 (MODIFIED), tighter spread cap 15% (MODIFIED)
       • Price floor: mid_px ≥ $0.50 (avoid micro-premiums with punitive % spreads)
       • Delta band: |delta| ∈ [0.25, 0.45]
       • Edge realism: breakeven_distance_pct ≤ expected_move_pct (IV × sqrt(DTE/365) × 0.85)
@@ -43,9 +43,9 @@ def _insert_candidates(bq: bigquery.Client):
         1.10  AS max_mny_call, -- was 1.15
         1.02  AS min_mny_put,
         1.10  AS max_mny_put,  -- was 1.15
-        300   AS min_oi,       -- was 250
-        50    AS min_vol,      -- NEW: Minimum daily volume
-        0.12  AS max_spread,   -- was 0.15 (12%)
+        250   AS min_oi,       -- MODIFIED: Was 300
+        20    AS min_vol,      -- MODIFIED: Was 50
+        0.15  AS max_spread,   -- MODIFIED: Was 0.12 (15%)
         0.50  AS min_mid,      -- new: price floor ($)
         0.25  AS min_abs_delta,
         0.45  AS max_abs_delta,
@@ -131,7 +131,7 @@ def _insert_candidates(bq: bigquery.Client):
                AND x.mny_put  BETWEEN p.min_mny_put  AND p.max_mny_put)
             )
         AND x.oi_nz >= p.min_oi
-        AND x.vol_nz >= p.min_vol -- NEW filter for volume
+        AND x.vol_nz >= p.min_vol -- MODIFIED filter for volume
         AND x.spread_pct IS NOT NULL AND x.spread_pct <= p.max_spread
         AND x.expected_move_pct IS NOT NULL
         AND x.breakeven_distance_pct IS NOT NULL
