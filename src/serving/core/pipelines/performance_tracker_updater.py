@@ -47,7 +47,7 @@ def _get_new_signals_and_active_contracts(
             w.image_uri
         FROM `{SIGNALS_TABLE_ID}` s
         -- Ensure the signal's ticker and run_date match a winner entry for TODAY
-        JOIN `{WINNERS_TABLE_ID}` w ON s.ticker = w.ticker AND CAST(s.run_date AS DATE) = CAST(w.run_date AS DATE)
+        JOIN `{WINNERS_TABLE_ID}` w ON s.ticker = w.ticker
         -- Ensure the contract isn't already in the tracker
         LEFT JOIN `{TRACKER_TABLE_ID}` t ON s.contract_symbol = t.contract_symbol
         WHERE CAST(s.run_date AS DATE) = @today -- Signal generated today
@@ -56,7 +56,7 @@ def _get_new_signals_and_active_contracts(
             (s.stock_price_trend_signal LIKE '%Bullish%' AND s.option_type = 'call') OR
             (s.stock_price_trend_signal LIKE '%Bearish%' AND s.option_type = 'put')
           )
-          AND t.contract_symbol IS NULL -- Only add if it's not already tracked
+          AND (t.contract_symbol IS NULL OR t.status != 'Active') -- Add if not tracked or not currently active
     """
 
     # Query 2: Fetch ALL currently active contracts from the tracker to update their status.
@@ -183,10 +183,12 @@ def _upsert_with_merge(bq_client: bigquery.Client, df: pd.DataFrame):
             # Special handling for last_updated to use BQ's CURRENT_TIMESTAMP()
             if col == 'last_updated':
                  update_set_parts.append(f"T.`{col}` = CURRENT_TIMESTAMP()")
-            # Freeze initial values like run_date and initial_price
-            elif col in ['run_date', 'initial_price', 'ticker', 'expiration_date', 'option_type', 'strike_price', 'stock_price_trend_signal', 'setup_quality_signal', 'company_name', 'industry', 'image_uri']:
+            # Freeze contract-specific identifiers. These should never change for a given symbol.
+            elif col in ['ticker', 'expiration_date', 'option_type', 'strike_price']:
                  update_set_parts.append(f"T.`{col}` = COALESCE(T.`{col}`, S.`{col}`)") # Keep existing if present, else take staging
-            # Update current price, gain, and status normally from staging
+            # For other columns, update them from the staging table.
+            # This handles both initial writes (via NOT MATCHED), updates for active contracts,
+            # and re-activation updates for previously expired/delisted contracts.
             else:
                  update_set_parts.append(f"T.`{col}` = S.`{col}`")
 

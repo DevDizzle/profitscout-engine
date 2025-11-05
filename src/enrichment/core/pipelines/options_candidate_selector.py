@@ -18,9 +18,9 @@ def _truncate(bq: bigquery.Client, table_id: str):
 def _insert_candidates(bq: bigquery.Client):
     """
     Tightened window with minimal changes:
-      • DTE: 10–60 (tilts toward better expectancy for long options)
+      • DTE: 10–90 (MODIFIED)
       • Moneyness: calls strike/price ∈ [1.02, 1.10], puts price/strike ∈ [1.02, 1.10]
-      • Liquidity: OI ≥ 250 (MODIFIED), Volume >= 20 (MODIFIED), tighter spread cap 15% (MODIFIED)
+      • Liquidity: OI ≥ 300 (MODIFIED), Volume >= 50 (MODIFIED), tighter spread cap 12% (MODIFIED)
       • Price floor: mid_px ≥ $0.50 (avoid micro-premiums with punitive % spreads)
       • Delta band: |delta| ∈ [0.25, 0.45]
       • Edge realism: breakeven_distance_pct ≤ expected_move_pct (IV × sqrt(DTE/365) × 0.85)
@@ -38,14 +38,14 @@ def _insert_candidates(bq: bigquery.Client):
     WITH params AS (
       SELECT
         10    AS min_dte,      -- was 7
-        60    AS max_dte,      -- was 120
+        90    AS max_dte,      -- MODIFIED: Was 60
         1.02  AS min_mny_call,
         1.10  AS max_mny_call, -- was 1.15
         1.02  AS min_mny_put,
         1.10  AS max_mny_put,  -- was 1.15
-        250   AS min_oi,       -- MODIFIED: Was 300
-        20    AS min_vol,      -- MODIFIED: Was 50
-        0.15  AS max_spread,   -- MODIFIED: Was 0.12 (15%)
+        300   AS min_oi,       -- MODIFIED: Was 250
+        50    AS min_vol,      -- MODIFIED: Was 20
+        0.12  AS max_spread,   -- MODIFIED: Was 0.15 (12%)
         0.50  AS min_mid,      -- new: price floor ($)
         0.25  AS min_abs_delta,
         0.45  AS max_abs_delta,
