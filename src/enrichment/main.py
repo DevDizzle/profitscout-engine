@@ -20,6 +20,7 @@ from .core.pipelines import (
     financials_analyzer,
     fundamentals_analyzer,
     mda_analyzer,
+    macro_thesis,
     news_analyzer,
     options_analyzer,
     options_candidate_selector,
@@ -198,3 +199,20 @@ def run_options_feature_engineering(request: Request):
     """
     options_feature_engineering.run_pipeline()
     return "Options feature engineering pipeline finished.", 200
+
+@functions_framework.http
+def run_macro_thesis(request: Request):
+    """HTTP Cloud Function to refresh the macro thesis pipeline.
+
+    Args:
+        request (flask.Request): The request object.
+
+    Returns:
+        A tuple containing a confirmation message and an HTTP status code.
+    """
+
+    blob = macro_thesis.run_pipeline()
+    message = "Macro thesis pipeline finished."
+    if blob:
+        message += f" Wrote: {blob}."
+    return message, 200
