@@ -10,12 +10,29 @@ from google.cloud import bigquery
 logging.basicConfig(level=logging.INFO)
 
 
-def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple | None:
+def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple[str | None, dict] | None:
     """Helper function to read and parse a single blob in a thread pool."""
     try:
         content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
         if not content:
             return None
+
+        if analysis_type == "macro_thesis":
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError:
+                payload = {}
+
+            macro_trend = (payload.get("macro_trend") or "").strip()
+            anti_thesis = (payload.get("anti_thesis") or "").strip()
+            generated_at = payload.get("generated_at")
+
+            return None, {
+                "macro_trend": macro_trend,
+                "anti_thesis": anti_thesis,
+                "macro_generated_at": generated_at,
+                "macro_blob_name": blob_name,
+            }
 
         ticker = blob_name.split('/')[-1].split('_')[0]
         parsed_data = {"ticker": ticker}
@@ -32,16 +49,17 @@ def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple | None:
             if analysis_match:
                 parsed_data[f"{analysis_type}_analysis"] = analysis_match.group(1).replace('\\n', ' ').strip()
 
-        return parsed_data
+        return ticker, parsed_data
     except Exception as e:
         print(f"WARNING: Worker could not process blob {blob_name}: {e}")
         return None
 
-def _gather_analysis_data() -> dict:
+def _gather_analysis_data() -> tuple[dict, dict | None]:
     """
     Gathers both scores and analysis text from all analysis files in GCS in parallel.
     """
     ticker_data = {}
+    macro_context: dict | None = None
     all_prefixes = config.ANALYSIS_PREFIXES
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS * 4) as executor:
@@ -53,21 +71,35 @@ def _gather_analysis_data() -> dict:
             print(f"    Found {len(blobs)} blobs for '{analysis_type}'. Submitting to workers...")
             for blob_name in blobs:
                 future = executor.submit(_read_and_parse_blob, blob_name, analysis_type)
-                future_to_blob[future] = blob_name
+                future_to_blob[future] = (analysis_type, blob_name)
 
         processed_count = 0
         total_futures = len(future_to_blob)
         print(f"--> All {total_futures} read tasks submitted. Now processing results as they complete...")
 
         for future in as_completed(future_to_blob):
-            blob_name_for_log = future_to_blob[future]
+            analysis_type_for_log, blob_name_for_log = future_to_blob[future]
             try:
                 result = future.result(timeout=15)
                 if result:
-                    ticker = result.pop("ticker")
-                    if ticker not in ticker_data:
-                        ticker_data[ticker] = {}
-                    ticker_data[ticker].update(result)
+                    ticker, data = result
+                    if analysis_type_for_log == "macro_thesis":
+                        if not data:
+                            continue
+                        if macro_context is None:
+                            macro_context = data
+                        else:
+                            new_generated_at = data.get("macro_generated_at")
+                            current_generated_at = macro_context.get("macro_generated_at")
+                            if new_generated_at and current_generated_at:
+                                if new_generated_at > current_generated_at:
+                                    macro_context = data
+                            elif blob_name_for_log > macro_context.get("macro_blob_name", ""):
+                                macro_context = data
+                    else:
+                        if ticker not in ticker_data:
+                            ticker_data[ticker] = {}
+                        ticker_data[ticker].update(data)
             except TimeoutError:
                 print(f"HARD TIMEOUT: Worker for blob {blob_name_for_log} took longer than 15 seconds. Skipping.")
             except Exception as e:
@@ -78,9 +110,9 @@ def _gather_analysis_data() -> dict:
                 print(f"    ..... Progress: Processed {processed_count} of {total_futures} files...")
 
     print(f"--> Finished processing all {total_futures} files.")
-    return ticker_data
+    return ticker_data, macro_context
 
-def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
+def _process_and_score_data(ticker_data: dict, macro_context: dict | None) -> pd.DataFrame:
     """
     Processes the gathered data, calculates scores and percentile, aggregates text, and returns a DataFrame.
     """
@@ -115,6 +147,14 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
     # Calculate percentile rank for non-null weighted scores
     df['score_percentile'] = df['weighted_score'].rank(pct=True)
 
+    macro_trend = ""
+    anti_thesis = ""
+    macro_generated_at = None
+    if macro_context:
+        macro_trend = macro_context.get("macro_trend", "") or ""
+        anti_thesis = macro_context.get("anti_thesis", "") or ""
+        macro_generated_at = macro_context.get("macro_generated_at")
+
     def aggregate_text(row):
         text_parts = []
         if pd.notna(row.get("about")):
@@ -129,12 +169,35 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
             if pd.notna(row.get(f"{key}_analysis")):
                 text_parts.append(f"## {title} Analysis\n\n{row[f'{key}_analysis']}")
 
+        if macro_trend or anti_thesis:
+            macro_section_lines = ["## Macro Thesis"]
+            if macro_trend:
+                macro_section_lines.append(f"**Trend:** {macro_trend}")
+            if anti_thesis:
+                macro_section_lines.append(f"**Anti-Thesis:** {anti_thesis}")
+            text_parts.append("\n\n".join(macro_section_lines))
+
         return "\n\n---\n\n".join(text_parts)
 
     df["aggregated_text"] = df.apply(aggregate_text, axis=1)
 
+    if macro_trend:
+        df["macro_trend"] = macro_trend
+    else:
+        df["macro_trend"] = pd.NA
+
+    if anti_thesis:
+        df["anti_thesis"] = anti_thesis
+    else:
+        df["anti_thesis"] = pd.NA
+
+    if macro_generated_at:
+        df["macro_generated_at"] = macro_generated_at
+    else:
+        df["macro_generated_at"] = pd.NA
+
     # Add score_percentile to the final columns
-    final_cols = ['ticker', 'run_date', 'weighted_score', 'score_percentile', 'aggregated_text'] + score_cols
+    final_cols = ['ticker', 'run_date', 'weighted_score', 'score_percentile', 'aggregated_text', 'macro_trend', 'anti_thesis', 'macro_generated_at'] + score_cols
     return df.reindex(columns=final_cols)
 
 
@@ -144,14 +207,14 @@ def run_pipeline():
     client = bigquery.Client(project=config.PROJECT_ID)
 
     print("STEP 1: Starting to gather analysis data from GCS...")
-    ticker_scores = _gather_analysis_data()
+    ticker_scores, macro_context = _gather_analysis_data()
     if not ticker_scores:
         print("WARNING: No ticker data was gathered from GCS. Exiting.")
         return
     print(f"STEP 1 COMPLETE: Gathered data for {len(ticker_scores)} tickers.")
 
     print("STEP 2: Starting to process and score data with pandas...")
-    final_df = _process_and_score_data(ticker_scores)
+    final_df = _process_and_score_data(ticker_scores, macro_context)
     if final_df.empty:
         print("WARNING: DataFrame is empty after processing. Exiting.")
         return
