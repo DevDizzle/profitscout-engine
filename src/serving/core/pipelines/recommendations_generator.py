@@ -42,6 +42,7 @@ AAL presents a mixed setup. The technical picture is clearly bearish, but positi
 _PROMPT_TEMPLATE = r"""
 You are writing a concise trading brief for a short-term stock trader (swing / position, 1–8 weeks).
 Use only facts present in `Aggregated Analysis Text`. Avoid fluff and generic “good vs bad” narratives.
+Explicitly surface forward-looking statements, management guidance, or outlook commentary when available. If none exist, state that.
 
 ### Output Format (strict)
 
@@ -51,6 +52,9 @@ Use only facts present in `Aggregated Analysis Text`. Avoid fluff and generic �
 
 **Business snapshot:**
 A tight summary of what the company does and where it operates.
+
+## Macro Backdrop
+- Summarize how the current macro trend ({macro_trend}) and the anti-thesis ({anti_thesis}) reinforce or challenge the trade idea.
 
 ## Trade Rationale (2-4 bullets)
 - Each bullet MUST be a direct statement combining a theme, specific data, and its immediate impact on price action.
@@ -66,19 +70,33 @@ A tight summary of what the company does and where it operates.
 ## Risks & Invalidation
 - The 1–3 most relevant failure conditions for the trade setup.
 
+## 90-Day Options Strategy (JSON)
+Return a JSON array in a ```json fenced code block``` with 1–2 recommendation objects. Each object must include the keys:
+- `position_type` ("Call" or "Put"),
+- `strike` (include price and ITM/ATM/OTM context),
+- `timeframe_days` (set to 90),
+- `rationale` (tie back to thesis and forward-looking commentary),
+- `momentum_signal` (summarize price/technical momentum),
+- `volatility_context` (note implied vs historical volatility or catalysts),
+- `macro_alignment` (state how macro trend vs anti-thesis supports/risks the contract).
+Ensure the JSON contains real values (no placeholders) and is valid.
+
 ## The Bottom Line
 One short paragraph: synthesize why the setup, catalysts, and levels may favor a short-term trade, and what would invalidate it quickly.
 
 ### Rules (strict)
 1) **Be specific and concise**: Quote concrete numbers exactly (e.g., “Revenue +16% YoY to $8.5B”, “RSI 58.5”).
 2) **Explain impact**: Directly state the "so what" for each data point within the bullet.
-3) **Omit if absent**: If data for a section isn't in `Aggregated Analysis Text`, omit that section—do NOT invent data.
-4) **No advice / no promises**: Use an informational tone with words like “may/could/suggests”.
-5) **No options jargon**: Focus on short-term stock trading (levels, momentum, catalysts, risks).
+3) **Reference forward-looking commentary**: Cite management guidance, outlook, or scenario planning verbatim when present; otherwise state "No forward-looking statements cited."
+4) **Omit if absent**: If data for a section isn't in `Aggregated Analysis Text`, omit that section—do NOT invent data.
+5) **No advice / no promises**: Use an informational tone with words like “may/could/suggests”.
+6) **No options jargon beyond JSON**: Keep narrative stock-focused; reserve options-specific language for the JSON block.
 
 ### Input Data
 - **Outlook Signal**: {outlook_signal}
 - **Momentum Context**: {momentum_context}
+- **Macro Trend**: {macro_trend}
+- **Macro Anti-Thesis**: {anti_thesis}
 - **Aggregated Analysis Text**:
 {aggregated_text}
 
@@ -153,6 +171,9 @@ def _get_daily_work_list() -> list[dict]:
                 t2.company_name,
                 t1.weighted_score,
                 t1.aggregated_text,
+                t1.macro_trend,
+                t1.anti_thesis,
+                t1.macro_generated_at,
                 ROW_NUMBER() OVER(PARTITION BY t1.ticker ORDER BY t1.run_date DESC, t1.weighted_score DESC) as rn
             FROM `{config.SCORES_TABLE_ID}` AS t1
             JOIN `{config.BUNDLER_STOCK_METADATA_TABLE_ID}` AS t2 ON t1.ticker = t2.ticker
@@ -180,6 +201,9 @@ def _get_daily_work_list() -> list[dict]:
             s.company_name,
             s.weighted_score,
             s.aggregated_text,
+            s.macro_trend,
+            s.anti_thesis,
+            s.macro_generated_at,
             m.close_30d_delta_pct
         FROM GCS_Tickers g
         LEFT JOIN LatestScores s ON g.ticker = s.ticker
@@ -247,6 +271,11 @@ def _process_ticker(ticker_data: dict):
         }
         signal_emoji = emoji_map.get(outlook_signal, "⚖️")
 
+        raw_macro_trend = (ticker_data.get("macro_trend") or "").strip()
+        raw_anti_thesis = (ticker_data.get("anti_thesis") or "").strip()
+        macro_trend = raw_macro_trend or "No macro trend provided."
+        anti_thesis = raw_anti_thesis or "No macro anti-thesis provided."
+
         prompt = _PROMPT_TEMPLATE.format(
             ticker=ticker,
             company_name=ticker_data["company_name"],
@@ -254,26 +283,62 @@ def _process_ticker(ticker_data: dict):
             outlook_signal=outlook_signal,
             momentum_context=momentum_context,
             aggregated_text=ticker_data["aggregated_text"],
+            macro_trend=macro_trend,
+            anti_thesis=anti_thesis,
             example_output=_EXAMPLE_OUTPUT
         )
-        
+
         recommendation_text = vertex_ai.generate(prompt)
 
         if not recommendation_text:
             logging.error(f"[{ticker}] LLM returned no text. Aborting.")
             return None
-        
+
+        options_recommendations: list | None = None
+        options_parse_error: str | None = None
+
+        json_block_match = re.search(r"```json\s*(\[.*?\])\s*```", recommendation_text, re.DOTALL)
+        raw_json = None
+        if json_block_match:
+            raw_json = json_block_match.group(1)
+        else:
+            alt_match = re.search(r"(\[\s*\{.*?\}\s*\])", recommendation_text, re.DOTALL)
+            if alt_match:
+                raw_json = alt_match.group(1)
+
+        if raw_json:
+            try:
+                parsed_options = json.loads(raw_json)
+                if isinstance(parsed_options, dict):
+                    parsed_options = [parsed_options]
+                elif not isinstance(parsed_options, list):
+                    options_parse_error = "Options JSON must be a list or object."
+                    parsed_options = []
+                options_recommendations = parsed_options
+            except json.JSONDecodeError as exc:
+                options_parse_error = f"Failed to parse options JSON: {exc}"
+        else:
+            options_parse_error = "Options JSON block not found in model output."
+
         metadata = {
             "ticker": ticker,
             "run_date": today_str,
             "outlook_signal": outlook_signal,
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
-            "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}"
+            "macro_trend": raw_macro_trend,
+            "anti_thesis": raw_anti_thesis,
+            "macro_generated_at": ticker_data.get("macro_generated_at"),
+            "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}",
+            "narrative_brief_markdown": recommendation_text,
+            "options_recommendations": options_recommendations or [],
         }
-        
+
+        if options_parse_error:
+            metadata["options_parse_error"] = options_parse_error
+
         _delete_old_recommendation_files(ticker)
-        
+
         gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown")
         gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(metadata, indent=2), "application/json")
         
