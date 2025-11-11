@@ -19,10 +19,10 @@ OUTPUT_TABLE_ID = (
 
 # --- Example output contract ---
 _EXAMPLE_OUTPUT = """{
-  "setup_quality": "Strong",
-  "summary": "Cheap IV versus recent realized volatility, tight spread, and bullish trend make the risk/reward favorable.",
-  "drivers": ["volatility","liquidity","alignment","breakeven","decay"],
-  "confidence": 0.78
+  "setup_quality": "Fair",
+  "summary": "Macro misalignment (-1) and soft 90-day backlog commentary temper the otherwise bullish call setup.",
+  "drivers": ["alignment","macro_risk","liquidity"],
+  "confidence": 0.72
 }"""
 
 # =========================
@@ -62,6 +62,106 @@ def _breakeven_distance_pct(option_type: str, spot: float, strike: float, mid_pr
     else:
         breakeven = strike - mid_price
         return (spot - breakeven) / spot * 100.0
+
+_TEXTUAL_CONTEXT_MARKERS = (
+    "commentary",
+    "summary",
+    "outlook",
+    "insight",
+    "note",
+    "color",
+    "highlight",
+    "guidance",
+    "visibility",
+    "narrative",
+    "comment",
+    "trend",
+    "thesis",
+    "risk",
+)
+
+_FORWARD_GUIDANCE_KEYWORDS = (
+    "forward",
+    "next_90",
+    "90d",
+    "ninety",
+    "demand",
+    "backlog",
+    "order",
+    "pipeline",
+    "book-to-bill",
+    "book_to_bill",
+    "booking",
+)
+
+_MACRO_CONTEXT_KEYWORDS = (
+    "macro",
+    "recession",
+    "inflation",
+    "rates",
+    "fed",
+    "policy",
+)
+
+
+def _collect_textual_context(row: pd.Series, include_keywords: tuple[str, ...]) -> dict[str, str]:
+    """Return trimmed textual context fields that match supplied keywords."""
+
+    context: dict[str, str] = {}
+    for key in row.index:
+        if not isinstance(key, str):
+            continue
+
+        lowered = key.lower()
+        if not any(keyword in lowered for keyword in include_keywords):
+            continue
+
+        if not any(marker in lowered for marker in _TEXTUAL_CONTEXT_MARKERS):
+            continue
+
+        value = row.get(key)
+        if pd.isna(value):
+            continue
+
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                context[key] = trimmed
+        elif isinstance(value, (list, dict)):
+            # Preserve structured context if upstream provided it.
+            context[key] = json.dumps(value)
+
+    return context
+
+
+def _normalize_driver_list(raw_drivers) -> list[str]:
+    """Normalize the driver collection returned by the model into a clean list."""
+
+    if raw_drivers is None:
+        return []
+
+    if isinstance(raw_drivers, str):
+        trimmed = raw_drivers.strip()
+        if not trimmed:
+            return []
+        try:
+            parsed = json.loads(trimmed)
+        except json.JSONDecodeError:
+            parsed = trimmed
+        raw_drivers = parsed
+
+    if isinstance(raw_drivers, (list, tuple, set)):
+        cleaned: list[str] = []
+        for item in raw_drivers:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+
+    text = str(raw_drivers).strip()
+    return [text] if text else []
 
 # --- NEW VOLATILITY SIGNAL FUNCTION (contract IV vs HV-30) ---
 def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
@@ -166,15 +266,25 @@ Rules (apply even if the JSON is incomplete):
 - Liquidity: If `spread_pct > 10` OR (`open_interest` and `volume` are both small), downgrade for execution risk.
 - Decay: If `dte <= 7` AND `theta` is materially negative, downgrade for time-decay risk.
 - Breakeven realism: If `breakeven_distance_pct` is large relative to recent moves and trend is not favorable, downgrade; if modest and aligned with trend, upgrade.
+- Macro alignment: Use `stock_macro_alignment` when present (+1 = supportive, 0 = neutral, -1 = headwind). Negative alignment or demand/backlog warnings over the next 90 days should bias you toward downgrading `setup_quality` and explicitly tagging `macro_risk`. Positive alignment can support a modest upgrade when other signals agree.
+- Forward demand/backlog commentary: Highlight any fields referencing demand, backlog, bookings, or pipeline over the next 90 days. Cite them directly in the summary when they exist.
 - RSI: >70 mention overbought risk; <30 mention oversold bounce potential. Do not upgrade solely on RSI.
 
+Driver guidance:
+- Select the most relevant drivers from ["liquidity","volatility","alignment","breakeven","decay","momentum","macro_risk"].
+- You may include additional bespoke drivers only when strongly justified by the data.
+- Always include "macro_risk" when macro alignment is negative or the forward-looking commentary flags macro or demand risk in the next 90 days.
+
 Output JSON with exactly these keys:
-{
+{{
   "setup_quality": "Strong|Fair|Weak",
-  "summary": "One sentence referencing 1–2 concrete fields.",
-  "drivers": ["liquidity","volatility","alignment","breakeven","decay","momentum"],
+  "summary": "One sentence referencing 1–2 concrete fields and citing any forward-looking demand/backlog commentary affecting the next 90 days.",
+  "drivers": ["liquidity","volatility","alignment","breakeven","decay","momentum","macro_risk"],
   "confidence": 0.0
-}
+}}
+
+Example output:
+{example_output}
 
 Data:
 {contract_data}
@@ -208,6 +318,7 @@ def _row_to_llm_payload(row: pd.Series) -> str:
         "stock_price_trend_signal": row.get("outlook_signal"),
         "rsi": row.get("latest_rsi"),
         "close_30d_delta_pct": row.get("close_30d_delta_pct"),
+        "stock_macro_alignment": row.get("stock_macro_alignment"),
 
         # Option context
         "option_type": str(row.get("option_type")).lower() if row.get("option_type") is not None else None,
@@ -230,6 +341,15 @@ def _row_to_llm_payload(row: pd.Series) -> str:
         "moneyness_pct": None if mny is None else mny * 100.0,
         "breakeven_distance_pct": breakeven_pct,
     }
+
+    macro_context = _collect_textual_context(row, _MACRO_CONTEXT_KEYWORDS)
+    forward_guidance_context = _collect_textual_context(row, _FORWARD_GUIDANCE_KEYWORDS)
+
+    if macro_context:
+        payload.update(macro_context)
+
+    if forward_guidance_context:
+        payload.update(forward_guidance_context)
 
     clean_payload = {k: v for k, v in payload.items() if pd.notna(v)}
     return json.dumps(clean_payload, indent=2)
@@ -267,7 +387,8 @@ def _process_contract(row: pd.Series):
             raise ValueError(f"Invalid 'setup_quality' received: {quality}")
 
         summary = obj.get("summary")
-        drivers = obj.get("drivers")
+        raw_drivers = obj.get("drivers")
+        drivers_list = _normalize_driver_list(raw_drivers)
         confidence = obj.get("confidence")
 
         # recompute vol signal for storage (same logic as payload)
@@ -283,6 +404,24 @@ def _process_contract(row: pd.Series):
         mny = _moneyness_pct(row.get("option_type"), row.get("underlying_price"), row.get("strike"))
         breakeven_pct = _breakeven_distance_pct(row.get("option_type"), row.get("underlying_price"),
                                                 row.get("strike"), mid_px)
+
+        macro_alignment_value = row.get("stock_macro_alignment")
+        macro_context = _collect_textual_context(row, _MACRO_CONTEXT_KEYWORDS)
+        forward_guidance_context = _collect_textual_context(row, _FORWARD_GUIDANCE_KEYWORDS)
+
+        macro_insights: dict[str, dict[str, str]] = {}
+        if macro_context:
+            macro_insights["macro"] = macro_context
+        if forward_guidance_context:
+            macro_insights["forward_guidance"] = forward_guidance_context
+
+        macro_insights_json = json.dumps(macro_insights) if macro_insights else None
+
+        drivers_json = None
+        if drivers_list:
+            drivers_json = json.dumps(drivers_list)
+        elif isinstance(raw_drivers, (list, tuple, set)) and not raw_drivers:
+            drivers_json = json.dumps([])
 
         return {
             "ticker": ticker,
@@ -308,8 +447,10 @@ def _process_contract(row: pd.Series):
             "breakeven_distance_pct": breakeven_pct,
             "setup_quality_signal": quality,
             "summary": summary,
-            "drivers": json.dumps(drivers) if isinstance(drivers, list) else None,
+            "drivers": drivers_json,
             "confidence": confidence,
+            "stock_macro_alignment": macro_alignment_value if pd.notna(macro_alignment_value) else None,
+            "macro_insights_json": macro_insights_json,
         }
     except Exception as e:
         logging.error(f"[{ticker}] Contract {csym} failed: {e}", exc_info=True)
