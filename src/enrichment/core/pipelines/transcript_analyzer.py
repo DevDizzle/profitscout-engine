@@ -3,6 +3,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .. import config, gcs, bq
 from ..clients import vertex_ai
+from .helpers import load_latest_macro_thesis
 import os
 import re
 import json
@@ -13,7 +14,7 @@ OUTPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["output"]
 
 _EXAMPLE_OUTPUT = """{
   "score": 0.38,
-  "analysis": "The earnings call for AAON presents a mildly bearish outlook, dominated by significant operational challenges. Management explicitly stated that Q2 results 'fall short of our expectations' due to a problematic ERP system rollout that disrupted production. Consequently, the company is 'revising our full year 2025 outlook lower,' now anticipating low-teens sales growth and a gross margin of 28% to 29%. While the BasX data center business remains a strong point with sales up 127%, this was offset by declines in the core AAON brand. The combination of a clear earnings miss, lowered guidance, and ongoing operational headwinds signals near-term pressure on the stock."
+  "analysis": "The earnings call for AAON tilts mildly bearish. Management conceded that Q2 results 'fall short of our expectations' and issued forward-looking guidance that 'full year 2025 growth will track in the low teens with margin near 28%'. Those commitments clash with the macro baseline described above, which assumes resilient industrial demand, while echoing the counterpoint risk of softer capital spending."
 }"""
 
 def read_transcript_content(raw_json: str) -> str | None:
@@ -46,15 +47,20 @@ def process_transcript(ticker: str, date_str: str):
         logging.error(f"[{ticker}] Could not extract 'content' from {input_blob_name}")
         return None
     
+    macro_thesis = load_latest_macro_thesis()
     prompt = r"""You are a sharp financial analyst evaluating an earnings call transcript to find signals that may influence the stock over the next 1–3 months.
 Use **only** the full transcript provided. Your analysis **must** be grounded in the data.
 
+### Macro Context (read carefully before analyzing)
+- Baseline macro thesis: {macro_trend}
+- Counterpoint / risks: {anti_thesis}
+
 ### Key Interpretation Guidelines & Data Integration
-1.  **Guidance & Outlook**: Was guidance changed? You **must** cite the specific guidance revision (e.g., 'revising our full year 2025 outlook lower').
+1.  **Guidance & Outlook**: Capture any new or reiterated outlook. Provide the exact forward-looking quote(s) in single quotes.
 2.  **Performance vs. Expectations**: Did the company beat or miss? Cite specific metrics if available (e.g., 'net sales declined 0.6%').
-3.  **Tone & Sentiment**: What was management's tone? You **must** include a short, direct quote that captures their sentiment (e.g., 'fall short of our expectations').
-4.  **Synthesis**: Combine these data points into a cohesive narrative.
-5.  **No Material Signals**: If balanced or neutral, output 0.50.
+3.  **Tone & Sentiment**: Describe management's tone using direct single-quoted snippets from prepared remarks or Q&A.
+4.  **Macro Alignment Check**: Assess whether the outlook aligns with, contradicts, or hedges against the macro thesis above. Call out specific overlaps or tensions.
+5.  **Synthesis & Scoring**: Combine these data points into a cohesive narrative before delivering the probability score. If there are no material signals, default to 0.50.
 
 ### CRITICAL FORMATTING RULE
 - When including direct quotes in the 'analysis' text, you MUST use single quotes ('), not double quotes ("). This is to ensure the final JSON is clean and renders correctly.
@@ -63,25 +69,29 @@ Use **only** the full transcript provided. Your analysis **must** be grounded in
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1.  Scan the full transcript to identify specific data points and quotes required by the guidelines.
-2.  Assess the overall tone and key performance metrics from both prepared remarks and the Q&A section.
-3.  Synthesize these points into a net bullish/bearish score.
+1.  Scan the full transcript to identify specific data points, forward-looking statements, and sentiment quotes required by the guidelines.
+2.  Evaluate each forward-looking element against the macro baseline and counterpoint.
+3.  Synthesize these inputs into a net bullish/bearish score.
 4.  Map the net result to probability bands:
     -   0.00-0.30 → clearly bearish
     -   0.31-0.49 → mildly bearish
     -   0.50       → neutral / balanced
     -   0.51-0.69 → moderately bullish
     -   0.70-1.00 → strongly bullish
-5.  Summarize the key drivers into one dense paragraph, integrating the specific data points you identified.
+5.  Summarize the key drivers into one dense paragraph, integrating the specific data points, forward-looking quotes, and macro comparison.
 
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (150-250 words) summarizing the key themes from the call, **integrating specific figures and direct quotes** to support the analysis.>"
+  "analysis": "<One dense paragraph (150-250 words) summarizing the key themes from the call, **integrating specific figures, forward-looking quotes, and macro alignment** to support the analysis.>"
 }
+
 Provided Transcript:
 {{transcript_content}}
-""".replace("{{transcript_content}}", transcript_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
+""".replace("{{transcript_content}}", transcript_content)
+    prompt = prompt.replace("{macro_trend}", macro_thesis["macro_trend"])
+    prompt = prompt.replace("{anti_thesis}", macro_thesis["anti_thesis"])
+    prompt = prompt.replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json")
