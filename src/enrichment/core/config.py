@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime
 
@@ -78,39 +77,24 @@ WORKER_TIMEOUT = 300
 
 # --- Macro Thesis Configuration ---
 
-def _parse_macro_sources(raw: str | None) -> list[dict[str, str]]:
-    if not raw:
-        return []
 
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        urls = [item.strip() for item in raw.split(",") if item.strip()]
-        return [{"name": url, "url": url} for url in urls]
-
-    if isinstance(parsed, dict):
-        return [{"name": parsed.get("name") or parsed.get("url", "macro-source"), "url": parsed.get("url", ""), **{k: v for k, v in parsed.items() if k not in {"name", "url"}}}]
-
-    if isinstance(parsed, list):
-        sources: list[dict[str, str]] = []
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name") or item.get("url") or "macro-source"
-            url = item.get("url", "")
-            cleaned = {k: v for k, v in item.items() if isinstance(k, str)}
-            cleaned.update({"name": name, "url": url})
-            sources.append(cleaned)
-        return sources
-
-    return []
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
-MACRO_THESIS_SOURCES = _parse_macro_sources(os.getenv("MACRO_THESIS_SOURCES"))
-MACRO_THESIS_HTTP_TIMEOUT = int(os.getenv("MACRO_THESIS_HTTP_TIMEOUT", "20"))
-MACRO_THESIS_MAX_SOURCES = int(os.getenv("MACRO_THESIS_MAX_SOURCES", "5"))
-MACRO_THESIS_SOURCE_CHAR_LIMIT = int(os.getenv("MACRO_THESIS_SOURCE_CHAR_LIMIT", "2000"))
-
+MACRO_THESIS_USE_GOOGLE_SEARCH = _env_flag(
+    "MACRO_THESIS_USE_GOOGLE_SEARCH", True
+)
+MACRO_THESIS_SEARCH_QUERY = os.getenv(
+    "MACRO_THESIS_SEARCH_QUERY",
+    "latest global macroeconomic trends that impact equity and rate markets",
+)
+MACRO_THESIS_MAX_GROUNDED_SOURCES = int(
+    os.getenv("MACRO_THESIS_MAX_GROUNDED_SOURCES", "6")
+)
 
 def get_macro_thesis_output_prefix() -> str:
     return PREFIXES["macro_thesis"]["output"]

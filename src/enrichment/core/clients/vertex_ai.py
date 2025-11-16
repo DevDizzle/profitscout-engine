@@ -40,9 +40,16 @@ _client = _init_client()
     wait=wait_exponential_jitter(initial=2, max=60),
     stop=stop_after_attempt(5),
     reraise=True,
-    before_sleep=lambda rs: _log.warning("Retrying after %s: attempt %d", rs.outcome.exception(), rs.attempt_number),
+    before_sleep=lambda rs: _log.warning(
+        "Retrying after %s: attempt %d", rs.outcome.exception(), rs.attempt_number
+    ),
 )
-def generate(prompt: str) -> str:
+def generate(
+    prompt: str,
+    *,
+    model: str | None = None,
+    config_overrides: dict | None = None,
+) -> str:
     """Generates content using the Vertex AI client with retry logic."""
     global _client
     if _client is None:
@@ -51,21 +58,31 @@ def generate(prompt: str) -> str:
         if _client is None:
             raise RuntimeError("Vertex AI client is not available.")
 
-    _log.info("Generating content with Vertex AI (model=%s, prompt_tokens=%d)…",
-              config.MODEL_NAME, len(prompt.split()))
-
-    cfg = types.GenerateContentConfig(
-        temperature=config.TEMPERATURE,
-        top_p=config.TOP_P,
-        top_k=config.TOP_K,
-        seed=config.SEED,
-        candidate_count=config.CANDIDATE_COUNT,
-        max_output_tokens=config.MAX_OUTPUT_TOKENS,
+    model_name = model or config.MODEL_NAME
+    _log.info(
+        "Generating content with Vertex AI (model=%s, prompt_tokens=%d)…",
+        model_name,
+        len(prompt.split()),
     )
+
+    cfg_kwargs: dict = {
+        "temperature": config.TEMPERATURE,
+        "top_p": config.TOP_P,
+        "top_k": config.TOP_K,
+        "seed": config.SEED,
+        "candidate_count": config.CANDIDATE_COUNT,
+        "max_output_tokens": config.MAX_OUTPUT_TOKENS,
+    }
+    if config_overrides:
+        for key, value in config_overrides.items():
+            if value is not None:
+                cfg_kwargs[key] = value
+
+    cfg = types.GenerateContentConfig(**cfg_kwargs)
 
     text = ""
     for chunk in _client.models.generate_content_stream(
-        model=config.MODEL_NAME,
+        model=model_name,
         contents=prompt,
         config=cfg,
     ):
