@@ -53,8 +53,12 @@ def _generate_worldview() -> dict:
     )
 
     try:
-        response_text, _grounding_md = vertex_ai.generate_grounded_json(
-            WORLDVIEW_PROMPT
+        response_text, _ = vertex_ai.generate_with_tools(
+            prompt=WORLDVIEW_PROMPT,
+            model_name=getattr(config, "MACRO_THESIS_MODEL_NAME", config.MODEL_NAME),
+            temperature=getattr(
+                config, "MACRO_THESIS_TEMPERATURE", config.TEMPERATURE
+            ),
         )
 
         if not response_text:
