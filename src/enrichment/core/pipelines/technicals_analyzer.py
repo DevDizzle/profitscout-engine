@@ -1,3 +1,5 @@
+# enrichment/core/pipelines/technicals_analyzer.py
+
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .. import config, gcs
@@ -10,27 +12,27 @@ INPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["input"]
 PRICE_INPUT_PREFIX = "prices/"
 OUTPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["output"]
 
-# --- MODIFIED: A more concise one-shot example ---
+# --- NEW: BEARISH Example Output for a Premium BUYER (PUTS) ---
 _EXAMPLE_OUTPUT = """{
-  "score": 0.40,
-  "analysis": "AAON's recent technicals suggest a mildly bearish outlook. After a sharp decline to $70.87, the stock price recovered to close recently at $80.26, which is above its 50-day SMA of $79.14 but still well below the 200-day SMA of $97.79. This indicates short-term strength but a longer-term downtrend remains intact. Momentum is showing signs of weakness; the most recent RSI reading is 49.44, indicating neutral sentiment, and the MACD at 0.90 is trending down towards its signal line. The price action shows a failed attempt to break recent highs, suggesting that overhead resistance is significant and pointing to a potential for further consolidation or declines."
+  "score": 0.15,
+  "strategy_bias": "Strong Bearish Breakdown",
+  "analysis": "AAON is exhibiting clear signs of a bearish breakdown, making it a strong candidate for buying put options. The price has decisively breached its critical 200-day SMA on high volume, confirming a major trend reversal. The MACD has posted a bearish cross and is accelerating downward (-1.20), while the RSI has plunged to 28, indicating strong selling pressure and oversold conditions that can persist in a strong downtrend. This technical alignment suggests the path of least resistance is lower, with high potential for a sharp, volatile move down as long-term support has failed. The setup favors directional short strategies that profit from both a price decline and an expansion in volatility."
 }"""
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_technicals.json'."""
-    # Corrected the regular expression to properly match the filenames.
     pattern = re.compile(r"([A-Z.]+)_technicals\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return match.group(1) if match else None
 
 def process_blob(technicals_blob_name: str):
-    """Processes one daily technicals file and its corresponding price data."""
+    """Processes one daily technicals file to identify breakout potential."""
     ticker = parse_filename(technicals_blob_name)
     if not ticker:
         return None
     
     analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_technicals.json"
-    logging.info(f"[{ticker}] Generating technicals analysis")
+    logging.info(f"[{ticker}] Generating technicals analysis for premium buying")
     
     technicals_content = gcs.read_blob(config.GCS_BUCKET_NAME, technicals_blob_name)
     if not technicals_content:
@@ -41,34 +43,36 @@ def process_blob(technicals_blob_name: str):
     price_content = gcs.read_blob(config.GCS_BUCKET_NAME, price_blob_name)
     price_data_for_prompt = price_content if price_content else '"prices": []'
 
+    # --- Prompt is already correct, just using a new bearish example ---
+    prompt = r"""You are a quantitative technical analyst identifying short-term breakout opportunities for an options premium BUYER. Your goal is to find setups with strong directional momentum and high potential for a volatile price move over the next 5-30 trading days.
 
-    # --- MODIFIED: Updated prompt for a shorter, more direct analysis ---
-    prompt = r"""You are a sharp technical analyst writing for a fast-paced audience. Evaluate the provided technical indicators and 90-day price history to assess the likely direction over the next 1–3 months.
 Use **only** the JSON data provided.
 
 ### Key Interpretation Guidelines
-1.  **Price Action**: What is the recent trend? Is it breaking out or breaking down?
-2.  **Moving Averages**: Is the price above or below key moving averages (e.g., 21-day EMA, 50/200-day SMA)?
-3.  **Momentum**: Are indicators like MACD and RSI showing strength or weakness?
-4.  **No Material Signals**: If mixed or neutral, output 0.50.
+1.  **Trend & Momentum (Primary):** Is there a clear, accelerating trend? Is price decisively above/below key moving averages (e.g., 21-day EMA, 50-day SMA)? Is the MACD showing a strong cross and pulling away from its signal line? Is the RSI in a strong trend (ideally >60 for bullish, <40 for bearish)?
+2.  **Breakout Potential:** Is the price breaking out of a recent consolidation pattern, support, or resistance? A stock moving from a tight range to a new trend is an ideal setup.
+3.  **Synthesize for a Breakout:** Combine these factors into a single thesis. A weak or sideways trend is undesirable. Your goal is to find conviction. A score near 0.5 indicates a poor setup for a premium buyer.
 
 ### Example Output (for format only; do not copy wording)
 {{example_output}}
 
 ### Step-by-Step Reasoning
-1.  Evaluate changes in price, trend, and momentum.
-2.  Map the net result to probability bands:
-    -   0.00-0.30 → clearly bearish
-    -   0.31-0.49 → mildly bearish
-    -   0.50       → neutral / balanced
-    -   0.51-0.69 → moderately bullish
-    -   0.70-1.00 → strongly bullish
-3.  Summarize key signals into one dense paragraph.
+1.  Evaluate the strength and direction of the trend and momentum indicators (MACD, RSI).
+2.  Assess if the price action confirms a breakout or a breakdown.
+3.  Determine if the stock is more likely to be directional (good for buying premium) or range-bound (bad).
+4.  Map the net directional strength to a probability score. High conviction breakouts get scores far from 0.5.
+    -   0.80-1.00 → Strong Bullish Breakout (High conviction to buy calls)
+    -   0.60-0.79 → Developing Bullish Momentum (Favorable for buying calls)
+    -   0.40-0.59 → Neutral / No Clear Edge (AVOID - high risk of premium decay)
+    -   0.20-0.39 → Developing Bearish Momentum (Favorable for buying puts)
+    -   0.00-0.19 → Strong Bearish Breakdown (High conviction to buy puts)
+5.  Select a strategy bias and write a dense, evidence-based analysis.
 
 ### Output — return exactly this JSON, nothing else
 {
-  "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (150-250 words) summarizing key trends, patterns, and technical reasoning.>"
+  "score": <float between 0 and 1 indicating directional conviction>,
+  "strategy_bias": "<Categorical bias: 'Strong Bullish Breakout', 'Developing Bullish Momentum', 'Neutral / No Clear Edge', 'Developing Bearish Momentum', 'Strong Bearish Breakdown'>",
+  "analysis": "<One dense paragraph (150-250 words) summarizing the key technical signals that support a directional breakout or breakdown, and why it's a suitable candidate for buying premium.>"
 }
 
 Provided data:
@@ -83,7 +87,7 @@ Provided data:
     return analysis_blob_path
 
 def run_pipeline():
-    logging.info("--- Starting Technicals Analysis Pipeline (Daily Run) ---")
+    logging.info("--- Starting Technicals Breakout Analysis Pipeline (for Premium Buyers) ---")
     work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
             
     if not work_items:

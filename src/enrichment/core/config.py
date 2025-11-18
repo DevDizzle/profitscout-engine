@@ -2,6 +2,7 @@
 Central configuration for all Enrichment services.
 """
 import os
+import datetime
 
 # --- Global Project ---
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
@@ -20,12 +21,12 @@ PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.price_data"
 
 # --- Score Aggregator ---
 SCORE_WEIGHTS = {
-    "news_score": 0.25,
-    "technicals_score": 0.45,
-    "mda_score": 0.05,
-    "transcript_score": 0.05,
-    "financials_score": 0.10,
-    "fundamentals_score": 0.10,
+    "news_score": 0.375,
+    "technicals_score": 0.475,
+    "mda_score": 0.025,
+    "transcript_score": 0.025,
+    "financials_score": 0.05,
+    "fundamentals_score": 0.05,
 }
 
 # --- Vertex AI Gen AI ---
@@ -47,14 +48,14 @@ PREFIXES = {
     "news_fetcher": {"query_cache": "news-queries/"},
     "business_summarizer": {"input": "sec-business/", "output": "business-summaries/"},
     "fundamentals_analyzer": {
-        "input_metrics": "key-metrics/", 
-        "input_ratios": "ratios/", 
-        "output": "fundamentals-analysis/"
-    }
+        "input_metrics": "key-metrics/",
+        "input_ratios": "ratios/",
+        "output": "fundamentals-analysis/",
+    },
 }
 
 ANALYSIS_PREFIXES = {
-    "business_summary": "business-summaries/", 
+    "business_summary": "business-summaries/",
     "news": "news-analysis/",
     "technicals": "technicals-analysis/",
     "mda": "mda-analysis/",
@@ -69,3 +70,24 @@ HEADLINE_LIMIT = 25
 
 # Timeout for worker processes in seconds
 WORKER_TIMEOUT = 300
+
+# --- Macro Thesis / Worldview ---
+# Mode: "search" (Gemini + Google Search grounding) or "http" (your own HTTP sources)
+MACRO_THESIS_MODE = "search"
+MACRO_THESIS_MODEL_NAME = "gemini-2.5-pro"
+
+# Default settings (required variables, even if unused in search mode)
+MACRO_THESIS_MAX_SOURCES = 10
+MACRO_THESIS_HTTP_TIMEOUT = 30
+MACRO_THESIS_SOURCE_CHAR_LIMIT = 15000
+MACRO_THESIS_SOURCES: list[dict] = []
+
+
+def macro_thesis_blob_name() -> str:
+    """
+    Returns the destination path for the daily macro worldview.
+    Saved at the bucket root (no folder).
+    Format: macro_thesis_YYYY-MM-DD.json
+    """
+    today = datetime.date.today().isoformat()
+    return f"macro_thesis_{today}.json"

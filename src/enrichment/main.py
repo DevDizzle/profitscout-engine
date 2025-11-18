@@ -19,6 +19,7 @@ from .core.pipelines import (
     business_summarizer,
     financials_analyzer,
     fundamentals_analyzer,
+    macro_thesis,
     mda_analyzer,
     news_analyzer,
     options_analyzer,
@@ -198,3 +199,18 @@ def run_options_feature_engineering(request: Request):
     """
     options_feature_engineering.run_pipeline()
     return "Options feature engineering pipeline finished.", 200
+
+
+@functions_framework.http
+def run_thesis_generator(request: Request):
+    """
+    HTTP-triggered function to run the macro thesis generator pipeline.
+
+    Args:
+        request: The Flask request object (not used).
+
+    Returns:
+        A tuple containing a success message and HTTP status code 200.
+    """
+    macro_thesis.run_pipeline()
+    return "Macro thesis generator pipeline finished.", 200
