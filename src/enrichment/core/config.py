@@ -2,7 +2,6 @@
 Central configuration for all Enrichment services.
 """
 import os
-import datetime
 
 # --- Global Project ---
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
@@ -84,10 +83,5 @@ MACRO_THESIS_SOURCES: list[dict] = []
 
 
 def macro_thesis_blob_name() -> str:
-    """
-    Returns the destination path for the daily macro worldview.
-    Saved at the bucket root (no folder).
-    Format: macro_thesis_YYYY-MM-DD.json
-    """
-    today = datetime.date.today().isoformat()
-    return f"macro_thesis_{today}.json"
+    """Return the fixed filename for the macro worldview snapshot."""
+    return "macro_thesis.txt"
