@@ -40,14 +40,24 @@ def _extract_json_object(text: str) -> str:
 
 # -------- Worldview & BigQuery Helpers (No changes needed) --------------------
 def _get_macro_worldview() -> str:
+    blob_name = config.macro_thesis_blob_name()
     try:
-        blob_name = config.macro_thesis_blob_name() 
         content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
         if content:
-            worldview_data = json.loads(content)
-            return worldview_data.get("worldview", "Macro worldview not available.")
+            worldview = content.strip()
+            if worldview:
+                return worldview
+            logging.warning(
+                "Macro worldview blob %s was empty; falling back to default message.",
+                blob_name,
+            )
+        else:
+            logging.warning(
+                "Macro worldview blob %s was not found or empty; falling back to default message.",
+                blob_name,
+            )
     except Exception as e:
-        logging.error(f"Failed to load macro worldview: {e}")
+        logging.error(f"Failed to load macro worldview from {blob_name}: {e}")
     return "Macro worldview context is currently unavailable. Analyze news on its own merit."
 
 def _get_ticker_metadata(bq: bigquery.Client, ticker: str) -> dict:

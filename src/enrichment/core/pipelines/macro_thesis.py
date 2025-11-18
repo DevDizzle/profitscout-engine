@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 
 from .. import config, gcs
@@ -80,29 +79,29 @@ def _generate_worldview() -> dict:
 
 
 def run_pipeline() -> str | None:
-    """Execute the macro worldview pipeline and write the output to GCS.
-
-    Output shape in GCS:
-
-    {
-      "generated_at": "...Z",
-      "worldview": "..."
-    }
-    """
+    """Execute the macro worldview pipeline and write the output to GCS."""
     _LOG.info(
         "Starting macro worldview pipeline run… model=%s",
         getattr(config, "MACRO_THESIS_MODEL_NAME", config.MODEL_NAME),
     )
 
     worldview_data = _generate_worldview()
+    worldview_text = worldview_data.get("worldview", "")
+    if not worldview_text:
+        _LOG.error("Generated macro worldview text was empty; aborting write to GCS.")
+        return None
 
     blob_name = config.macro_thesis_blob_name()
     gcs.write_text(
         config.GCS_BUCKET_NAME,
         blob_name,
-        json.dumps(worldview_data, indent=2),
-        "application/json",
+        worldview_text,
+        "text/plain",
     )
 
-    _LOG.info("Macro worldview written to gs://%s/%s", config.GCS_BUCKET_NAME, blob_name)
+    _LOG.info(
+        "Macro worldview written to gs://%s/%s (overwriting previous snapshot)",
+        config.GCS_BUCKET_NAME,
+        blob_name,
+    )
     return blob_name
