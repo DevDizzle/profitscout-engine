@@ -125,16 +125,12 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
         example_output=_EXAMPLE_OUTPUT
     )
     
-    search_queries = [
-        f"latest news and press releases for {ticker} ({meta.get('company_name')})",
-        f"analyst rating changes for {ticker}",
-    ]
-
     try:
         # This function must be capable of both browsing and searching based on the prompt's instructions.
-        response_text, _ = vertex_ai.generate_grounded_json(
-            prompt,
-            search_queries=search_queries # These are used if the browse tool needs supplemental info
+        response_text, _ = vertex_ai.generate_with_tools(
+            prompt=prompt,
+            model_name=getattr(config, "NEWS_ANALYZER_MODEL_NAME", config.MODEL_NAME),
+            temperature=getattr(config, "NEWS_ANALYZER_TEMPERATURE", config.TEMPERATURE),
         )
         
         clean_json_str = _extract_json_object(response_text)
