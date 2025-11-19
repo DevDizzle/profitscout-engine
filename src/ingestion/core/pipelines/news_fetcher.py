@@ -490,12 +490,53 @@ def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[di
             break
     return out
 
+def select_macro_news_from_recent_pool(pool: List[dict], hours: int) -> List[dict]:
+    """Filter a recent Polygon v2 pool for macro-related headlines."""
+    now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
+
+    picks, seen_urls = [], set()
+    for a in pool:
+        if len(picks) >= MACRO_NEWS_LIMIT:
+            break
+        if not _is_recent(a.get("published_utc"), cutoff):
+            continue
+        if not _publisher_passes(a, relax=False) or _title_is_noise(a):
+            continue
+        if _score_text(a, MACRO_TERMS) < 1:
+            continue
+        u = a.get("article_url")
+        if not u or u in seen_urls:
+            continue
+        seen_urls.add(u)
+        picks.append({
+            "title": a.get("title"),
+            "publishedDate": a.get("published_utc"),
+            "text": _clean_html_to_text(a.get("description")),
+            "url": u,
+        })
+    return picks
+
+def _merge_macro_sources(*sources: List[dict]) -> List[dict]:
+    seen, merged = set(), []
+    for src in sources:
+        for it in src or []:
+            u = it.get("url")
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            merged.append(it)
+            if len(merged) >= MACRO_NEWS_LIMIT:
+                return merged
+    return merged
+
 # --- Per-ticker worker ------------------------------------------------------
 
 def fetch_and_save_headlines(
     ticker: str,
     metadata_map: Dict[str, Dict[str, str]],
     recent_pool: List[dict],
+    macro_news: List[dict],
     polygon_client: PolygonClient,
     storage_client: storage.Client,
 ):
@@ -540,6 +581,8 @@ def fetch_and_save_headlines(
             {k: v for k, v in it.items() if not k.startswith("_")}
             for it in candidates
         ][:NEWS_MACRO_RETURN]
+        # Sector first, then macro, cap total
+        macro_combined = (sector_news + macro_news)[:NEWS_MACRO_RETURN]
 
         output_path = f"{NEWS_OUTPUT_PREFIX}{ticker}_{out_date}.json"
         gcs.cleanup_old_files(storage_client, NEWS_OUTPUT_PREFIX, ticker, output_path)
@@ -578,6 +621,9 @@ def run_pipeline():
 
     metadata_map = get_sector_industry_map(bq_client, tickers)
     recent_pool = fetch_recent_news_pool(polygon_client, WINDOW_HOURS)
+    macro_news_bz = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
+    macro_news_pool = select_macro_news_from_recent_pool(recent_pool, WINDOW_HOURS)
+    macro_news = _merge_macro_sources(macro_news_bz, macro_news_pool)
 
     processed = 0
     max_workers = config.MAX_WORKERS_TIERING.get("news_fetcher", 8)
@@ -585,7 +631,7 @@ def run_pipeline():
         futures = {
             ex.submit(
                 fetch_and_save_headlines,
-                t, metadata_map, recent_pool, polygon_client, storage_client
+                t, metadata_map, recent_pool, macro_news, polygon_client, storage_client
             ): t
             for t in tickers
         }
