@@ -450,7 +450,7 @@ def select_macro_headlines_from_pool(pool: List[dict], hours: int) -> List[dict]
 
 def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[dict]:
     """
-    Benzinga macro channels (via Polygon). Signature unchanged; pool is ignored.
+    Fetch macro headlines once via Benzinga channels for all tickers.
     Return 0..MACRO_NEWS_LIMIT items; if none match, return [] (neutral).
     """
     if MACRO_NEWS_LIMIT <= 0:
@@ -460,19 +460,15 @@ def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[di
     gte = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
     lte = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    try:
-        bz = _fetch_benzinga_news(
-            client=polygon_client,  # bound in run_pipeline()
-            tickers=None,
-            channels=BENZ_MACRO_CHANNELS,
-            published_gte_iso=gte,
-            published_lte_iso=lte,
-            limit=1000,
-            paginate=True,
-        )
-    except NameError:
-        logging.error("polygon_client not initialized for macro fetch.")
-        return []
+    bz = _fetch_benzinga_news(
+        client=client,
+        tickers=None,
+        channels=BENZ_MACRO_CHANNELS,
+        published_gte_iso=gte,
+        published_lte_iso=lte,
+        limit=1000,
+        paginate=True,
+    )
 
     out, seen = [], set()
     for it in bz:
@@ -485,6 +481,7 @@ def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[di
             "publishedDate": it.get("published"),
             "text": (it.get("teaser") or "")[:1000],
             "url": u,
+            "_channels": [c.lower() for c in (it.get("channels") or [])],
         })
         if len(out) >= MACRO_NEWS_LIMIT:
             break
@@ -610,8 +607,6 @@ def run_pipeline():
     storage_client = storage.Client()
     bq_client = bigquery.Client()
 
-    # Make polygon_client available to select_macro_news_from_pool
-    global polygon_client
     polygon_client = PolygonClient(api_key=POLYGON_API_KEY)
 
     tickers = gcs.get_tickers(storage_client)
