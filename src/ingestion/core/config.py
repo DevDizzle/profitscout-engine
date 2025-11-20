@@ -17,6 +17,9 @@ BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
 # For populate_price_data
 PRICE_DATA_TABLE = "price_data"
 PRICE_DATA_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{PRICE_DATA_TABLE}"
+# For SPY price sync
+SPY_PRICE_TABLE = os.getenv("SPY_PRICE_TABLE", "spy_price_history")
+SPY_PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{SPY_PRICE_TABLE}"
 # For refresh_stock_metadata & transcript_collector
 MASTER_TABLE = "stock_metadata"
 MASTER_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{MASTER_TABLE}"
@@ -75,11 +78,13 @@ INDICATORS = {
     "roc_20": {"kind": "roc", "params": {"length": 20}},
     "bollinger_bands": {"kind": "bbands", "params": {"length": 20, "std": 2}},
     "atr": {"kind": "atr", "params": {"length": 14}},
-    "obv": {"kind": "obv", "params": {}},
+    "obv": {"kind": "obv", "params": {}}
 }
 
 # --- Populate Price Data ---
 DEFAULT_START_DATE = datetime.date(2020, 1, 1)
+SPY_DEFAULT_START_DATE = datetime.date(2025, 10, 21)
+SPY_PRICE_FIRESTORE_COLLECTION = os.getenv("SPY_PRICE_FIRESTORE_COLLECTION", "spy_price_history")
 
 # --- Job Parameters (Workers / Batching) ---
 MAX_WORKERS_TIERING = {

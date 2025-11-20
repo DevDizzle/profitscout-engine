@@ -5,6 +5,7 @@ google-cloud-bigquery
 google-cloud-bigquery-storage
 google-cloud-pubsub
 google-cloud-logging
+google-cloud-firestore
 requests
 tenacity
 sec-api
