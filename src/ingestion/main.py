@@ -16,7 +16,7 @@ import os
 
 import functions_framework
 from flask import Request
-from google.cloud import bigquery, pubsub_v1, storage
+from google.cloud import bigquery, pubsub_v1, storage, firestore
 
 from .core import config
 from .core.clients.fmp_client import FMPClient
@@ -30,6 +30,7 @@ from .core.pipelines import (
     populate_price_data,
     price_updater,
     refresh_stock_metadata,
+    spy_price_sync,
     sec_filing_extractor,
     statement_loader,
     technicals_collector,
@@ -75,11 +76,13 @@ def _get_secret_or_env(name: str) -> str | None:
 storage_client = None
 bq_client = None
 publisher_client = None
+firestore_client = None
 
 if os.environ.get("ENV") != "test":
     storage_client = storage.Client(project=config.PROJECT_ID)
     bq_client = bigquery.Client(project=config.PROJECT_ID)
     publisher_client = pubsub_v1.PublisherClient()
+    firestore_client = firestore.Client(project=config.PROJECT_ID)
 
 # Initialize API clients with keys from Secret Manager or environment.
 fmp_api_key = _get_secret_or_env(config.FMP_API_KEY_SECRET)
@@ -192,6 +195,28 @@ def run_price_populator(request: Request):
     populate_price_data.run_pipeline(bq_client, storage_client, fmp_client)
     return "Price data population pipeline started.", 202
 
+
+@functions_framework.http
+def sync_spy_price_history(request: Request):
+    """
+    HTTP-triggered function to load SPY prices into BigQuery and sync them to Firestore.
+
+    Args:
+        request: The Flask request object (not used).
+
+    Returns:
+        A tuple containing a success message and HTTP status code 202.
+        Returns status 500 if clients are not initialized.
+    """
+    if not all([bq_client, firestore_client, fmp_client]):
+        logging.error("SPY price sync clients not initialized.")
+        return "Server config error: SPY price sync clients not initialized.", 500
+    spy_price_sync.run_pipeline(
+        bq_client=bq_client,
+        firestore_client=firestore_client,
+        fmp_client=fmp_client,
+    )
+    return "SPY price sync pipeline started.", 202
 
 @functions_framework.http
 def refresh_technicals(request: Request):
