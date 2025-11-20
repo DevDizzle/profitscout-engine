@@ -413,7 +413,42 @@ def select_sector_news_from_pool(pool: List[dict], ticker: str, sector_slug: str
     } for it in picks]
     return out
 
-def select_macro_news_from_pool(client: PolygonClient, hours: int) -> List[dict]:
+def select_macro_headlines_from_pool(pool: List[dict], hours: int) -> List[dict]:
+    """Use Polygon v2 pool to surface macro headlines (MACRO_TERMS) for backfill."""
+    if not pool:
+        return []
+
+    now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
+
+    picks, seen_urls = [], set()
+    max_items = max(MACRO_NEWS_LIMIT, NEWS_MACRO_RETURN)
+
+    for a in pool:
+        if len(picks) >= max_items:
+            break
+        if not _is_recent(a.get("published_utc"), cutoff):
+            continue
+        if not _publisher_passes(a, relax=True) or _title_is_noise(a):
+            continue
+        if _score_text(a, MACRO_TERMS) < 1:
+            continue
+
+        u = a.get("article_url")
+        if not u or u in seen_urls:
+            continue
+        seen_urls.add(u)
+
+        picks.append({
+            "title": a.get("title"),
+            "publishedDate": a.get("published_utc"),
+            "text": _clean_html_to_text(a.get("description")),
+            "url": u,
+        })
+
+    return picks
+
+def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[dict]:
     """
     Fetch macro headlines once via Benzinga channels for all tickers.
     Return 0..MACRO_NEWS_LIMIT items; if none match, return [] (neutral).
@@ -452,7 +487,6 @@ def select_macro_news_from_pool(client: PolygonClient, hours: int) -> List[dict]
             break
     return out
 
-
 def select_macro_news_from_recent_pool(pool: List[dict], hours: int) -> List[dict]:
     """Filter a recent Polygon v2 pool for macro-related headlines."""
     now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
@@ -480,46 +514,17 @@ def select_macro_news_from_recent_pool(pool: List[dict], hours: int) -> List[dic
         })
     return picks
 
-
 def _merge_macro_sources(*sources: List[dict]) -> List[dict]:
-    """Deduplicate and prioritize macro-first, then sector backfill."""
-
-    def _macro_hits(it: dict) -> int:
-        text = _norm((it.get("title") or "") + " " + (it.get("text") or ""))
-        return sum(1 for k in MACRO_TERMS if k in text)
-
-    by_url: Dict[str, dict] = {}
-    for priority, src in enumerate(sources):
+    seen, merged = set(), []
+    for src in sources:
         for it in src or []:
             u = it.get("url")
-            if not u:
+            if not u or u in seen:
                 continue
-            ts = _parse_iso_utc(it.get("publishedDate"))
-            entry = {
-                "item": it,
-                "priority": priority,
-                "hits": _macro_hits(it),
-                "ts": ts.timestamp() if ts else float("-inf"),
-            }
-
-            existing = by_url.get(u)
-            if not existing:
-                by_url[u] = entry
-                continue
-
-            if (entry["priority"], -entry["hits"], -entry["ts"]) < (
-                existing["priority"], -existing["hits"], -existing["ts"]
-            ):
-                by_url[u] = entry
-
-    ranked = sorted(
-        by_url.values(), key=lambda e: (e["priority"], -e["hits"], -e["ts"])
-    )
-    merged: List[dict] = []
-    for e in ranked:
-        merged.append(e["item"])
-        if len(merged) >= NEWS_MACRO_RETURN:
-            break
+            seen.add(u)
+            merged.append(it)
+            if len(merged) >= MACRO_NEWS_LIMIT:
+                return merged
     return merged
 
 # --- Per-ticker worker ------------------------------------------------------
@@ -547,7 +552,34 @@ def fetch_and_save_headlines(
 
         stock_news = select_ticker_news(polygon_client, ticker, WINDOW_HOURS)
         sector_news = select_sector_news_from_pool(recent_pool, ticker, sector_slug, peers, WINDOW_HOURS)
-        macro_combined = _merge_macro_sources(macro_news, sector_news)
+        macro_news_only = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
+        macro_pool_news = select_macro_headlines_from_pool(recent_pool, WINDOW_HOURS)
+
+        def _append_candidates(src_items: List[dict], priority: int, bucket: List[dict], seen: Set[str]):
+            for item in src_items:
+                u = item.get("url")
+                if not u or u in seen:
+                    continue
+                seen.add(u)
+                dt = _parse_iso_utc(item.get("publishedDate"))
+                bucket.append({
+                    **item,
+                    "_priority": priority,
+                    "_ts": dt.timestamp() if dt else float("-inf"),
+                })
+
+        candidates, seen_urls = [], set()
+        _append_candidates(macro_news_only, 0, candidates, seen_urls)
+        _append_candidates(macro_pool_news, 1, candidates, seen_urls)
+        _append_candidates(sector_news, 2, candidates, seen_urls)
+
+        candidates.sort(key=lambda it: (it["_priority"], -it["_ts"]))
+        macro_combined = [
+            {k: v for k, v in it.items() if not k.startswith("_")}
+            for it in candidates
+        ][:NEWS_MACRO_RETURN]
+        # Sector first, then macro, cap total
+        macro_combined = (sector_news + macro_news)[:NEWS_MACRO_RETURN]
 
         output_path = f"{NEWS_OUTPUT_PREFIX}{ticker}_{out_date}.json"
         gcs.cleanup_old_files(storage_client, NEWS_OUTPUT_PREFIX, ticker, output_path)
@@ -584,7 +616,7 @@ def run_pipeline():
 
     metadata_map = get_sector_industry_map(bq_client, tickers)
     recent_pool = fetch_recent_news_pool(polygon_client, WINDOW_HOURS)
-    macro_news_bz = select_macro_news_from_pool(polygon_client, WINDOW_HOURS)
+    macro_news_bz = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
     macro_news_pool = select_macro_news_from_recent_pool(recent_pool, WINDOW_HOURS)
     macro_news = _merge_macro_sources(macro_news_bz, macro_news_pool)
 
