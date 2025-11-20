@@ -413,9 +413,9 @@ def select_sector_news_from_pool(pool: List[dict], ticker: str, sector_slug: str
     } for it in picks]
     return out
 
-def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[dict]:
+def select_macro_news_from_pool(client: PolygonClient, hours: int) -> List[dict]:
     """
-    Benzinga macro channels (via Polygon). Signature unchanged; pool is ignored.
+    Fetch macro headlines once via Benzinga channels for all tickers.
     Return 0..MACRO_NEWS_LIMIT items; if none match, return [] (neutral).
     """
     if MACRO_NEWS_LIMIT <= 0:
@@ -425,19 +425,15 @@ def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[di
     gte = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
     lte = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    try:
-        bz = _fetch_benzinga_news(
-            client=polygon_client,  # bound in run_pipeline()
-            tickers=None,
-            channels=BENZ_MACRO_CHANNELS,
-            published_gte_iso=gte,
-            published_lte_iso=lte,
-            limit=1000,
-            paginate=True,
-        )
-    except NameError:
-        logging.error("polygon_client not initialized for macro fetch.")
-        return []
+    bz = _fetch_benzinga_news(
+        client=client,
+        tickers=None,
+        channels=BENZ_MACRO_CHANNELS,
+        published_gte_iso=gte,
+        published_lte_iso=lte,
+        limit=1000,
+        paginate=True,
+    )
 
     out, seen = [], set()
     for it in bz:
@@ -450,10 +446,81 @@ def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[di
             "publishedDate": it.get("published"),
             "text": (it.get("teaser") or "")[:1000],
             "url": u,
+            "_channels": [c.lower() for c in (it.get("channels") or [])],
         })
         if len(out) >= MACRO_NEWS_LIMIT:
             break
     return out
+
+
+def select_macro_news_from_recent_pool(pool: List[dict], hours: int) -> List[dict]:
+    """Filter a recent Polygon v2 pool for macro-related headlines."""
+    now_utc = datetime.datetime.now(tz=UTC).replace(microsecond=0)
+    cutoff = (now_utc - datetime.timedelta(hours=hours))
+
+    picks, seen_urls = [], set()
+    for a in pool:
+        if len(picks) >= MACRO_NEWS_LIMIT:
+            break
+        if not _is_recent(a.get("published_utc"), cutoff):
+            continue
+        if not _publisher_passes(a, relax=False) or _title_is_noise(a):
+            continue
+        if _score_text(a, MACRO_TERMS) < 1:
+            continue
+        u = a.get("article_url")
+        if not u or u in seen_urls:
+            continue
+        seen_urls.add(u)
+        picks.append({
+            "title": a.get("title"),
+            "publishedDate": a.get("published_utc"),
+            "text": _clean_html_to_text(a.get("description")),
+            "url": u,
+        })
+    return picks
+
+
+def _merge_macro_sources(*sources: List[dict]) -> List[dict]:
+    """Deduplicate and prioritize macro-first, then sector backfill."""
+
+    def _macro_hits(it: dict) -> int:
+        text = _norm((it.get("title") or "") + " " + (it.get("text") or ""))
+        return sum(1 for k in MACRO_TERMS if k in text)
+
+    by_url: Dict[str, dict] = {}
+    for priority, src in enumerate(sources):
+        for it in src or []:
+            u = it.get("url")
+            if not u:
+                continue
+            ts = _parse_iso_utc(it.get("publishedDate"))
+            entry = {
+                "item": it,
+                "priority": priority,
+                "hits": _macro_hits(it),
+                "ts": ts.timestamp() if ts else float("-inf"),
+            }
+
+            existing = by_url.get(u)
+            if not existing:
+                by_url[u] = entry
+                continue
+
+            if (entry["priority"], -entry["hits"], -entry["ts"]) < (
+                existing["priority"], -existing["hits"], -existing["ts"]
+            ):
+                by_url[u] = entry
+
+    ranked = sorted(
+        by_url.values(), key=lambda e: (e["priority"], -e["hits"], -e["ts"])
+    )
+    merged: List[dict] = []
+    for e in ranked:
+        merged.append(e["item"])
+        if len(merged) >= NEWS_MACRO_RETURN:
+            break
+    return merged
 
 # --- Per-ticker worker ------------------------------------------------------
 
@@ -461,6 +528,7 @@ def fetch_and_save_headlines(
     ticker: str,
     metadata_map: Dict[str, Dict[str, str]],
     recent_pool: List[dict],
+    macro_news: List[dict],
     polygon_client: PolygonClient,
     storage_client: storage.Client,
 ):
@@ -479,10 +547,7 @@ def fetch_and_save_headlines(
 
         stock_news = select_ticker_news(polygon_client, ticker, WINDOW_HOURS)
         sector_news = select_sector_news_from_pool(recent_pool, ticker, sector_slug, peers, WINDOW_HOURS)
-        macro_news_only = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
-
-        # Sector first, then macro, cap total
-        macro_combined = (sector_news + macro_news_only)[:NEWS_MACRO_RETURN]
+        macro_combined = _merge_macro_sources(macro_news, sector_news)
 
         output_path = f"{NEWS_OUTPUT_PREFIX}{ticker}_{out_date}.json"
         gcs.cleanup_old_files(storage_client, NEWS_OUTPUT_PREFIX, ticker, output_path)
@@ -510,8 +575,6 @@ def run_pipeline():
     storage_client = storage.Client()
     bq_client = bigquery.Client()
 
-    # Make polygon_client available to select_macro_news_from_pool
-    global polygon_client
     polygon_client = PolygonClient(api_key=POLYGON_API_KEY)
 
     tickers = gcs.get_tickers(storage_client)
@@ -521,6 +584,9 @@ def run_pipeline():
 
     metadata_map = get_sector_industry_map(bq_client, tickers)
     recent_pool = fetch_recent_news_pool(polygon_client, WINDOW_HOURS)
+    macro_news_bz = select_macro_news_from_pool(polygon_client, WINDOW_HOURS)
+    macro_news_pool = select_macro_news_from_recent_pool(recent_pool, WINDOW_HOURS)
+    macro_news = _merge_macro_sources(macro_news_bz, macro_news_pool)
 
     processed = 0
     max_workers = config.MAX_WORKERS_TIERING.get("news_fetcher", 8)
@@ -528,7 +594,7 @@ def run_pipeline():
         futures = {
             ex.submit(
                 fetch_and_save_headlines,
-                t, metadata_map, recent_pool, polygon_client, storage_client
+                t, metadata_map, recent_pool, macro_news, polygon_client, storage_client
             ): t
             for t in tickers
         }

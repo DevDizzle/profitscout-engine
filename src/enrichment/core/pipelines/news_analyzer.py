@@ -8,7 +8,6 @@ from google.cloud import bigquery
 import os
 import re
 import json
-import datetime as dt
 
 # --- Configuration ---
 INPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
@@ -38,28 +37,7 @@ def _extract_json_object(text: str) -> str:
     if start != -1 and end != -1 and end > start: return text[start : end + 1]
     return text
 
-# -------- Worldview & BigQuery Helpers (No changes needed) --------------------
-def _get_macro_worldview() -> str:
-    blob_name = config.macro_thesis_blob_name()
-    try:
-        content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-        if content:
-            worldview = content.strip()
-            if worldview:
-                return worldview
-            logging.warning(
-                "Macro worldview blob %s was empty; falling back to default message.",
-                blob_name,
-            )
-        else:
-            logging.warning(
-                "Macro worldview blob %s was not found or empty; falling back to default message.",
-                blob_name,
-            )
-    except Exception as e:
-        logging.error(f"Failed to load macro worldview from {blob_name}: {e}")
-    return "Macro worldview context is currently unavailable. Analyze news on its own merit."
-
+# -------- Metadata & BigQuery Helpers ----------------------------------------
 def _get_ticker_metadata(bq: bigquery.Client, ticker: str) -> dict:
     table_id = config.STOCK_METADATA_TABLE_ID
     query = f"SELECT sector, industry, company_name FROM `{table_id}` WHERE ticker = @ticker ORDER BY quarter_end_date DESC LIMIT 1"
@@ -74,7 +52,7 @@ def _get_ticker_metadata(bq: bigquery.Client, ticker: str) -> dict:
     return {"sector": "N/A", "industry": "N/A", "company_name": ticker}
 
 # -------- Core processing ----------------------------------------------------
-def process_blob(blob_name: str, bq_client: bigquery.Client, macro_worldview: str):
+def process_blob(blob_name: str, bq_client: bigquery.Client):
     ticker, date_str = parse_filename(blob_name)
     if not ticker or not date_str:
         return None
@@ -99,7 +77,7 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
 # Your Task & Information Sources (in order of priority)
 1.  **Browse Provided URLs (Primary Task):** Your most important task is to BROWSE the URLs listed below. Read the full content of these articles to find specific, material information about {ticker}.
 2.  **Real-Time Google Search (Secondary Task):** After browsing, use your search tool to find any other significant news about {ticker} that might have been missed.
-3.  **Synthesize with Macro Context:** Integrate your findings with the provided `Macro Worldview` to gauge if the news will be amplified or muted by the market.
+3.  **Macro Alignment:** From the news you browse (and any search results), identify the major macro themes involved—examples: Fed policy path, inflation trends, energy prices, credit conditions, geopolitical shocks, consumer demand. Explain whether the stock-specific catalyst is amplified or muted by those broader themes.
 
 # Analysis Rules
 1.  **Find the Material Catalyst**: Base your analysis on the detailed information you discover from browsing and searching. A simple headline is not enough.
@@ -108,9 +86,6 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
 
 # URLs to Browse First
 {urls_to_browse}
-
-# Macro Worldview (for context)
-"{macro_worldview}"
 
 # Context
 - Ticker: {ticker}
@@ -124,14 +99,13 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
 {{
   "score": <float, 0.0-0.2 (Strong Bearish Catalyst), 0.2-0.4 (Mild Bearish), 0.4-0.6 (NO CATALYST - AVOID), 0.6-0.8 (Mild Bullish), 0.8-1.0 (Strong Bullish Catalyst)>,
   "catalyst_type": "<'Strong Bearish Catalyst', 'Mild Bearish Catalyst', 'Neutral / No Catalyst', 'Mild Bullish Catalyst', 'Strong Bullish Catalyst'>",
-  "analysis": "<One dense paragraph (150-220 words) explaining the catalyst you found from browsing the URLs, how the macro view affects it, and the potential impact on price volatility. If no catalyst exists, state that clearly.>"
+  "analysis": "<One dense paragraph (150-220 words) explaining the catalyst you found from browsing the URLs, citing article specifics, and explicitly stating how it aligns or conflicts with the dominant macro themes you identified (e.g., tightening credit, slowing consumer demand, falling commodity prices). Discuss why that alignment changes the expected price volatility. If no catalyst exists, state that clearly.>"
 }}
 """.format(
         ticker=ticker,
         company_name=meta.get("company_name"),
         sector=meta.get("sector"),
         urls_to_browse=urls_for_prompt,
-        macro_worldview=macro_worldview,
         example_output=_EXAMPLE_OUTPUT
     )
     
@@ -162,9 +136,6 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
 
 def run_pipeline():
     logging.info("--- Starting News Catalyst Analysis Pipeline (with URL Browsing) ---")
-    logging.info("Fetching latest macro worldview...")
-    macro_worldview = _get_macro_worldview()
-    logging.info("Macro worldview loaded.")
     logging.info(f"Clearing output directory: gs://{config.GCS_BUCKET_NAME}/{OUTPUT_PREFIX}")
     gcs.delete_all_in_prefix(bucket_name=config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX)
     work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
@@ -175,7 +146,7 @@ def run_pipeline():
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         future_to_blob = {
-            executor.submit(process_blob, item, bq_client, macro_worldview): item 
+            executor.submit(process_blob, item, bq_client): item
             for item in work_items
         }
         for future in as_completed(future_to_blob):
