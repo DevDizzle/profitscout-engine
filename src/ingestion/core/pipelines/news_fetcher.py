@@ -448,7 +448,9 @@ def select_macro_headlines_from_pool(pool: List[dict], hours: int) -> List[dict]
 
     return picks
 
-def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[dict]:
+def select_macro_news_from_pool(
+    _pool_unused: List[dict], hours: int, polygon_client: PolygonClient
+) -> List[dict]:
     """
     Fetch macro headlines once via Benzinga channels for all tickers.
     Return 0..MACRO_NEWS_LIMIT items; if none match, return [] (neutral).
@@ -461,7 +463,7 @@ def select_macro_news_from_pool(_pool_unused: List[dict], hours: int) -> List[di
     lte = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     bz = _fetch_benzinga_news(
-        client=client,
+        client=polygon_client,
         tickers=None,
         channels=BENZ_MACRO_CHANNELS,
         published_gte_iso=gte,
@@ -552,7 +554,9 @@ def fetch_and_save_headlines(
 
         stock_news = select_ticker_news(polygon_client, ticker, WINDOW_HOURS)
         sector_news = select_sector_news_from_pool(recent_pool, ticker, sector_slug, peers, WINDOW_HOURS)
-        macro_news_only = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
+        macro_news_only = select_macro_news_from_pool(
+            recent_pool, WINDOW_HOURS, polygon_client
+        )
         macro_pool_news = select_macro_headlines_from_pool(recent_pool, WINDOW_HOURS)
 
         def _append_candidates(src_items: List[dict], priority: int, bucket: List[dict], seen: Set[str]):
@@ -616,7 +620,7 @@ def run_pipeline():
 
     metadata_map = get_sector_industry_map(bq_client, tickers)
     recent_pool = fetch_recent_news_pool(polygon_client, WINDOW_HOURS)
-    macro_news_bz = select_macro_news_from_pool(recent_pool, WINDOW_HOURS)
+    macro_news_bz = select_macro_news_from_pool(recent_pool, WINDOW_HOURS, polygon_client)
     macro_news_pool = select_macro_news_from_recent_pool(recent_pool, WINDOW_HOURS)
     macro_news = _merge_macro_sources(macro_news_bz, macro_news_pool)
 
