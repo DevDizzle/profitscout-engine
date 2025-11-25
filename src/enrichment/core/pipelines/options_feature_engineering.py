@@ -1,6 +1,7 @@
 # enrichment/core/pipelines/options_feature_engineering.py
 import logging
 import pandas as pd
+import numpy as np
 from datetime import date
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -105,8 +106,9 @@ def _process_ticker(
             if iv_avg is not None and hv_30_for_signal is not None:
                 iv_signal = "high" if iv_avg > (hv_30_for_signal + 0.10) else "low"
                 
-            # Calculate Total Net Gamma Exposure
-            total_gex = helper.compute_net_gex(chain_df, uprice)
+            # Calculate Total Net Gamma Exposure using the helper
+            if hasattr(helper, 'compute_net_gex'):
+                total_gex = helper.compute_net_gex(chain_df, uprice)
 
         hv_30 = helper.compute_hv30(
             None, ticker, as_of_date, price_history_df=price_history_df
@@ -154,16 +156,34 @@ def _process_ticker(
 
 def _truncate_and_load_results(bq_client: bigquery.Client, df: pd.DataFrame):
     """
-    Performs a full wipe-and-replace load into the target table using options_analysis_helper.
+    Performs a full wipe-and-replace load into the target table using DataFrame.
     """
     if df.empty:
         logging.warning("No results to load. Skipping BigQuery load.")
         return
 
-    # Helper now manages the merge and schema updates
-    rows = df.to_dict(orient="records")
-    helper.upsert_analysis_rows(bq_client, rows, enrich_ohlcv=False)
-    logging.info(f"Successfully upserted {len(rows)} analysis rows via helper.")
+    # Define table ID
+    table_id = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_input"
+
+    # Replace Inf/-Inf/NaN with None/NaN for valid JSON/Parquet conversion
+    df_clean = df.replace([np.inf, -np.inf], np.nan).where(pd.notnull(df), None)
+
+    # Configure the load job
+    # FIX: Removed schema_update_options because it conflicts with WRITE_TRUNCATE
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE",
+    )
+
+    try:
+        # Use load_table_from_dataframe which handles NaN/None/Types natively
+        job = bq_client.load_table_from_dataframe(df_clean, table_id, job_config=job_config)
+        job.result()
+        logging.info(
+            f"Successfully truncated and loaded {job.output_rows} rows into {table_id}"
+        )
+    except Exception as e:
+        logging.error(f"Failed to load data to {table_id}: {e}", exc_info=True)
+        raise
 
 
 def run_pipeline():
@@ -176,7 +196,7 @@ def run_pipeline():
     tickers = _get_candidate_tickers(bq_client)
     if not tickers:
         logging.warning("No tickers found from options_candidates. Exiting.")
-        # Ensure table exists
+        # Ensure table exists via helper, or just let it be
         helper.ensure_table_exists(bq_client)
         return
 
@@ -207,12 +227,11 @@ def run_pipeline():
                 results.append(result)
 
     if not results:
-        logging.warning(
-            "No features were generated after processing."
-        )
+        logging.warning("No features were generated after processing.")
         return
 
     results_df = pd.DataFrame(results)
+    
     _truncate_and_load_results(bq_client, results_df)
 
     logging.info("--- Options Feature Engineering Pipeline Finished ---")

@@ -64,13 +64,13 @@ def process_blob(blob_name: str, bq_client: bigquery.Client):
     content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
     news_data = json.loads(content) if content else {}
     
-    # --- NEW: Extract URLs from the input JSON ---
+    # Extract URLs from the input JSON
     news_urls = [
         item['url'] for item in news_data.get('stock_news', []) if item.get('url')
     ]
     urls_for_prompt = "\n".join(news_urls) if news_urls else "No URLs provided in the input file."
 
-    # --- ENTIRE PROMPT IS REWRITTEN FOR BROWSE-FIRST LOGIC ---
+    # --- Prompt for Browse-First Logic ---
     prompt = r"""
 You are a news catalyst analyst for a directional options trader who BUYS premium. Your goal is to determine if there is a high-impact news catalyst that could cause a sharp, volatile price move (>2-5%) for {ticker}. You are equipped with a web browser.
 
@@ -110,12 +110,8 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
     )
     
     try:
-        # This function must be capable of both browsing and searching based on the prompt's instructions.
-        response_text, _ = vertex_ai.generate_with_tools(
-            prompt=prompt,
-            model_name=getattr(config, "NEWS_ANALYZER_MODEL_NAME", config.MODEL_NAME),
-            temperature=getattr(config, "NEWS_ANALYZER_TEMPERATURE", config.TEMPERATURE),
-        )
+        # REVERTED: Call generate_with_tools without model overrides to use default Flash model
+        response_text, _ = vertex_ai.generate_with_tools(prompt=prompt)
         
         clean_json_str = _extract_json_object(response_text)
         if not clean_json_str:
@@ -135,7 +131,7 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
         return None
 
 def run_pipeline():
-    logging.info("--- Starting News Catalyst Analysis Pipeline (with URL Browsing) ---")
+    logging.info("--- Starting News Catalyst Analysis Pipeline (Reverted to Flash) ---")
     logging.info(f"Clearing output directory: gs://{config.GCS_BUCKET_NAME}/{OUTPUT_PREFIX}")
     gcs.delete_all_in_prefix(bucket_name=config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX)
     work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)

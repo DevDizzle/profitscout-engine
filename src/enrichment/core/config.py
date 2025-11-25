@@ -13,9 +13,15 @@ BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
 STOCK_METADATA_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.stock_metadata"
 SCORES_TABLE_NAME = "analysis_scores"
 SCORES_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{SCORES_TABLE_NAME}"
+
+# Options Tables
 OPTIONS_CHAIN_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.options_chain"
 OPTIONS_CANDIDATES_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.options_candidates"
 PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.price_data"
+
+# --- NEW: Aliases for pipelines that use short names ---
+CHAIN_TABLE = OPTIONS_CHAIN_TABLE_ID
+CAND_TABLE = OPTIONS_CANDIDATES_TABLE_ID
 
 # --- Score Aggregator ---
 SCORE_WEIGHTS = {
@@ -37,9 +43,7 @@ CANDIDATE_COUNT = int(os.getenv("CANDIDATE_COUNT", "1"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
 
 # --- Pipeline Specific Models ---
-# Upgrade Technicals to Pro for better reasoning
 TECHNICALS_ANALYZER_MODEL_NAME = os.getenv("TECHNICALS_ANALYZER_MODEL_NAME", "gemini-2.5-pro")
-# Upgrade News Analyzer to Pro for better browsing/synthesis
 NEWS_ANALYZER_MODEL_NAME = os.getenv("NEWS_ANALYZER_MODEL_NAME", "gemini-2.5-pro")
 
 # --- Cloud Storage Prefixes ---
@@ -71,8 +75,6 @@ ANALYSIS_PREFIXES = {
 # --- Job Parameters ---
 MAX_WORKERS = 8
 HEADLINE_LIMIT = 25
-
-# Timeout for worker processes in seconds
 WORKER_TIMEOUT = 300
 
 # --- Macro Thesis / Worldview ---
@@ -83,7 +85,5 @@ MACRO_THESIS_HTTP_TIMEOUT = 30
 MACRO_THESIS_SOURCE_CHAR_LIMIT = 15000
 MACRO_THESIS_SOURCES: list[dict] = []
 
-
 def macro_thesis_blob_name() -> str:
-    """Return the fixed filename for the macro worldview snapshot."""
     return "macro_thesis.txt"

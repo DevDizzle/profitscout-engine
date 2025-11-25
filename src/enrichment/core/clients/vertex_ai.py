@@ -1,4 +1,5 @@
-# /serving/core/clients/vertex_ai.py
+# enrichment/core/clients/vertex_ai.py
+
 import logging
 from tenacity import retry, wait_exponential_jitter, stop_after_attempt, retry_if_exception_type
 from google import genai
@@ -9,6 +10,7 @@ import google.auth.transport.requests
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
+
 
 def _init_client() -> genai.Client | None:
     """Initializes the Vertex AI GenAI client."""
@@ -25,6 +27,7 @@ def _init_client() -> genai.Client | None:
 
 _client = _init_client()
 
+
 @retry(
     retry=retry_if_exception_type(Exception),
     wait=wait_exponential_jitter(initial=2, max=60),
@@ -32,11 +35,8 @@ _client = _init_client()
     reraise=True,
     before_sleep=lambda rs: _log.warning("Retrying stream after %s: attempt %d", rs.outcome.exception(), rs.attempt_number),
 )
-def generate(prompt: str, model_name: str | None = None) -> str:
-    """
-    Generates content using the Vertex AI client with retry logic (streaming).
-    Allows overriding the model via 'model_name'.
-    """
+def generate(prompt: str) -> str:
+    """Generates content using the Vertex AI client with retry logic (streaming)."""
     global _client
     if _client is None:
         _log.warning("Vertex client was None; attempting re-init now…")
@@ -44,17 +44,13 @@ def generate(prompt: str, model_name: str | None = None) -> str:
         if _client is None:
             raise RuntimeError("Vertex AI client is not available.")
 
-    effective_model = model_name or config.MODEL_NAME
-
-    _log.info("Generating content with Vertex AI (model=%s, prompt_tokens=%d)…", 
-              effective_model, len(prompt.split()))
-
+    _log.info("Generating content with Vertex AI (model=%s, prompt_tokens=%d)…", config.MODEL_NAME, len(prompt.split()))
     cfg = types.GenerateContentConfig(
         temperature=config.TEMPERATURE, top_p=config.TOP_P, top_k=config.TOP_K,
         seed=config.SEED, candidate_count=config.CANDIDATE_COUNT, max_output_tokens=config.MAX_OUTPUT_TOKENS,
     )
     text = ""
-    for chunk in _client.models.generate_content_stream(model=effective_model, contents=prompt, config=cfg):
+    for chunk in _client.models.generate_content_stream(model=config.MODEL_NAME, contents=prompt, config=cfg):
         if chunk.text:
             text += chunk.text
     _log.info("Successfully received full streamed response from Vertex AI.")
@@ -75,6 +71,10 @@ def generate_with_tools(
 ) -> tuple[str, types.GroundingMetadata | None]:
     """
     Generate a response using Gemini with web-access tools (Search and Browse).
+
+    This function is a general-purpose replacement for the old `generate_grounded_json`.
+    It enables the necessary tools for the model to perform both Google searches and
+    browse specific URLs mentioned in the prompt.
     """
     global _client
     if _client is None:
@@ -83,6 +83,7 @@ def generate_with_tools(
         if _client is None:
             raise RuntimeError("Vertex AI client is not available.")
 
+    # Use pipeline-specific model/temp, or fall back to global defaults
     effective_model = model_name or config.MODEL_NAME
     effective_temp = temperature if temperature is not None else config.TEMPERATURE
 
@@ -91,12 +92,16 @@ def generate_with_tools(
         effective_model, effective_temp, len(prompt.split())
     )
 
+    # Enable Google Search grounding tool. For modern Gemini models, this single
+    # tool provides the capability for both general web search and for browsing
+    # specific URLs found within the prompt.
     google_search_tool = types.Tool(google_search=types.GoogleSearch())
 
     cfg = types.GenerateContentConfig(
         temperature=effective_temp,
         top_p=config.TOP_P, top_k=config.TOP_K, seed=config.SEED,
         candidate_count=1, max_output_tokens=config.MAX_OUTPUT_TOKENS,
+        # IMPORTANT: Provide the tool to the model
         tools=[google_search_tool],
     )
 
@@ -115,3 +120,25 @@ def generate_with_tools(
 
     _log.info("Successfully received tool-enabled response from Vertex AI.")
     return text.strip(), grounding_md
+
+# --- Important Final Step ---
+# You will now need to update your other pipelines (`macro_thesis.py` and `news_analyzer.py`)
+# to call this new `generate_with_tools` function instead of the old one.
+
+# In `macro_thesis.py`, change:
+# response_text, _ = vertex_ai.generate_grounded_json(WORLDVIEW_PROMPT)
+# TO:
+# response_text, _ = vertex_ai.generate_with_tools(
+#     prompt=WORLDVIEW_PROMPT,
+#     model_name=getattr(config, "MACRO_THESIS_MODEL_NAME", config.MODEL_NAME),
+#     temperature=getattr(config, "MACRO_THESIS_TEMPERATURE", config.TEMPERATURE)
+# )
+
+# In `news_analyzer.py`, change:
+# response_text, _ = vertex_ai.generate_grounded_json(...)
+# TO:
+# response_text, _ = vertex_ai.generate_with_tools(
+#     prompt=prompt,
+#     model_name=getattr(config, "NEWS_ANALYZER_MODEL_NAME", config.MODEL_NAME),
+#     temperature=getattr(config, "NEWS_ANALYZER_TEMPERATURE", config.TEMPERATURE)
+# )

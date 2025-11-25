@@ -94,11 +94,8 @@ Provided Data:
 """.replace("{{technicals_data}}", technicals_content).replace("{{price_data}}", price_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
 
     try:
-        # Use specific model for Technicals (Gemini 2.5 Pro)
-        analysis_json = vertex_ai.generate(
-            prompt,
-            model_name=getattr(config, "TECHNICALS_ANALYZER_MODEL_NAME", config.MODEL_NAME)
-        )
+        # REVERTED: Uses default model (Gemini 2.0 Flash)
+        analysis_json = vertex_ai.generate(prompt)
         
         if "{" not in analysis_json:
             raise ValueError("Model did not return JSON")
