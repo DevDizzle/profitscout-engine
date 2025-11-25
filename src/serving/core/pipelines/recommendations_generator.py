@@ -67,20 +67,21 @@ One concise paragraph synthesizing why the setup favors a directional breakout. 
 """
 
 
-def _get_signal_and_context(percentile: float, momentum_pct: float | None) -> tuple[str, str]:
+def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[str, str]:
     """
-    Determines the 5-tier outlook signal based on the SCORE PERCENTILE (relative rank).
+    Determines the 5-tier outlook signal based on the ABSOLUTE WEIGHTED SCORE.
+    This ensures the label matches the semantic analysis (e.g., Bearish Technicals).
     """
-    # Use percentile buckets to ensure a normalized distribution of signals
-    if percentile >= 0.85:
+    # Absolute Thresholds based on 0.0-1.0 scale (0.5 is Neutral)
+    if score >= 0.70:
         outlook = "Strongly Bullish"
-    elif 0.65 <= percentile < 0.85:
+    elif 0.55 <= score < 0.70:
         outlook = "Moderately Bullish"
-    elif 0.35 <= percentile < 0.65:
+    elif 0.45 <= score < 0.55:
         outlook = "Neutral / Mixed"
-    elif 0.15 <= percentile < 0.35:
+    elif 0.30 <= score < 0.45:
         outlook = "Moderately Bearish"
-    else:  # percentile < 0.15
+    else:  # score < 0.30
         outlook = "Strongly Bearish"
 
     context = ""
@@ -99,10 +100,9 @@ def _get_signal_and_context(percentile: float, momentum_pct: float | None) -> tu
     
     # Add a directional "tilt" to the neutral signal to make it more useful
     if outlook == "Neutral / Mixed":
-        # We use percentile here as well for consistency
-        if percentile > 0.55:
+        if score > 0.50:
             outlook += " with a bullish tilt"
-        elif percentile < 0.45:
+        elif score < 0.50:
             outlook += " with a bearish tilt"
         else:
             outlook += " (lacks conviction)"
@@ -133,7 +133,7 @@ def _get_daily_work_list() -> list[dict]:
                 t1.ticker,
                 t2.company_name,
                 t1.weighted_score,
-                t1.score_percentile,  -- Fetch pre-calculated percentile
+                t1.score_percentile,
                 t1.aggregated_text,
                 ROW_NUMBER() OVER(
                     PARTITION BY t1.ticker
@@ -222,13 +222,13 @@ def _process_ticker(ticker_data: dict):
         if pd.isna(momentum_pct):
             momentum_pct = None
 
-        # Use score_percentile for the signal logic, falling back to 0.5 if missing
-        percentile = ticker_data.get("score_percentile")
-        if pd.isna(percentile):
-            percentile = 0.5
+        # --- MODIFIED: Use absolute weighted_score for signal definition ---
+        score = ticker_data.get("weighted_score")
+        if pd.isna(score):
+            score = 0.5
 
         outlook_signal, momentum_context = _get_signal_and_context(
-            percentile,
+            score,
             momentum_pct,
         )
 
@@ -264,8 +264,8 @@ def _process_ticker(ticker_data: dict):
             "outlook_signal": outlook_signal,
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
-            # Store percentile in metadata for transparency
-            "score_percentile": percentile, 
+            # Store percentile for reference, even if not used for signal
+            "score_percentile": ticker_data.get("score_percentile", 0.5), 
             "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}",
         }
         

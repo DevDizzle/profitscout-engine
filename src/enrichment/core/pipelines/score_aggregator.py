@@ -82,7 +82,7 @@ def _gather_analysis_data() -> dict:
 
 def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
     """
-    Processes the gathered data, calculates scores and percentile, aggregates text, and returns a DataFrame.
+    Processes the gathered data, calculates absolute weighted scores, aggregates text, and returns a DataFrame.
     """
     if not ticker_data:
         return pd.DataFrame()
@@ -92,27 +92,22 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
 
     score_cols = list(config.SCORE_WEIGHTS.keys())
     for col in score_cols:
+        # Fill missing scores with 0.5 (Neutral) so they don't drag down the average artificially
         if col not in df.columns:
             df[col] = 0.5
         else:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.5)
 
     df["weighted_score"] = pd.NA
-    complete_mask = df[score_cols].notna().all(axis=1)
+    
+    # --- FIXED: Absolute Scoring ---
+    # We calculate the weighted sum of the RAW scores (0.0 to 1.0).
+    # We DO NOT normalize against the batch min/max.
+    df["weighted_score"] = sum(
+        df[col] * config.SCORE_WEIGHTS[col] for col in score_cols
+    )
 
-    if complete_mask.any():
-        df_complete = df[complete_mask].copy()
-
-        for col in score_cols:
-            min_val, max_val = df_complete[col].min(), df_complete[col].max()
-            df_complete[f"norm_{col}"] = (df_complete[col] - min_val) / (max_val - min_val) if (max_val - min_val) > 0 else 0.5
-
-        norm_cols = [f"norm_{col}" for col in score_cols]
-        df_complete["weighted_score"] = sum(df_complete[norm_col] * config.SCORE_WEIGHTS[col] for col, norm_col in zip(score_cols, norm_cols))
-
-        df.update(df_complete[["weighted_score"]])
-
-    # Calculate percentile rank for non-null weighted scores
+    # Calculate percentile rank for reference/filtering only, NOT for signal generation
     df['score_percentile'] = df['weighted_score'].rank(pct=True)
 
     def aggregate_text(row):
@@ -158,13 +153,10 @@ def run_pipeline():
     print(f"STEP 2 COMPLETE: Processed data into a DataFrame with shape {final_df.shape}.")
 
     print("STEP 3: Starting to load DataFrame to BigQuery...")
-    # --- THIS IS THE FIX ---
-    # Removed schema_update_options as it's incompatible with WRITE_TRUNCATE
-    # BigQuery will infer the schema (including the new column) automatically.
+    # Use WRITE_TRUNCATE to replace the daily snapshot
     job_config = bigquery.LoadJobConfig(
         write_disposition="WRITE_TRUNCATE",
     )
-    # --- END FIX ---
     job = client.load_table_from_dataframe(final_df, config.SCORES_TABLE_ID, job_config=job_config)
     job.result()
     print(f"STEP 3 COMPLETE: Loaded {job.output_rows} rows into BigQuery table: {config.SCORES_TABLE_ID}")

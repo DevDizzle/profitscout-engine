@@ -1,3 +1,4 @@
+# enrichment/core/pipelines/options_candidate_selector.py
 import logging
 from google.cloud import bigquery
 from .. import config
@@ -10,37 +11,19 @@ CHAIN_TABLE  = f"{PROJECT}.{DATASET}.options_chain"
 CAND_TABLE   = f"{PROJECT}.{DATASET}.options_candidates"
 
 
-def _truncate(bq: bigquery.Client, table_id: str):
-    bq.query(f"TRUNCATE TABLE `{table_id}`").result()
-    logging.info("Truncated %s", table_id)
-
-
-def _insert_candidates(bq: bigquery.Client):
+def _create_candidates_table(bq: bigquery.Client):
     """
-    Options candidate selector with elasticity-aware scoring.
-
-    CALL + PUT filtering & scoring (no BUY/SELL universe gating, no top-5 cap):
-      • Chain source = latest fetch_date per ticker from options_chain
-      • Resolve underlying price with latest adj_close from price_data (max date)
-      • Moneyness (direction-aware):
-            - Calls: strike / price in [1.05, 1.10]
-            - Puts : price / strike in [1.05, 1.10]
-      • Keep DTE, OI, spread filters
-      • Score/normalize as before, but add elasticity term:
-            elasticity_raw = ABS(delta) * underlying_price / mid_px
-      • Compute rn (per ticker, option_type_lc) but DO NOT filter by rn
-      • Insert all filtered, scored candidates
+    Options candidate selector with elasticity-aware scoring AND Unusual Options Activity (UOA) detection.
+    
+    Uses CREATE OR REPLACE TABLE to ensure the schema is always up to date.
     """
     price_table = f"{PROJECT}.{DATASET}.price_data"
 
     q = f"""
-    INSERT INTO `{CAND_TABLE}` (
-      selection_run_ts, ticker, signal,
-      contract_symbol, option_type, expiration_date, strike,
-      last_price, bid, ask, volume, open_interest, implied_volatility,
-      delta, theta, vega, gamma, underlying_price, fetch_date,
-      options_score, rn
-    )
+    CREATE OR REPLACE TABLE `{CAND_TABLE}`
+    PARTITION BY DATE(selection_run_ts)
+    CLUSTER BY ticker, option_type
+    AS
     WITH params AS (
       SELECT
         7     AS min_dte,
@@ -50,6 +33,7 @@ def _insert_candidates(bq: bigquery.Client):
         1.05  AS min_mny_put,
         1.10  AS max_mny_put,
         500   AS min_oi,
+        100   AS min_vol, -- NEW: Hard floor on daily volume to ensure liquidity
         0.10  AS max_spread
     ),
     latest_chain_per_ticker AS (
@@ -102,7 +86,12 @@ def _insert_candidates(bq: bigquery.Client):
         CASE
           WHEN e.option_type_lc = 'call' THEN 'BUY'
           ELSE 'SELL'
-        END AS signal
+        END AS signal,
+        -- UOA Detection: Volume > OI and Volume > 500
+        CASE 
+          WHEN e.vol_nz > e.oi_nz AND e.vol_nz > 500 THEN TRUE 
+          ELSE FALSE 
+        END AS is_uoa
       FROM enriched e
       CROSS JOIN params p
       WHERE e.dte BETWEEN p.min_dte AND p.max_dte
@@ -113,17 +102,12 @@ def _insert_candidates(bq: bigquery.Client):
                AND e.mny_put  BETWEEN p.min_mny_put  AND p.max_mny_put)
         )
         AND e.oi_nz >= p.min_oi
+        AND e.vol_nz >= p.min_vol -- NEW: Enforce daily activity
         AND e.spread_pct IS NOT NULL AND e.spread_pct <= p.max_spread
-    ),
-    prepared AS (
-      SELECT
-        f.*,
-        0.5 AS iv_percentile
-      FROM filtered f
     ),
     normalized AS (
       SELECT
-        p.*,
+        f.*,
 
         -- nd: normalized |delta|
         SAFE_DIVIDE(
@@ -155,7 +139,7 @@ def _insert_candidates(bq: bigquery.Client):
           )
         ) AS ng,
 
-        -- ls: liquidity+spread, as before
+        -- ls: liquidity+spread
         SAFE_DIVIDE(
           (LOG10(1 + vol_nz) + LOG10(1 + oi_nz))
           - MIN((LOG10(1 + vol_nz) + LOG10(1 + oi_nz)))
@@ -170,13 +154,13 @@ def _insert_candidates(bq: bigquery.Client):
         )
         * (1 - LEAST(spread_pct, 0.20)/0.20) AS ls,
 
-        -- elasticity_raw: how much the option should move (in %) per 1% stock move
+        -- elasticity_raw: % option move per 1% stock move
         SAFE_DIVIDE(
           ABS(delta) * uprice,
           NULLIF(mid_px, 0)
         ) AS elasticity_raw
 
-      FROM prepared p
+      FROM filtered f
     ),
     elasticity_norm AS (
       SELECT
@@ -196,21 +180,24 @@ def _insert_candidates(bq: bigquery.Client):
         e.*,
 
         -- Elasticity-aware options_score
-        0.35*COALESCE(nd, 0.5)          -- delta strength
-        +0.30*COALESCE(ne, 0.5)         -- elasticity (premium sensitivity)
-        +0.15*COALESCE(it, 0.5)         -- decay edge
-        +0.15*COALESCE(ls, 0.5)         -- liquidity / spread
-        +0.05*COALESCE(ng, 0.5)         -- gamma
-        AS options_score,
+        -- Bonus for UOA: +0.1 to raw score
+        LEAST(
+            0.35*COALESCE(nd, 0.5)          
+            +0.30*COALESCE(ne, 0.5)         
+            +0.15*COALESCE(it, 0.5)         
+            +0.15*COALESCE(ls, 0.5)         
+            +0.05*COALESCE(ng, 0.5)
+            + (CASE WHEN is_uoa THEN 0.1 ELSE 0 END), 
+            1.0
+        ) AS options_score,
 
         ROW_NUMBER() OVER (
           PARTITION BY ticker, option_type_lc
           ORDER BY
-            0.35*COALESCE(nd, 0.5)
-           +0.30*COALESCE(ne, 0.5)
-           +0.15*COALESCE(it, 0.5)
-           +0.15*COALESCE(ls, 0.5)
-           +0.05*COALESCE(ng, 0.5) DESC,
+            -- Rank logic follows score logic
+            (0.35*COALESCE(nd, 0.5) + 0.30*COALESCE(ne, 0.5) + 0.15*COALESCE(it, 0.5) 
+             + 0.15*COALESCE(ls, 0.5) + 0.05*COALESCE(ng, 0.5) 
+             + (CASE WHEN is_uoa THEN 0.1 ELSE 0 END)) DESC,
             vol_nz DESC,
             oi_nz  DESC
         ) AS rn
@@ -221,20 +208,23 @@ def _insert_candidates(bq: bigquery.Client):
       ticker, signal,
       contract_symbol, option_type, expiration_date, strike,
       last_price, bid, ask, volume, open_interest, implied_volatility,
-      delta, theta, vega, gamma, uprice AS underlying_price, fetch_date,
-      options_score, rn
+      delta, theta, vega, gamma, underlying_price, fetch_date,
+      options_score, rn, is_uoa
     FROM ranked
     ORDER BY ticker, signal, rn
     ;
     """
 
-    bq.query(q).result()
+    job = bq.query(q)
+    job.result()
+    logging.info("Created %s with %s rows.", CAND_TABLE, job.num_dml_affected_rows or "unknown")
 
 
-def run_pipeline(bq_client: bigquery.Client | None = None, truncate_table: bool = True):
-    logging.info("--- Starting Options Candidate Selector (elasticity-aware) ---")
+def run_pipeline(bq_client: bigquery.Client | None = None):
+    logging.info("--- Starting Options Candidate Selector (UOA + Elasticity) ---")
     bq = bq_client or bigquery.Client(project=PROJECT)
-    if truncate_table:
-        _truncate(bq, CAND_TABLE)
-    _insert_candidates(bq)
+    
+    # We now use CREATE OR REPLACE TABLE to handle schema changes automatically
+    _create_candidates_table(bq)
+    
     logging.info("--- Options Candidate Selector Finished ---")

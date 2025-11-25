@@ -18,6 +18,8 @@ OUTPUT_TABLE_ID = (
 # --- Heuristics ---
 IV_CHEAP_RATIO = 0.90
 IV_EXPENSIVE_RATIO = 1.20
+NEGATIVE_GEX_THRESHOLD = -1000000 # Example threshold for "High Negative GEX" (volatile)
+POSITIVE_GEX_THRESHOLD = 1000000  # Example threshold for "High Positive GEX" (pinned)
 
 
 def _load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
@@ -62,10 +64,6 @@ def _safe_mid(bid: float, ask: float, last: float) -> float | None:
 
 
 def _spread_pct(bid: float, ask: float, mid: float | None) -> float | None:
-    """
-    Bid/ask spread in percent terms.
-    Safer: guard against bad ticks (ask < bid) and nonpositive mid.
-    """
     if mid and mid > 0 and pd.notna(bid) and pd.notna(ask) and ask >= bid:
         return (ask - bid) / mid * 100.0
     return None
@@ -80,11 +78,6 @@ def _dte(expiration_date: str | pd.Timestamp, fetch_date: str | pd.Timestamp) ->
 
 
 def _moneyness_pct(option_type: str, spot: float, strike: float) -> float | None:
-    """
-    Signed moneyness in percentage terms, positive for favorable direction:
-      - Calls: (spot - strike) / spot
-      - Puts : (strike - spot) / spot
-    """
     if pd.isna(spot) or pd.isna(strike) or spot == 0:
         return None
     base = (spot - strike) / spot
@@ -97,11 +90,6 @@ def _breakeven_distance_pct(
     strike: float,
     mid_price: float | None,
 ) -> float | None:
-    """
-    Distance from spot to breakeven in percent terms.
-      - Call breakeven = strike + premium
-      - Put  breakeven = strike - premium
-    """
     if any(pd.isna(x) for x in (spot, strike, mid_price)) or spot == 0:
         return None
     if str(option_type).lower() == "call":
@@ -113,35 +101,22 @@ def _breakeven_distance_pct(
 
 
 def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 0.85) -> float | None:
-    """
-    Approximate expected move (percent) over DTE using annualized IV.
-    Returns percent (e.g., 5.2 means 5.2%).
-    """
     if pd.isna(implied_volatility) or implied_volatility <= 0 or pd.isna(dte) or dte <= 0:
         return None
     return implied_volatility * (dte / 365.0) ** 0.5 * haircut * 100.0
 
 
 def _price_bucketed_spread_ok(mid: float | None, spread_pct: float | None) -> bool:
-    """
-    Accept wider % spreads for higher-priced options.
-    Note: options_candidate_selector already enforces <= ~10% raw spread,
-    so this acts as a *secondary* check / fine-grained penalty.
-    """
     if mid is None or spread_pct is None:
         return False
     if mid < 0.75:
-        return spread_pct <= 10  # stricter at low prices
+        return spread_pct <= 10
     if mid < 1.50:
         return spread_pct <= 12
     return spread_pct <= 15
 
 
 def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
-    """
-    Compares a contract's IV to the stock's 30-day HV and returns
-    'Cheap' / 'Expensive' / 'Fairly Priced' / 'N/A'.
-    """
     if pd.isna(contract_iv) or pd.isna(hv_30) or hv_30 <= 0.01:
         return "N/A"
     ratio = contract_iv / hv_30
@@ -153,12 +128,7 @@ def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
         return "Fairly Priced"
 
 
-# --- Percentile → 5-tier signal (matches recommendations_generator) ---
 def _get_signal_from_percentile(percentile: float) -> str:
-    """
-    Determines the 5-tier outlook signal from the score's percentile rank.
-    Matches the logic in recommendations_generator.
-    """
     if pd.isna(percentile):
         return "Neutral / Mixed"
     if percentile >= 0.85:
@@ -175,14 +145,7 @@ def _get_signal_from_percentile(percentile: float) -> str:
 
 def _fetch_candidates_all() -> pd.DataFrame:
     """
-    Fetches all candidates and joins them with:
-      - latest options_analysis_input (for hv_30, RSI, etc.)
-      - latest analysis_scores (for score_percentile → outlook_signal)
-    Universe is already gated by options_candidate_selector:
-      - DTE 7–90
-      - 5–10% OTM (direction-aware)
-      - OI >= 500, spread <= 10%
-      - options_score >= MIN_SCORE
+    Fetches candidates joined with ticker-level features (Total GEX) and UOA status.
     """
     client = bigquery.Client(project=config.PROJECT_ID)
     project = config.PROJECT_ID
@@ -225,7 +188,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
         a.latest_rsi,
         a.latest_macd,
         a.latest_sma50,
-        a.close_30d_delta_pct,
+        a.total_gex, -- NEW: Gamma Exposure
         s.score_percentile
     FROM candidates c
     JOIN latest_analysis a ON c.ticker = a.ticker
@@ -238,12 +201,10 @@ def _fetch_candidates_all() -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Stringify dates for consistency / safety
     for col in ("selection_run_ts", "expiration_date", "fetch_date"):
         if col in df.columns:
             df[col] = df[col].astype(str)
 
-    # Normalize percentile if accidentally stored 0–100
     if df["score_percentile"].max() > 1.0:
         logging.warning("score_percentile > 1.0 detected, normalizing 0–100 to 0–1.")
         df["score_percentile"] = df["score_percentile"] / 100.0
@@ -255,9 +216,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
 
 def _process_contract(row: pd.Series) -> dict | None:
     """
-    Purely deterministic contract-level scoring aligned with:
-      - options_candidate_selector universe
-      - short_term_long_premium strategy
+    Contract-level scoring with UOA and GEX logic.
     """
     ticker = row["ticker"]
     csym = row.get("contract_symbol")
@@ -277,6 +236,10 @@ def _process_contract(row: pd.Series) -> dict | None:
     contract_iv = row.get("implied_volatility")
     hv_30 = row.get("hv_30")
     exp_move = _expected_move_pct(contract_iv, dte)
+    
+    # New Inputs
+    total_gex = row.get("total_gex", 0)
+    is_uoa = row.get("is_uoa", False)
 
     direction_bull = row.get("outlook_signal") in ("Strongly Bullish", "Moderately Bullish")
     direction_bear = row.get("outlook_signal") in ("Strongly Bearish", "Moderately Bearish")
@@ -300,26 +263,43 @@ def _process_contract(row: pd.Series) -> dict | None:
         red_flags += 1
     if row.get("theta") is not None and row.get("theta") < -0.05 and (dte is not None and dte <= 7):
         red_flags += 1
+    
+    # --- GEX Logic ---
+    # High Positive GEX -> Volatility Dampener (Bad for breakouts/long premium)
+    if total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
+        red_flags += 1  
+        
+    # High Negative GEX -> Volatility Accelerator (Good for long premium, if direction is right)
+    # We don't add a red flag, and maybe it acts as a "green flag" to offset others.
 
-    # --- Map to Strong / Fair / Weak deterministically ---
-    if red_flags >= 2:
-        quality = "Weak"
-        summary = (
-            "Multiple red flags for a short-term long-premium trade "
-            "(direction, volatility, liquidity, breakeven, or theta)."
-        )
-    elif red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
+    # --- Scoring Logic ---
+    quality = "Fair"
+    summary_parts = []
+
+    if red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
         quality = "Strong"
-        summary = (
-            "Direction aligns with the option type, IV is not rich, liquidity is acceptable, "
-            "and breakeven sits within a plausible expected move."
-        )
+        summary_parts.append("Solid setup: Direction aligns, IV reasonable, liquidity good.")
+    elif red_flags >= 2:
+        quality = "Weak"
+        summary_parts.append("Multiple risks (direction, vol, or liquidity).")
     else:
-        quality = "Fair"
-        summary = (
-            "Setup is mixed: some factors support the trade, but at least one of direction, "
-            "volatility, liquidity, breakeven, or theta adds risk for a short-term long-premium entry."
-        )
+        summary_parts.append("Mixed setup.")
+
+    # --- UOA Boost ---
+    if is_uoa:
+        summary_parts.append("Unusual Options Activity detected (Vol > OI).")
+        if quality == "Weak":
+            quality = "Fair"  # UOA saves a weak setup
+        elif quality == "Fair":
+            quality = "Strong" # UOA promotes a fair setup
+
+    # --- GEX Commentary ---
+    if total_gex and total_gex < NEGATIVE_GEX_THRESHOLD:
+        summary_parts.append("Negative Gamma Exposure suggests high volatility potential.")
+    elif total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
+        summary_parts.append("High Positive Gamma may pin price/suppress volatility.")
+
+    summary = " ".join(summary_parts)
 
     try:
         return {
@@ -348,7 +328,7 @@ def run_pipeline():
     """
     Runs the contract-level deterministic decisioning pipeline and loads results to BigQuery.
     """
-    logging.info("--- Starting Options Analysis Signal Generation (deterministic) ---")
+    logging.info("--- Starting Options Analysis Signal Generation (UOA + GEX aware) ---")
     df = _fetch_candidates_all()
     if df.empty:
         logging.warning("No candidate contracts found. Exiting.")

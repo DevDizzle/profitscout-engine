@@ -26,12 +26,13 @@ ATM_DTE_MIN, ATM_DTE_MAX, ATM_MNY_PCT = 7, 90, 0.05
 
 def ensure_table_exists(bq: bigquery.Client) -> None:
     """Create the options_analysis_input table if it doesn't exist."""
+    # Added total_gex to the schema
     ddl = f"""
     CREATE TABLE IF NOT EXISTS `{TARGET_TABLE_ID}` (
         ticker STRING, date DATE, open FLOAT64, high FLOAT64, low FLOAT64,
         adj_close FLOAT64, volume INT64, iv_avg FLOAT64, hv_30 FLOAT64,
-        iv_industry_avg FLOAT64, iv_signal STRING, latest_rsi FLOAT64,
-        latest_macd FLOAT64, latest_sma50 FLOAT64, latest_sma200 FLOAT64,
+        iv_industry_avg FLOAT64, iv_signal STRING, total_gex FLOAT64,
+        latest_rsi FLOAT64, latest_macd FLOAT64, latest_sma50 FLOAT64, latest_sma200 FLOAT64,
         close_30d_delta_pct FLOAT64, rsi_30d_delta FLOAT64, macd_30d_delta FLOAT64,
         close_90d_delta_pct FLOAT64, rsi_90d_delta FLOAT64, macd_90d_delta FLOAT64
     ) PARTITION BY date CLUSTER BY ticker
@@ -41,11 +42,13 @@ def ensure_table_exists(bq: bigquery.Client) -> None:
 
 def ensure_staging_exists(bq: bigquery.Client) -> None:
     """Create the permanent staging table if it doesn't exist."""
+    # Added total_gex to the staging schema
     ddl = f"""
     CREATE TABLE IF NOT EXISTS `{STAGING_TABLE_ID}` (
         ticker STRING, date DATE, open FLOAT64, high FLOAT64, low FLOAT64,
         adj_close FLOAT64, volume INT64, iv_avg FLOAT64, hv_30 FLOAT64,
-        iv_signal STRING, latest_rsi FLOAT64, latest_macd FLOAT64, latest_sma50 FLOAT64,
+        iv_signal STRING, total_gex FLOAT64,
+        latest_rsi FLOAT64, latest_macd FLOAT64, latest_sma50 FLOAT64,
         latest_sma200 FLOAT64, close_30d_delta_pct FLOAT64, rsi_30d_delta FLOAT64,
         macd_30d_delta FLOAT64, close_90d_delta_pct FLOAT64, rsi_90d_delta FLOAT64,
         macd_90d_delta FLOAT64
@@ -102,25 +105,6 @@ def _fetch_ohlcv_for_keys(
         q, job_config=bigquery.QueryJobConfig(query_parameters=params)
     ).result()
     return {(r["ticker"], r["date_str"]): r for r in rows}
-
-
-def _spot_on_or_before(
-    bq: bigquery.Client, ticker: str, as_of: dt.date
-) -> Optional[float]:
-    q = (
-        f"SELECT adj_close FROM `{PRICE_TABLE_ID}` "
-        f"WHERE ticker = @ticker AND date <= @as_of ORDER BY date DESC LIMIT 1"
-    )
-    params = [
-        bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
-        bigquery.ScalarQueryParameter("as_of", "DATE", str(as_of)),
-    ]
-    rows = bq.query(
-        q, job_config=bigquery.QueryJobConfig(query_parameters=params)
-    ).result()
-    for r in rows:
-        return _safe_float(r["adj_close"])
-    return None
 
 
 def _merge_from_staging(bq: bigquery.Client, present_cols: List[str]) -> None:
@@ -204,29 +188,50 @@ def compute_iv_avg_atm(
     return _safe_float(atm_df["implied_volatility"].mean())
 
 
-def _fetch_history_for_technicals(
-    bq: bigquery.Client, ticker: str, as_of: dt.date
-) -> pd.DataFrame:
-    q = f"""
-        SELECT date, open, high, low, adj_close AS close, volume
-        FROM `{PRICE_TABLE_ID}`
-        WHERE ticker = @ticker AND date <= @as_of AND date >= DATE_SUB(@as_of, INTERVAL 400 DAY)
-        ORDER BY date ASC
+def compute_net_gex(
+    full_chain_df: pd.DataFrame, underlying_price: Optional[float]
+) -> Optional[float]:
     """
-    params = [
-        bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
-        bigquery.ScalarQueryParameter("as_of", "DATE", str(as_of)),
-    ]
-    df = bq.query(
-        q, job_config=bigquery.QueryJobConfig(query_parameters=params)
-    ).to_dataframe()
-    if df.empty:
-        return df
-    df["date"] = pd.to_datetime(df["date"])
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df.ffill().bfill().dropna(inplace=True)
-    return df
+    Compute Total Net Gamma Exposure (GEX) for the ticker.
+    Formula: Sum(Gamma * OpenInterest * 100 * SpotPrice)
+    - Calls are Positive GEX.
+    - Puts are Negative GEX.
+    
+    Interpretation:
+    - High Positive GEX: Market makers hedge by selling rips/buying dips -> Low Volatility (Pinned).
+    - High Negative GEX: Market makers hedge by selling dips/buying rips -> High Volatility (Accelerator).
+    """
+    if full_chain_df is None or full_chain_df.empty or not underlying_price:
+        return None
+        
+    try:
+        df = full_chain_df.copy()
+        # Ensure numeric types
+        cols = ["gamma", "open_interest"]
+        for c in cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            
+        if "option_type" not in df.columns:
+            return None
+
+        # Calculate contract-level GEX: Gamma * OI * 100 * Spot
+        # Multiplier 100 is standard for option contracts
+        df["contract_gex"] = df["gamma"] * df["open_interest"] * 100 * underlying_price
+        
+        # Apply signs: Call = +, Put = -
+        # Assumes option_type is 'call' or 'put' (case insensitive)
+        df["signed_gex"] = np.where(
+            df["option_type"].str.lower() == "put", 
+            -df["contract_gex"], 
+            df["contract_gex"]
+        )
+        
+        total_gex = df["signed_gex"].sum()
+        return _safe_float(total_gex)
+        
+    except Exception as e:
+        print(f"Error computing GEX: {e}")
+        return None
 
 
 def compute_technicals_and_deltas(
@@ -323,20 +328,14 @@ def compute_hv30(
 
 def backfill_iv_industry_avg_for_date(bq: bigquery.Client, run_date: dt.date) -> None:
     """
-    Calculates the industry average IV for a given date and backfills it
-    into the options_analysis_input table.
+    Calculates the industry average IV for a given date and backfills it.
     """
     print(f"Starting backfill for IV industry average for date: {run_date}")
 
-    # --- THIS IS THE FIX ---
-    # The subquery 'S' now calculates the industry averages and provides a complete
-    # list of tickers and their corresponding industry average IV.
-    # The WHERE clause that caused the error has been removed.
     sql = f"""
     MERGE `{TARGET_TABLE_ID}` T
     USING (
         WITH IndustryAverages AS (
-            -- Step 1: Calculate the average IV for each industry for the given run_date
             SELECT
                 m.industry,
                 AVG(a.iv_avg) AS calculated_industry_avg
@@ -350,7 +349,6 @@ def backfill_iv_industry_avg_for_date(bq: bigquery.Client, run_date: dt.date) ->
               AND m.industry IS NOT NULL
             GROUP BY m.industry
         )
-        -- Step 2: Map the calculated average back to each ticker in the target table
         SELECT
             t.ticker,
             t.date,

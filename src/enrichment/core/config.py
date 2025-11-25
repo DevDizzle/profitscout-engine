@@ -10,7 +10,6 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 
 # --- BigQuery ---
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
-# This is the line we're fixing. Renamed from BQ_METADATA_TABLE
 STOCK_METADATA_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.stock_metadata"
 SCORES_TABLE_NAME = "analysis_scores"
 SCORES_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{SCORES_TABLE_NAME}"
@@ -36,6 +35,12 @@ TOP_K = int(os.getenv("TOP_K", "30"))
 SEED = int(os.getenv("SEED", "42"))
 CANDIDATE_COUNT = int(os.getenv("CANDIDATE_COUNT", "1"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
+
+# --- Pipeline Specific Models ---
+# Upgrade Technicals to Pro for better reasoning
+TECHNICALS_ANALYZER_MODEL_NAME = os.getenv("TECHNICALS_ANALYZER_MODEL_NAME", "gemini-2.5-pro")
+# Upgrade News Analyzer to Pro for better browsing/synthesis
+NEWS_ANALYZER_MODEL_NAME = os.getenv("NEWS_ANALYZER_MODEL_NAME", "gemini-2.5-pro")
 
 # --- Cloud Storage Prefixes ---
 PREFIXES = {
@@ -71,11 +76,8 @@ HEADLINE_LIMIT = 25
 WORKER_TIMEOUT = 300
 
 # --- Macro Thesis / Worldview ---
-# Mode: "search" (Gemini + Google Search grounding) or "http" (your own HTTP sources)
 MACRO_THESIS_MODE = "search"
 MACRO_THESIS_MODEL_NAME = "gemini-2.5-pro"
-
-# Default settings (required variables, even if unused in search mode)
 MACRO_THESIS_MAX_SOURCES = 10
 MACRO_THESIS_HTTP_TIMEOUT = 30
 MACRO_THESIS_SOURCE_CHAR_LIMIT = 15000

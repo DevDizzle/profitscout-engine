@@ -75,6 +75,7 @@ def _process_ticker(
 ) -> Optional[dict]:
     """
     Worker function to process data for one ticker.
+    Now calculates Total Net Gamma Exposure (GEX).
     """
     try:
         if price_history_df.empty:
@@ -86,7 +87,8 @@ def _process_ticker(
         latest_price_row = price_history_df.sort_values("date").iloc[-1]
         as_of_date = pd.to_datetime(latest_price_row["date"]).date()
 
-        iv_avg, iv_signal = None, None
+        iv_avg, iv_signal, total_gex = None, None, None
+        
         if not chain_df.empty:
             uprice = (
                 chain_df["underlying_price"].dropna().iloc[0]
@@ -94,18 +96,22 @@ def _process_ticker(
                 and not chain_df["underlying_price"].dropna().empty
                 else latest_price_row["close"]
             )
+            
+            # Calculate IV features
             iv_avg = helper.compute_iv_avg_atm(chain_df, uprice, as_of_date)
-
             hv_30_for_signal = helper.compute_hv30(
                 None, ticker, as_of_date, price_history_df=price_history_df
             )
             if iv_avg is not None and hv_30_for_signal is not None:
                 iv_signal = "high" if iv_avg > (hv_30_for_signal + 0.10) else "low"
+                
+            # Calculate Total Net Gamma Exposure
+            total_gex = helper.compute_net_gex(chain_df, uprice)
 
         hv_30 = helper.compute_hv30(
             None, ticker, as_of_date, price_history_df=price_history_df
         )
-        tech = tech = helper.compute_technicals_and_deltas(price_history_df)
+        tech = helper.compute_technicals_and_deltas(price_history_df)
 
         return {
             "ticker": ticker,
@@ -138,6 +144,7 @@ def _process_ticker(
             "iv_avg": iv_avg,
             "hv_30": hv_30,
             "iv_signal": iv_signal,
+            "total_gex": total_gex,
             **tech,
         }
     except Exception as e:
@@ -147,26 +154,16 @@ def _process_ticker(
 
 def _truncate_and_load_results(bq_client: bigquery.Client, df: pd.DataFrame):
     """
-    Performs a full wipe-and-replace load into the target table.
+    Performs a full wipe-and-replace load into the target table using options_analysis_helper.
     """
     if df.empty:
         logging.warning("No results to load. Skipping BigQuery load.")
         return
 
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_TRUNCATE",
-    )
-    table_id = f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_input"
-
-    try:
-        job = bq_client.load_table_from_dataframe(df, table_id, job_config=job_config)
-        job.result()
-        logging.info(
-            f"Successfully truncated and loaded {job.output_rows} rows into {table_id}"
-        )
-    except Exception as e:
-        logging.error(f"Failed to load data to {table_id}: {e}", exc_info=True)
-        raise
+    # Helper now manages the merge and schema updates
+    rows = df.to_dict(orient="records")
+    helper.upsert_analysis_rows(bq_client, rows, enrich_ohlcv=False)
+    logging.info(f"Successfully upserted {len(rows)} analysis rows via helper.")
 
 
 def run_pipeline():
@@ -179,10 +176,8 @@ def run_pipeline():
     tickers = _get_candidate_tickers(bq_client)
     if not tickers:
         logging.warning("No tickers found from options_candidates. Exiting.")
-        # Ensure table is still wiped to remove old data
-        bq_client.query(
-            f"TRUNCATE TABLE `{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_input`"
-        ).result()
+        # Ensure table exists
+        helper.ensure_table_exists(bq_client)
         return
 
     all_chains_df, all_prices_df = _fetch_all_data(tickers, bq_client)
@@ -213,11 +208,8 @@ def run_pipeline():
 
     if not results:
         logging.warning(
-            "No features were generated after processing. Table will be empty."
+            "No features were generated after processing."
         )
-        bq_client.query(
-            f"TRUNCATE TABLE `{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_input`"
-        ).result()
         return
 
     results_df = pd.DataFrame(results)
