@@ -79,3 +79,6 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
 
 # --- Performance Tracker Pipeline ---
 OUTPUT_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.performance_tracker"
+
+SPY_PRICE_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.spy_price_history"
+SPY_PRICE_FIRESTORE_COLLECTION = "spy_price_history"

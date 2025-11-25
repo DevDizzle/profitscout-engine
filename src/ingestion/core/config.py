@@ -85,6 +85,7 @@ INDICATORS = {
 DEFAULT_START_DATE = datetime.date(2020, 1, 1)
 SPY_DEFAULT_START_DATE = datetime.date(2025, 10, 21)
 SPY_PRICE_FIRESTORE_COLLECTION = os.getenv("SPY_PRICE_FIRESTORE_COLLECTION", "spy_price_history")
+DESTINATION_PROJECT_ID = os.getenv("DESTINATION_PROJECT_ID", "profitscout-fida8")
 
 # --- Job Parameters (Workers / Batching) ---
 MAX_WORKERS_TIERING = {

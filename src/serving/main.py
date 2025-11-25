@@ -16,6 +16,7 @@ from core.pipelines import (
     performance_tracker_updater,
     sync_options_candidates_to_firestore,
     sync_performance_tracker_to_firestore,
+    sync_spy_to_firestore,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -107,3 +108,9 @@ def run_sync_performance_tracker_to_firestore(request):
     """Syncs the performance tracker data to Firestore."""
     sync_performance_tracker_to_firestore.run_pipeline()
     return "Sync performance tracker to Firestore pipeline finished.", 200
+
+@functions_framework.http
+def run_sync_spy_to_firestore(request):
+    """Syncs SPY prices from BigQuery to Firestore."""
+    sync_spy_to_firestore.run_pipeline()
+    return "Sync SPY to Firestore pipeline finished.", 200
