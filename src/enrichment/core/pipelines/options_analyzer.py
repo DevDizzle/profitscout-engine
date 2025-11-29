@@ -1,4 +1,4 @@
-# enrichment/core/pipelines/options_analyzer.py
+# src/enrichment/core/pipelines/options_analyzer.py
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,14 +18,13 @@ OUTPUT_TABLE_ID = (
 # --- Heuristics ---
 IV_CHEAP_RATIO = 0.90
 IV_EXPENSIVE_RATIO = 1.20
-NEGATIVE_GEX_THRESHOLD = -1000000 # Example threshold for "High Negative GEX" (volatile)
-POSITIVE_GEX_THRESHOLD = 1000000  # Example threshold for "High Positive GEX" (pinned)
+NEGATIVE_GEX_THRESHOLD = -1000000 
+POSITIVE_GEX_THRESHOLD = 1000000  
 
 
 def _load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
     """
     Truncates and loads a pandas DataFrame into a BigQuery table.
-    If df is empty, we TRUNCATE the table to avoid stale rows.
     """
     client = bigquery.Client(project=project_id)
 
@@ -131,13 +130,13 @@ def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
 def _get_signal_from_percentile(percentile: float) -> str:
     if pd.isna(percentile):
         return "Neutral / Mixed"
-    if percentile >= 0.85:
+    if percentile >= 0.80: # Updated to 80th percentile
         return "Strongly Bullish"
     elif percentile >= 0.65:
         return "Moderately Bullish"
     elif percentile >= 0.35:
         return "Neutral / Mixed"
-    elif percentile >= 0.15:
+    elif percentile >= 0.20: # Updated to 20th percentile
         return "Moderately Bearish"
     else:
         return "Strongly Bearish"
@@ -145,7 +144,7 @@ def _get_signal_from_percentile(percentile: float) -> str:
 
 def _fetch_candidates_all() -> pd.DataFrame:
     """
-    Fetches candidates joined with ticker-level features (Total GEX) and UOA status.
+    Fetches candidates joined with ticker-level features (Total GEX) and Scores.
     """
     client = bigquery.Client(project=config.PROJECT_ID)
     project = config.PROJECT_ID
@@ -171,11 +170,12 @@ def _fetch_candidates_all() -> pd.DataFrame:
         WHERE rn = 1
     ),
     latest_scores AS (
-        SELECT ticker, score_percentile
+        SELECT ticker, score_percentile, news_score
         FROM (
             SELECT
                 ticker,
                 score_percentile,
+                news_score, -- Added news_score
                 ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY run_date DESC) AS rn
             FROM `{project}.{dataset}.analysis_scores`
             WHERE score_percentile IS NOT NULL
@@ -188,11 +188,12 @@ def _fetch_candidates_all() -> pd.DataFrame:
         a.latest_rsi,
         a.latest_macd,
         a.latest_sma50,
-        a.total_gex, -- NEW: Gamma Exposure
-        s.score_percentile
+        a.total_gex,
+        s.score_percentile,
+        s.news_score
     FROM candidates c
     JOIN latest_analysis a ON c.ticker = a.ticker
-    JOIN latest_scores s ON c.ticker = s.ticker
+    LEFT JOIN latest_scores s ON c.ticker = s.ticker -- Use LEFT JOIN to be safe
     ORDER BY c.ticker, c.options_score DESC
     """
 
@@ -216,7 +217,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
 
 def _process_contract(row: pd.Series) -> dict | None:
     """
-    Contract-level scoring with UOA and GEX logic.
+    Contract-level scoring with 'Rip Hunter' logic.
     """
     ticker = row["ticker"]
     csym = row.get("contract_symbol")
@@ -237,9 +238,17 @@ def _process_contract(row: pd.Series) -> dict | None:
     hv_30 = row.get("hv_30")
     exp_move = _expected_move_pct(contract_iv, dte)
     
-    # New Inputs
     total_gex = row.get("total_gex", 0)
     is_uoa = row.get("is_uoa", False)
+    
+    # --- CONVICTION CHECK (Tier 1 Detection) ---
+    score_pct = row.get("score_percentile", 0.5)
+    news_score = row.get("news_score", 0.0)
+    if pd.isna(news_score): news_score = 0.0
+    if pd.isna(score_pct): score_pct = 0.5
+    
+    # Is this a "Rip Hunter" setup? (Top/Bottom 20% OR Breaking News)
+    is_rip_hunter = (score_pct >= 0.80 or score_pct <= 0.20 or news_score >= 0.90)
 
     direction_bull = row.get("outlook_signal") in ("Strongly Bullish", "Moderately Bullish")
     direction_bear = row.get("outlook_signal") in ("Strongly Bearish", "Moderately Bearish")
@@ -248,35 +257,51 @@ def _process_contract(row: pd.Series) -> dict | None:
     aligned = (direction_bull and is_call) or (direction_bear and is_put)
 
     vol_cmp_signal = _get_volatility_signal(contract_iv, hv_30)
-    vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
-    spread_ok = _price_bucketed_spread_ok(mid_px, spread)
+    
+    # --- Forgiveness Logic ---
+    # Volatility: If Rip Hunter, allow Expensive IV
+    if is_rip_hunter:
+        vol_ok = True
+    else:
+        vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
+
+    # Spread: If Rip Hunter, allow wide spreads (up to the 40% allowed by selector)
+    if is_rip_hunter:
+        spread_ok = True 
+    else:
+        spread_ok = _price_bucketed_spread_ok(mid_px, spread)
+
+    # Breakeven: Logic remains, we still want the move to be somewhat realistic
     be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
 
     red_flags = 0
     if not aligned:
         red_flags += 1
-    if vol_cmp_signal == "Expensive":
+    if not vol_ok:
         red_flags += 1
     if not spread_ok:
         red_flags += 1
     if not be_ok:
         red_flags += 1
-    if row.get("theta") is not None and row.get("theta") < -0.05 and (dte is not None and dte <= 7):
-        red_flags += 1
+    
+    # Theta Check: Avoid short-term decay traps UNLESS it's a Rip Hunter (Gamma play)
+    if not is_rip_hunter:
+        if row.get("theta") is not None and row.get("theta") < -0.05 and (dte is not None and dte <= 7):
+            red_flags += 1
     
     # --- GEX Logic ---
-    # High Positive GEX -> Volatility Dampener (Bad for breakouts/long premium)
     if total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
         red_flags += 1  
-        
-    # High Negative GEX -> Volatility Accelerator (Good for long premium, if direction is right)
-    # We don't add a red flag, and maybe it acts as a "green flag" to offset others.
 
     # --- Scoring Logic ---
     quality = "Fair"
     summary_parts = []
 
-    if red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
+    if is_rip_hunter and aligned:
+        # FORCE STRONG for Rip Hunters if direction aligns
+        quality = "Strong"
+        summary_parts.append("High Conviction Setup: Prioritizing directional move over structure.")
+    elif red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
         quality = "Strong"
         summary_parts.append("Solid setup: Direction aligns, IV reasonable, liquidity good.")
     elif red_flags >= 2:
@@ -289,9 +314,9 @@ def _process_contract(row: pd.Series) -> dict | None:
     if is_uoa:
         summary_parts.append("Unusual Options Activity detected (Vol > OI).")
         if quality == "Weak":
-            quality = "Fair"  # UOA saves a weak setup
+            quality = "Fair"
         elif quality == "Fair":
-            quality = "Strong" # UOA promotes a fair setup
+            quality = "Strong"
 
     # --- GEX Commentary ---
     if total_gex and total_gex < NEGATIVE_GEX_THRESHOLD:
