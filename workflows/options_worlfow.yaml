@@ -1,0 +1,239 @@
+main:
+  steps:
+    - init:
+        assign:
+          - project_id: "profitscout-lx6bb"
+          - region: "us-central1"
+          - options_fetcher_name: "options-fetcher"
+          - options_feature_engineering_name: "options-feature-engineering"
+          - options_selector_name: "options-selector"
+          - options_analyzer_name: "options-analyzer"
+          - data_bundler_name: "data-bundler"
+          - winners_dashboard_generator_name: "run-winners-dashboard-generator"
+          # Existing sync functions
+          - sync_to_firestore_name: "sync-to-firestore"
+          - sync_options_to_firestore_name: "run-sync-options-to-firestore"
+          - sync_calendar_to_firestore_name: "run-sync-calendar-to-firestore"
+          - sync_winners_to_firestore_name: "run-sync-winners-to-firestore"
+          - sync_options_candidates_to_firestore_name: "run-sync-options-candidates-to-firestore"
+          - sync_spy_to_firestore_name: "run-sync-spy-to-firestore"
+
+    # Step 1: Run the options data pipeline
+    - call_options_fetcher:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_fetcher_name}
+            auth: { type: OIDC }
+            timeout: 1800
+          result: options_fetcher_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # Step 2: MOVED UP - Selector runs first to filter candidates
+    - call_options_selector:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_selector_name}
+            auth: { type: OIDC }
+            timeout: 900
+          result: options_selector_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # Step 3: MOVED DOWN - Feature Engineering runs on selected candidates
+    - call_options_feature_engineering:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_feature_engineering_name}
+            auth: { type: OIDC }
+            timeout: 1800
+          result: options_feature_engineering_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    - call_options_analyzer:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_analyzer_name}
+            auth: { type: OIDC }
+            timeout: 1800
+          result: options_analyzer_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # Step 1.5: Bundle outputs for downstream consumers
+    - call_data_bundler:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + data_bundler_name}
+            auth: { type: OIDC }
+            timeout: 1200
+          result: data_bundler_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # Step 2: Generate the main winners dashboard table
+    - call_winners_dashboard_generator:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + winners_dashboard_generator_name}
+            auth: { type: OIDC }
+            timeout: 900
+          result: winners_dashboard_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # Step 3: Sync all final data to Firestore in parallel
+    - final_sync_to_firestore:
+        parallel:
+          branches:
+            - run_sync_main:
+                steps:
+                  - call_sync_to_firestore:
+                      try:
+                        call: http.post
+                        args:
+                          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_to_firestore_name}
+                          auth: { type: OIDC }
+                          timeout: 900
+                          body:
+                            full_reset: true
+                        result: sync_main_result
+                      retry:
+                        predicate: ${http.default_retry_predicate}
+                        max_retries: 5
+                        backoff:
+                          initial_delay: 2
+                          max_delay: 60
+                          multiplier: 2
+            - run_sync_options:
+                steps:
+                  - call_sync_options_to_firestore:
+                      try:
+                        call: http.post
+                        args:
+                          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_options_to_firestore_name}
+                          auth: { type: OIDC }
+                          timeout: 900
+                          body:
+                            full_reset: true
+                        result: sync_options_result
+                      retry:
+                        predicate: ${http.default_retry_predicate}
+                        max_retries: 5
+                        backoff:
+                          initial_delay: 2
+                          max_delay: 60
+                          multiplier: 2
+            - run_sync_calendar:
+                steps:
+                  - call_sync_calendar_to_firestore:
+                      try:
+                        call: http.post
+                        args:
+                          url: ${"https" + "://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_calendar_to_firestore_name}
+                          auth: { type: OIDC }
+                          timeout: 900
+                        result: sync_calendar_result
+                      retry:
+                        predicate: ${http.default_retry_predicate}
+                        max_retries: 5
+                        backoff:
+                          initial_delay: 2
+                          max_delay: 60
+                          multiplier: 2
+            - run_sync_winners:
+                steps:
+                  - call_sync_winners_to_firestore:
+                      try:
+                        call: http.post
+                        args:
+                          url: ${"https" + "://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_winners_to_firestore_name}
+                          auth: { type: OIDC }
+                          timeout: 900
+                        result: sync_winners_result
+                      retry:
+                        predicate: ${http.default_retry_predicate}
+                        max_retries: 5
+                        backoff:
+                          initial_delay: 2
+                          max_delay: 60
+                          multiplier: 2
+            - run_sync_options_candidates:
+                steps:
+                  - call_sync_options_candidates_to_firestore:
+                      try:
+                        call: http.post
+                        args:
+                          url: ${"https" + "://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_options_candidates_to_firestore_name}
+                          auth: { type: OIDC }
+                          timeout: 900
+                        result: sync_options_candidates_result
+                      retry:
+                        predicate: ${http.default_retry_predicate}
+                        max_retries: 5
+                        backoff:
+                          initial_delay: 2
+                          max_delay: 60
+                          multiplier: 2
+            - run_sync_spy:
+                steps:
+                  - call_sync_spy_to_firestore:
+                      try:
+                        call: http.post
+                        args:
+                          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_spy_to_firestore_name}
+                          auth: { type: OIDC }
+                          timeout: 900
+                        result: sync_spy_result
+                      retry:
+                        predicate: ${http.default_retry_predicate}
+                        max_retries: 5
+                        backoff:
+                          initial_delay: 2
+                          max_delay: 60
+                          multiplier: 2
+
+    - log_finish:
+        call: sys.log
+        args:
+          text: "Options and Final Sync workflow finished successfully."
+
+    - done:
+        return: "Workflow finished successfully."

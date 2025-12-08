@@ -16,7 +16,7 @@ def _create_candidates_table(bq: bigquery.Client):
     Selects option contracts using a 'Stock-First' Conviction strategy.
     
     Tier 1: "Rip Hunters" (High Conviction)
-    - If the stock is in the Top/Bottom 20% OR has breaking news (score > 0.9):
+    - If the stock is Strongly Bullish (Score >= 0.70) / Bearish (Score < 0.30) OR has breaking news (score > 0.9):
     - We loosen filters to capture explosive moves (Gamma/Delta focus).
     - Allow: 3 DTE, 40% Spreads, Lower Liquidity, 25% OTM.
     
@@ -41,7 +41,7 @@ def _create_candidates_table(bq: bigquery.Client):
     AS
     WITH latest_scores AS (
       -- Get the latest conviction scores for every ticker
-      SELECT ticker, score_percentile, news_score
+      SELECT ticker, weighted_score, news_score
       FROM `{SCORES_TABLE}`
     ),
     latest_chain_per_ticker AS (
@@ -121,8 +121,8 @@ def _create_candidates_table(bq: bigquery.Client):
             -- TIER 1: RIP HUNTERS (High Conviction or Big News)
             -- ==================================================
             (
-                -- Condition: Top/Bottom 20% OR Breaking News > 0.90
-                (s.score_percentile >= 0.80 OR s.score_percentile <= 0.20 OR s.news_score >= 0.90)
+                -- Condition: Strongly Bullish (>= 0.70) OR Strongly Bearish (< 0.30) OR Breaking News > 0.90
+                (s.weighted_score >= 0.70 OR s.weighted_score < 0.30 OR s.news_score >= 0.90)
                 AND (
                     -- Looser Spread: Up to 40% allowed
                     e.spread_pct <= 0.40

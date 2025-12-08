@@ -9,7 +9,7 @@ from google.cloud import bigquery
 from .. import config
 
 # --- Configuration ---
-MIN_SCORE = 0.50  # Refers to options_score from options_candidate_selector
+# REMOVED: MIN_SCORE. We now trust the Selector's "Rip Hunter" logic implicitly.
 MAX_WORKERS = 16
 OUTPUT_TABLE_ID = (
     f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
@@ -150,6 +150,8 @@ def _fetch_candidates_all() -> pd.DataFrame:
     project = config.PROJECT_ID
     dataset = config.BIGQUERY_DATASET
 
+    # UPDATED: Removed the WHERE clause filtering by options_score.
+    # We now trust the selector to have done the filtering.
     query = f"""
     WITH LatestRun AS (
         SELECT MAX(selection_run_ts) AS max_ts
@@ -159,7 +161,6 @@ def _fetch_candidates_all() -> pd.DataFrame:
         SELECT *
         FROM `{project}.{dataset}.options_candidates`
         WHERE selection_run_ts = (SELECT max_ts FROM LatestRun)
-          AND options_score >= {MIN_SCORE}
     ),
     latest_analysis AS (
         SELECT *
@@ -175,7 +176,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
             SELECT
                 ticker,
                 score_percentile,
-                news_score, -- Added news_score
+                news_score, 
                 ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY run_date DESC) AS rn
             FROM `{project}.{dataset}.analysis_scores`
             WHERE score_percentile IS NOT NULL
@@ -193,7 +194,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
         s.news_score
     FROM candidates c
     JOIN latest_analysis a ON c.ticker = a.ticker
-    LEFT JOIN latest_scores s ON c.ticker = s.ticker -- Use LEFT JOIN to be safe
+    LEFT JOIN latest_scores s ON c.ticker = s.ticker 
     ORDER BY c.ticker, c.options_score DESC
     """
 
@@ -341,6 +342,7 @@ def _process_contract(row: pd.Series) -> dict | None:
             "option_type": str(row.get("option_type")).lower()
             if row.get("option_type") is not None
             else None,
+            "options_score": row.get("options_score")
         }
     except Exception as e:
         logging.error(

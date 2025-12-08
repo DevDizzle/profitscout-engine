@@ -1,0 +1,66 @@
+# performance-refresh-morning.yml
+main:
+  steps:
+    - init:
+        assign:
+          - project_id: "profitscout-lx6bb"
+          - region: "us-central1"
+          - options_fetcher_name: "options-fetcher"
+          - performance_tracker_updater_name: "run-performance-tracker-updater"
+          - sync_performance_tracker_to_firestore_name: "run-sync-performance-tracker-to-firestore"
+
+    # 1) Pull fresh option chain data for today (post-open)
+    - call_options_fetcher:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_fetcher_name}
+            auth: { type: OIDC }
+            timeout: 1800
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # 2) Update current_price/percent_gain/status for tracked contracts
+    - call_performance_tracker_updater:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + performance_tracker_updater_name}
+            auth: { type: OIDC }
+            timeout: 900
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    # 3) Sync just the performance collection to Firestore
+    - call_sync_performance_tracker_to_firestore:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_performance_tracker_to_firestore_name}
+            auth: { type: OIDC }
+            timeout: 900
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
+    - log_finish:
+        call: sys.log
+        args:
+          text: "Performance refresh + options fetch + sync finished."
+
+    - done:
+        return: "Performance refresh finished."

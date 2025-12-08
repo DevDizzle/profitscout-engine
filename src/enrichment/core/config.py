@@ -35,12 +35,12 @@ SCORE_WEIGHTS = {
 
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0.6"))
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
 TOP_P = float(os.getenv("TOP_P", "0.95"))
 TOP_K = int(os.getenv("TOP_K", "30"))
 SEED = int(os.getenv("SEED", "42"))
 CANDIDATE_COUNT = int(os.getenv("CANDIDATE_COUNT", "1"))
-MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
 
 # --- Pipeline Specific Models ---
 TECHNICALS_ANALYZER_MODEL_NAME = os.getenv("TECHNICALS_ANALYZER_MODEL_NAME", "gemini-2.5-pro")

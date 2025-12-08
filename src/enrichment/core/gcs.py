@@ -9,37 +9,47 @@ def _client() -> storage.Client:
     """Initializes and returns a GCS client."""
     return storage.Client()
 
-def blob_exists(bucket_name: str, blob_name: str) -> bool:
+def blob_exists(bucket_name: str, blob_name: str, client: storage.Client | None = None) -> bool:
     """Checks if a blob exists in GCS."""
     try:
-        bucket = _client().bucket(bucket_name)
+        # Use provided client or create a new one
+        storage_client = client or _client()
+        bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
         return blob.exists()
     except Exception as e:
         logging.error(f"Failed to check existence for blob {blob_name}: {e}")
         return False
 
-def read_blob(bucket_name: str, blob_name: str, encoding: str = "utf-8") -> str | None:
+def read_blob(bucket_name: str, blob_name: str, encoding: str = "utf-8", client: storage.Client | None = None) -> str | None:
     """Reads a blob from GCS and returns its content as a string."""
     try:
-        bucket = _client().bucket(bucket_name)
+        storage_client = client or _client()
+        bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
         return blob.download_as_text(encoding=encoding)
     except Exception as e:
         logging.error(f"Failed to read blob {blob_name}: {e}")
         return None
 
-def write_text(bucket_name: str, blob_name: str, data: str, content_type: str = "text/plain") -> None:
+def write_text(bucket_name: str, blob_name: str, data: str, content_type: str = "text/plain", client: storage.Client | None = None) -> None:
     """Writes a string to a blob in GCS."""
-    _client().bucket(bucket_name).blob(blob_name).upload_from_string(data, content_type=content_type)
+    try:
+        storage_client = client or _client()
+        storage_client.bucket(bucket_name).blob(blob_name).upload_from_string(data, content_type=content_type)
+    except Exception as e:
+        logging.error(f"Failed to write blob {blob_name}: {e}")
 
-def list_blobs(bucket_name: str, prefix: str | None = None) -> list[str]:
+def list_blobs(bucket_name: str, prefix: str | None = None, client: storage.Client | None = None) -> list[str]:
     """Lists all the blob names in a GCS bucket with a given prefix."""
-    blobs = _client().list_blobs(bucket_name, prefix=prefix)
+    storage_client = client or _client()
+    blobs = storage_client.list_blobs(bucket_name, prefix=prefix)
     return [blob.name for blob in blobs]
 
 def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename: str):
     """Deletes all files for a ticker in a folder except for the one to keep."""
+    # This function is less intensive usually, but we could update it too.
+    # Leaving as-is for now to minimize diff, or update if passed client.
     client = _client()
     bucket = client.bucket(bucket_name)
     prefix = f"{folder}{ticker}_"
@@ -65,26 +75,24 @@ def list_blobs_with_content(bucket_name: str, prefix: str) -> dict:
             logging.error(f"Failed to read blob {blob.name}: {e}")
     return content_map
 
-def delete_all_in_prefix(bucket_name: str, prefix: str) -> None:
+def delete_all_in_prefix(bucket_name: str, prefix: str, client: storage.Client | None = None) -> None:
     """
     Deletes all blobs within a given prefix (folder) in a GCS bucket.
-    This is useful for clearing output directories before a pipeline run.
     """
     try:
         logging.info(f"Starting cleanup for prefix: gs://{bucket_name}/{prefix}")
-        client = _client()
-        bucket = client.bucket(bucket_name)
+        storage_client = client or _client()
+        bucket = storage_client.bucket(bucket_name)
         blobs_to_delete = list(bucket.list_blobs(prefix=prefix))
 
         if not blobs_to_delete:
             logging.info("Prefix is already empty. No files to delete.")
             return
 
-        with client.batch():
+        # Note: bucket.delete_blobs is more efficient if available, but batching is fine.
+        with storage_client.batch():
             for blob in blobs_to_delete:
-                # To avoid deleting the "folder" placeholder itself
                 if blob.name != prefix:
-                    logging.info(f"Queueing for deletion: {blob.name}")
                     blob.delete()
         
         logging.info(f"Successfully deleted {len(blobs_to_delete)} blobs from prefix '{prefix}'.")

@@ -60,15 +60,41 @@ def _get_strong_stock_recommendations() -> pd.DataFrame:
 
 def _get_strong_options_setups() -> pd.DataFrame:
     """
-    Queries the options signals table to find all tickers that have at least
-    one 'Strong' setup in the most recent run.
+    Queries the options signals table to find 'Strong' setups.
+    Returns ONLY the #1 highest scoring contract per ticker.
     """
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    
     query = f"""
-        SELECT DISTINCT ticker
-        FROM `{SIGNALS_TABLE_ID}`
-        WHERE setup_quality_signal = 'Strong'
-          AND run_date = (SELECT MAX(run_date) FROM `{SIGNALS_TABLE_ID}`)
+        WITH RankedOptions AS (
+            SELECT 
+                ticker,
+                contract_symbol,
+                option_type,
+                strike_price,
+                expiration_date,
+                setup_quality_signal,
+                volatility_comparison_signal,
+                summary,
+                options_score,
+                -- Rank contracts by score within each ticker
+                ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY options_score DESC) as rn
+            FROM `{SIGNALS_TABLE_ID}`
+            WHERE setup_quality_signal = 'Strong'
+              AND run_date = (SELECT MAX(run_date) FROM `{SIGNALS_TABLE_ID}`)
+        )
+        SELECT 
+            ticker,
+            contract_symbol,
+            option_type,
+            strike_price,
+            expiration_date,
+            setup_quality_signal,
+            volatility_comparison_signal,
+            summary,
+            options_score
+        FROM RankedOptions
+        WHERE rn = 1
     """
     try:
         df = client.query(query).to_dataframe()
@@ -111,58 +137,58 @@ def _get_asset_metadata_for_winners(tickers: list) -> pd.DataFrame:
 
 def run_pipeline():
     """
-    Orchestrates the creation of the 'winners_dashboard' table by joining
-    strong stock recommendations with strong options setups.
-    This function now ensures the output table is ALWAYS truncated, even if no winners are found.
+    Orchestrates the creation of the 'winners_dashboard' table.
+    Produces one row per ticker (best strong contract).
     """
     logging.info("--- Starting Winners Dashboard Generation Pipeline ---")
 
     strong_recs_df = _get_strong_stock_recommendations()
     strong_options_df = _get_strong_options_setups()
 
-    # Define the final schema here to use for empty loads
+    # Define final schema including contract details
     final_columns = [
         "image_uri", "company_name", "ticker", "outlook_signal",
-        "last_close", "thirty_day_change_pct", "industry", "run_date", "weighted_score"
+        "last_close", "thirty_day_change_pct", "industry", "run_date", "weighted_score",
+        # Contract Fields
+        "contract_symbol", "option_type", "strike_price", "expiration_date",
+        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score"
     ]
     empty_df = pd.DataFrame(columns=final_columns)
 
-    # If either of the sources is empty, there can be no winners.
     if strong_recs_df.empty or strong_options_df.empty:
-        logging.warning("No strong signals found in stocks or options. Winners table will be cleared.")
+        logging.warning("No strong signals found. Winners table will be cleared.")
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
-        logging.info("--- Winners Dashboard Generation Pipeline Finished (No Winners) ---")
         return
 
-    # Step 1: Find the tickers that are in BOTH lists.
+    # Step 1: Merge. Since strong_options_df is now unique on ticker (rn=1),
+    # this ensures the result is also unique on ticker.
     winners_df = pd.merge(strong_recs_df, strong_options_df, on='ticker', how='inner')
 
     if winners_df.empty:
         logging.warning("No tickers matched. Final table will be empty.")
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
-        logging.info("--- Winners Dashboard Generation Pipeline Finished (No Matches) ---")
         return
         
-    # Step 2: Get all the metadata for these winner tickers in a single call.
-    winner_tickers = winners_df['ticker'].tolist()
+    # Step 2: Get metadata for the unique tickers involved
+    winner_tickers = winners_df['ticker'].unique().tolist()
     asset_metadata_df = _get_asset_metadata_for_winners(winner_tickers)
 
     if asset_metadata_df.empty:
-        logging.error("Could not retrieve asset metadata for the winning tickers. Clearing table.")
+        logging.error("Could not retrieve asset metadata. Clearing table.")
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
         return
 
-    # Step 3: Join the recommendation info (like outlook_signal) with the full metadata.
+    # Step 3: Join metadata back to the contract list
     final_df = pd.merge(winners_df, asset_metadata_df, on='ticker', how='left')
     
-    # Ensure all required columns exist, adding them with None if they don't
+    # Fill missing cols
     for col in final_columns:
         if col not in final_df.columns:
             final_df[col] = None
             
     final_df = final_df[final_columns]
 
-    logging.info(f"Found {len(final_df)} winning tickers. Loading to BigQuery...")
+    logging.info(f"Generated {len(final_df)} winning rows. Loading to BigQuery...")
     bq.load_df_to_bq(final_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
     
     logging.info(f"--- Winners Dashboard Generation Pipeline Finished ---")
