@@ -12,7 +12,7 @@ main:
           - news_analyzer_name: "news-analyzer"
           - business_summarizer_name: "business-summarizer"
           - price_chart_generator_name: "run-price-chart-generator"
-          - serving_workflow_id: "serving-workflow"
+          - serving_workflow_id: "profitscout-serving-workflow"
 
     - call_financials_analyzer:
         try:

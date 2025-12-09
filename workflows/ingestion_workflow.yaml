@@ -15,7 +15,7 @@ main:
           - refresh_stock_metadata_name: "refresh-stock-metadata"
           - refresh_calendar_events_name: "refresh-calendar-events"
           - spy_price_sync_name: "sync-spy-price-history"
-          - enrichment_workflow_id: "enrichment-workflow"
+          - enrichment_workflow_id: "profitscout-enrichment-workflow"
 
     - call_price_updater:
         try:

@@ -10,7 +10,7 @@ main:
           - recommendations_generator_name: "recommendations-generator"
           - page_generator_name: "page-generator"
           - dashboard_generator_name: "run-dashboard-generator"
-          - options_workflow_id: "options-workflow"
+          - options_workflow_id: "profitscout-options-workflow"
 
     # Step 1: Run the initial data processing jobs in parallel
     - parallel_initial_processing:
