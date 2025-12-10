@@ -23,16 +23,34 @@ PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.price_data"
 CHAIN_TABLE = OPTIONS_CHAIN_TABLE_ID
 CAND_TABLE = OPTIONS_CANDIDATES_TABLE_ID
 
-# --- Score Aggregator ---
-SCORE_WEIGHTS = {
-    "news_score": 0.375,
-    "technicals_score": 0.475,
+# --- Score Aggregator: Regime-Aware Weighting ---
+
+# 1. EVENT REGIME: Catalyst Driven
+# Triggered when News Score is > 0.70 (Bullish) or < 0.30 (Bearish).
+# Rationale: When significant news hits, it overrides technical structure.
+SCORE_WEIGHTS_EVENT = {
+    "news_score": 0.55,        # Dominant factor
+    "technicals_score": 0.30,  # Secondary context
     "mda_score": 0.025,
     "transcript_score": 0.025,
     "financials_score": 0.05,
     "fundamentals_score": 0.05,
 }
 
+# 2. QUIET REGIME: Structure Driven
+# Triggered when News Score is between 0.30 and 0.70 (Neutral/Noise).
+# Rationale: In the absence of news, price action (technicals) dominates.
+SCORE_WEIGHTS_QUIET = {
+    "news_score": 0.25,        # Low impact (noise)
+    "technicals_score": 0.55,  # Dominant factor
+    "mda_score": 0.025,
+    "transcript_score": 0.025,
+    "financials_score": 0.075,
+    "fundamentals_score": 0.075,
+}
+
+# Helper to ensure we track all columns (keys are identical in both dicts)
+SCORE_COLS = list(SCORE_WEIGHTS_QUIET.keys())
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))

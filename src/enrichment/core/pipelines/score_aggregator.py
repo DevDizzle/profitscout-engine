@@ -5,15 +5,19 @@ import re
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from .. import config, gcs
-from google.cloud import bigquery
+from google.cloud import bigquery, storage
 
+# Use standard logging for Cloud Functions
 logging.basicConfig(level=logging.INFO)
 
-
-def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple | None:
-    """Helper function to read and parse a single blob in a thread pool."""
+def _read_and_parse_blob(blob_name: str, analysis_type: str, storage_client: storage.Client) -> tuple | None:
+    """
+    Helper function to read and parse a single blob.
+    Crucial Fix: Accepts 'storage_client' to reuse the existing connection pool.
+    """
     try:
-        content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
+        # Pass the shared client to gcs.read_blob to avoid opening a new connection
+        content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name, client=storage_client)
         if not content:
             return None
 
@@ -34,30 +38,36 @@ def _read_and_parse_blob(blob_name: str, analysis_type: str) -> tuple | None:
 
         return parsed_data
     except Exception as e:
-        print(f"WARNING: Worker could not process blob {blob_name}: {e}")
+        logging.warning(f"Worker could not process blob {blob_name}: {e}")
         return None
 
 def _gather_analysis_data() -> dict:
     """
-    Gathers both scores and analysis text from all analysis files in GCS in parallel.
+    Gathers both scores and analysis text using a Single Shared Client.
     """
     ticker_data = {}
     all_prefixes = config.ANALYSIS_PREFIXES
 
+    # --- FIX: Initialize Client ONCE ---
+    # This single client manages the connection pool for all threads.
+    storage_client = storage.Client(project=config.PROJECT_ID)
+
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS * 4) as executor:
         future_to_blob = {}
-        print("--> Starting to list and submit files for each analysis type...")
+        logging.info("--> Starting to list and submit files for each analysis type...")
+        
         for analysis_type, prefix in all_prefixes.items():
-            print(f"    Lising blobs for analysis type: '{analysis_type}'...")
-            blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
-            print(f"    Found {len(blobs)} blobs for '{analysis_type}'. Submitting to workers...")
+            # Reuse client for listing as well
+            blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix, client=storage_client)
+            
             for blob_name in blobs:
-                future = executor.submit(_read_and_parse_blob, blob_name, analysis_type)
+                # --- FIX: Pass shared client to worker ---
+                future = executor.submit(_read_and_parse_blob, blob_name, analysis_type, storage_client)
                 future_to_blob[future] = blob_name
 
         processed_count = 0
         total_futures = len(future_to_blob)
-        print(f"--> All {total_futures} read tasks submitted. Now processing results as they complete...")
+        logging.info(f"--> Submitted {total_futures} tasks. Processing results...")
 
         for future in as_completed(future_to_blob):
             blob_name_for_log = future_to_blob[future]
@@ -69,45 +79,59 @@ def _gather_analysis_data() -> dict:
                         ticker_data[ticker] = {}
                     ticker_data[ticker].update(result)
             except TimeoutError:
-                print(f"HARD TIMEOUT: Worker for blob {blob_name_for_log} took longer than 15 seconds. Skipping.")
+                logging.error(f"TIMEOUT: Worker for {blob_name_for_log} timed out.")
             except Exception as e:
-                print(f"ERROR: Worker for blob {blob_name_for_log} failed with an unexpected error: {e}")
+                logging.error(f"ERROR: Worker for {blob_name_for_log} failed: {e}")
 
             processed_count += 1
             if processed_count % 500 == 0:
-                print(f"    ..... Progress: Processed {processed_count} of {total_futures} files...")
+                logging.info(f"    ..... Progress: {processed_count}/{total_futures} files...")
 
-    print(f"--> Finished processing all {total_futures} files.")
     return ticker_data
 
+def _calculate_regime_weighted_score(row: pd.Series) -> float:
+    """
+    Calculates weighted score using Dynamic Regime Logic.
+    """
+    # 1. Determine Regime (News Score deviation from 0.5)
+    news_val = row.get("news_score", 0.5)
+    
+    # 0.70+ is Bullish Catalyst, 0.30- is Bearish Catalyst
+    is_event_regime = (news_val >= 0.70) or (news_val <= 0.30)
+    
+    # 2. Select Weight Profile
+    weights = config.SCORE_WEIGHTS_EVENT if is_event_regime else config.SCORE_WEIGHTS_QUIET
+    
+    # 3. Calculate Score
+    final_score = 0.0
+    for col, weight in weights.items():
+        val = row.get(col, 0.5)
+        try:
+            val = float(val)
+        except (ValueError, TypeError):
+            val = 0.5
+        final_score += val * weight
+        
+    return final_score
+
 def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
-    """
-    Processes the gathered data, calculates absolute weighted scores, aggregates text, and returns a DataFrame.
-    """
     if not ticker_data:
         return pd.DataFrame()
 
     df = pd.DataFrame.from_dict(ticker_data, orient='index').reset_index().rename(columns={'index': 'ticker'})
     df["run_date"] = datetime.now().date()
 
-    score_cols = list(config.SCORE_WEIGHTS.keys())
-    for col in score_cols:
-        # Fill missing scores with 0.5 (Neutral) so they don't drag down the average artificially
+    # Ensure all score columns exist
+    for col in config.SCORE_COLS:
         if col not in df.columns:
             df[col] = 0.5
         else:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.5)
 
-    df["weighted_score"] = pd.NA
-    
-    # --- FIXED: Absolute Scoring ---
-    # We calculate the weighted sum of the RAW scores (0.0 to 1.0).
-    # We DO NOT normalize against the batch min/max.
-    df["weighted_score"] = sum(
-        df[col] * config.SCORE_WEIGHTS[col] for col in score_cols
-    )
+    # --- DYNAMIC SCORING ---
+    df["weighted_score"] = df.apply(_calculate_regime_weighted_score, axis=1)
 
-    # Calculate percentile rank for reference/filtering only, NOT for signal generation
+    # Calculate percentile rank
     df['score_percentile'] = df['weighted_score'].rank(pct=True)
 
     def aggregate_text(row):
@@ -128,37 +152,31 @@ def _process_and_score_data(ticker_data: dict) -> pd.DataFrame:
 
     df["aggregated_text"] = df.apply(aggregate_text, axis=1)
 
-    # Add score_percentile to the final columns
-    final_cols = ['ticker', 'run_date', 'weighted_score', 'score_percentile', 'aggregated_text'] + score_cols
+    final_cols = ['ticker', 'run_date', 'weighted_score', 'score_percentile', 'aggregated_text'] + config.SCORE_COLS
     return df.reindex(columns=final_cols)
 
-
 def run_pipeline():
-    """Main pipeline for score aggregation."""
-    print("--- Starting Score Aggregation Pipeline ---")
+    logging.info("--- Starting Score Aggregation Pipeline ---")
     client = bigquery.Client(project=config.PROJECT_ID)
 
-    print("STEP 1: Starting to gather analysis data from GCS...")
+    logging.info("STEP 1: Starting to gather analysis data from GCS...")
     ticker_scores = _gather_analysis_data()
     if not ticker_scores:
-        print("WARNING: No ticker data was gathered from GCS. Exiting.")
+        logging.warning("No ticker data was gathered from GCS. Exiting.")
         return
-    print(f"STEP 1 COMPLETE: Gathered data for {len(ticker_scores)} tickers.")
+    logging.info(f"STEP 1 COMPLETE: Gathered data for {len(ticker_scores)} tickers.")
 
-    print("STEP 2: Starting to process and score data with pandas...")
+    logging.info("STEP 2: Starting to process and score data with pandas...")
     final_df = _process_and_score_data(ticker_scores)
     if final_df.empty:
-        print("WARNING: DataFrame is empty after processing. Exiting.")
+        logging.warning("DataFrame is empty after processing. Exiting.")
         return
-    print(f"STEP 2 COMPLETE: Processed data into a DataFrame with shape {final_df.shape}.")
+    logging.info(f"STEP 2 COMPLETE: Processed data into a DataFrame with shape {final_df.shape}.")
 
-    print("STEP 3: Starting to load DataFrame to BigQuery...")
-    # Use WRITE_TRUNCATE to replace the daily snapshot
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_TRUNCATE",
-    )
+    logging.info("STEP 3: Starting to load DataFrame to BigQuery...")
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
     job = client.load_table_from_dataframe(final_df, config.SCORES_TABLE_ID, job_config=job_config)
     job.result()
-    print(f"STEP 3 COMPLETE: Loaded {job.output_rows} rows into BigQuery table: {config.SCORES_TABLE_ID}")
+    logging.info(f"STEP 3 COMPLETE: Loaded {job.output_rows} rows into BigQuery table: {config.SCORES_TABLE_ID}")
 
-    print("--- Score Aggregation Pipeline Finished ---")
+    logging.info("--- Score Aggregation Pipeline Finished ---")

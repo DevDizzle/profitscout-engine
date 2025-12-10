@@ -127,7 +127,7 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
     )
     
     try:
-        # REVERTED: Call generate_with_tools without model overrides to use default Flash model
+        # Call generate_with_tools without model overrides to use default Flash model
         response_text, _ = vertex_ai.generate_with_tools(prompt=prompt)
         
         clean_json_str = _extract_json_object(response_text)
@@ -149,41 +149,32 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
         return None
 
 def run_pipeline():
-    logging.info("--- Starting News Catalyst Analysis Pipeline (Incremental) ---")
+    logging.info("--- Starting News Catalyst Analysis Pipeline (Snapshot Mode) ---")
     
     # Init shared clients ONCE
     storage_client = storage.Client()
     bq_client = bigquery.Client()
 
-    # 1. Get list of all input files
+    # 1. WIPE Output Folder: Ensure we only have fresh analysis for today
+    logging.info(f"Wiping old analysis from: {OUTPUT_PREFIX}")
+    gcs.delete_all_in_prefix(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX, client=storage_client)
+
+    # 2. Get list of all input files (Headline News)
+    # Since ingestion cleans up this folder, this list represents the current snapshot of all tickers.
     all_inputs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX, client=storage_client)
     
-    # 2. Get list of all existing output files
-    # Optimization: Removing the 'delete_all' call allows us to skip already processed files
-    # gcs.delete_all_in_prefix(bucket_name=config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX, client=storage_client) 
-    existing_outputs = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX, client=storage_client))
-
-    # 3. Filter work items
-    work_items = []
-    for blob_name in all_inputs:
-        # Predict the output name based on input logic
-        ticker, date_str = parse_filename(blob_name)
-        if ticker and date_str:
-            expected_output = f"{OUTPUT_PREFIX}{ticker}_news_{date_str}.json"
-            if expected_output not in existing_outputs:
-                work_items.append(blob_name)
-
-    if not work_items:
-        logging.info("No new news files to process (all up-to-date).")
+    if not all_inputs:
+        logging.info("No input news files found. Exiting.")
         return
 
-    logging.info(f"Found {len(work_items)} new files to process (skipped {len(all_inputs) - len(work_items)} existing).")
+    logging.info(f"Found {len(all_inputs)} news files to analyze.")
 
+    # 3. Process ALL inputs (No incremental check needed since we wiped output)
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         future_to_blob = {
             executor.submit(process_blob, item, bq_client, storage_client): item
-            for item in work_items
+            for item in all_inputs
         }
         for future in as_completed(future_to_blob):
             blob_name = future_to_blob[future]
