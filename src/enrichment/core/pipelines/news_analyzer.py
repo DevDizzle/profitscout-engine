@@ -20,7 +20,7 @@ _EXAMPLE_OUTPUT = """{
   "analysis": "A detailed review of the news regarding the product recall reveals significant safety concerns that will necessitate a costly replacement program. The company's full-year guidance was also revised downward in the press release, citing supply chain issues and the financial impact of the recall. This combination of negative events is a severe catalyst that will likely lead to analyst downgrades and a sharp price decline. This setup is a prime candidate for buying put options to capture the expected downward volatility."
 }"""
 
-# -------- Helpers (No changes needed) ----------------------------------------
+# -------- Helpers ----------------------------------------
 def parse_filename(blob_name: str):
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
     match = pattern.search(os.path.basename(blob_name))
@@ -35,6 +35,19 @@ def _extract_json_object(text: str) -> str:
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start: return text[start : end + 1]
+    return text
+
+def _sanitize_json_content(text: str) -> str:
+    """
+    Attempts to fix common JSON format errors from LLMs, specifically
+    invalid backslashes that cause 'Invalid \escape' errors.
+    """
+    if not text: return ""
+    # 1. Replace single backslashes that are NOT part of a valid escape sequence.
+    # Valid escapes in JSON: \" \\ \/ \b \f \n \r \t \uXXXX
+    # This regex matches a backslash NOT followed by one of those characters.
+    # We replace it with a double backslash (literal backslash).
+    text = re.sub(r'\\(?![/u"\\bfnrt])', r'\\\\', text)
     return text
 
 # -------- Metadata & BigQuery Helpers ----------------------------------------
@@ -134,7 +147,13 @@ You are a news catalyst analyst for a directional options trader who BUYS premiu
         if not clean_json_str:
             raise ValueError("No JSON object could be extracted from model response.")
 
-        parsed_json = json.loads(clean_json_str)
+        try:
+            parsed_json = json.loads(clean_json_str)
+        except json.JSONDecodeError:
+            # Retry with sanitization if first attempt fails
+            logging.warning(f"[{ticker}] Initial JSON parse failed. Attempting sanitization...")
+            sanitized_str = _sanitize_json_content(clean_json_str)
+            parsed_json = json.loads(sanitized_str)
 
         if all(k in parsed_json for k in ["score", "analysis", "catalyst_type"]):
             # Pass shared client to write operation

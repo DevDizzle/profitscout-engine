@@ -30,15 +30,12 @@ def _get_new_signals_and_active_contracts(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     1. Fetches NEW contracts strictly from the Winners Dashboard.
-       - Joins with options_candidates ONLY to get the initial pricing (Bid/Ask).
-       - Filters out contracts that are already in the tracker.
-       - Filters out contracts that have already expired (to prevent stale onboarding).
-    2. Fetches ALL contracts currently marked as 'Active' in the tracker for updates.
+    2. Fetches ALL UNEXPIRED contracts from the tracker (Active OR Delisted)
+       to allow for price recovery/updates.
     """
     today_iso = date.today().isoformat()
 
     # Query 1: Fetch NEW signals directly from Winners Dashboard.
-    # We join Candidates purely to get the bid/ask at the time of selection.
     new_signals_query = f"""
         SELECT
             w.contract_symbol,
@@ -60,31 +57,27 @@ def _get_new_signals_and_active_contracts(
             
         FROM `{WINNERS_TABLE_ID}` w
         
-        -- Pricing: Get original pricing from Candidates table
-        -- We match on Symbol AND Date to ensure we get the price from that specific run
         JOIN `{CANDIDATES_TABLE_ID}` c 
           ON w.contract_symbol = c.contract_symbol 
           AND CAST(w.run_date AS DATE) = DATE(c.selection_run_ts)
           
-        -- Check if already tracked to avoid duplicates
         LEFT JOIN `{TRACKER_TABLE_ID}` t ON w.contract_symbol = t.contract_symbol
         WHERE t.contract_symbol IS NULL
-          -- NEW: Prevent onboarding of already expired contracts
           AND CAST(w.expiration_date AS DATE) >= CURRENT_DATE()
         
-        -- Ensure strict uniqueness: In case of duplicate candidate rows, pick the latest
         QUALIFY ROW_NUMBER() OVER(PARTITION BY w.contract_symbol ORDER BY c.selection_run_ts DESC) = 1
     """
 
-    # Query 2: Fetch Active Contracts
+    # Query 2: Fetch ALL Unexpired Contracts (Active OR Delisted)
+    # This allows us to keep checking "Delisted" contracts in case data returns.
     active_contracts_query = f"""
         SELECT
             contract_symbol,
             run_date,
             expiration_date,
             initial_price,
-            current_price, -- Need current_price to preserve it during the freeze
-            percent_gain,  -- Need percent_gain to preserve it during the freeze
+            current_price, 
+            percent_gain, 
             ticker,
             option_type,
             strike_price,
@@ -95,16 +88,17 @@ def _get_new_signals_and_active_contracts(
             image_uri,
             status
         FROM `{TRACKER_TABLE_ID}`
-        WHERE status = 'Active'
+        WHERE CAST(expiration_date AS DATE) >= CURRENT_DATE()
+          AND status IN ('Active', 'Delisted')
     """
 
     logging.info(f"Fetching new signals from Winners Dashboard ({WINNERS_TABLE_ID})...")
     new_signals_df = bq_client.query(new_signals_query).to_dataframe()
     logging.info(f"Found {len(new_signals_df)} new contracts to start tracking.")
 
-    logging.info("Fetching active tracked contracts...")
+    logging.info("Fetching ongoing contracts (Active + Delisted) for updates...")
     active_contracts_df = bq_client.query(active_contracts_query).to_dataframe()
-    logging.info(f"Found {len(active_contracts_df)} active contracts.")
+    logging.info(f"Found {len(active_contracts_df)} ongoing contracts to check.")
 
     return new_signals_df, active_contracts_df
 
@@ -176,7 +170,6 @@ def _upsert_with_merge(bq_client: bigquery.Client, df: pd.DataFrame):
             if col == 'last_updated':
                  update_parts.append(f"T.`{col}` = CURRENT_TIMESTAMP()")
             elif col in ['ticker', 'expiration_date', 'option_type', 'strike_price', 'initial_price']:
-                 # PROTECT INITIAL_PRICE: Never overwrite it once set
                  update_parts.append(f"T.`{col}` = COALESCE(T.`{col}`, S.`{col}`)")
             else:
                  update_parts.append(f"T.`{col}` = S.`{col}`")
@@ -202,22 +195,21 @@ def run_pipeline():
     new_signals_df, active_contracts_df = _get_new_signals_and_active_contracts(bq_client)
 
     # --- SPLIT LOGIC: Separate ongoing from expired ---
-    # We must treat them differently.
-    # Ongoing: Fetch new price, recalc gain.
-    # Expired: Freeze price (keep old value), set status='Expired'.
     
     if not active_contracts_df.empty:
         active_contracts_df["expiration_date"] = pd.to_datetime(active_contracts_df["expiration_date"]).dt.date
     
     active_ongoing_df = pd.DataFrame()
-    active_expired_df = pd.DataFrame()
+    active_expired_df = pd.DataFrame() # Expired, need to freeze
 
     if not active_contracts_df.empty:
+        # Check against today. If Exp Date >= Today, it's still alive.
         active_ongoing_df = active_contracts_df[active_contracts_df["expiration_date"] >= today].copy()
+        # If Exp Date < Today, it has expired.
         active_expired_df = active_contracts_df[active_contracts_df["expiration_date"] < today].copy()
 
-    logging.info(f"Active Ongoing (Fetching Prices): {len(active_ongoing_df)}")
-    logging.info(f"Active Expired (Freezing Data): {len(active_expired_df)}")
+    logging.info(f"Ongoing Contracts to Update: {len(active_ongoing_df)}")
+    logging.info(f"Expired Contracts to Freeze: {len(active_expired_df)}")
 
     # 1. Fetch Latest Market Prices (ONLY for new + ongoing)
     symbols_to_fetch = []
@@ -230,10 +222,10 @@ def run_pipeline():
     if symbols_to_fetch:
         current_prices_df = _get_current_prices(bq_client, list(set(symbols_to_fetch)))
 
-    # 2. Process NEW Signals (Lock in Initial Price from Candidate Data)
+    # 2. Process NEW Signals
     processed_new = []
     if not new_signals_df.empty:
-        # Calculate Initial Price from the CANDIDATE snapshot (Midpoint)
+        # Calculate Initial Price
         new_signals_df['initial_price'] = (new_signals_df['signal_bid'] + new_signals_df['signal_ask']) / 2
         new_signals_df['initial_price'] = new_signals_df['initial_price'].fillna(new_signals_df['signal_last'])
         
@@ -241,47 +233,70 @@ def run_pipeline():
         new_signals_df['percent_gain'] = 0.0
         new_signals_df['last_updated'] = pd.Timestamp.utcnow()
         
-        # Set Current Price (Use today's price if available, else initial)
+        # Set Current Price (Use today's price if available, else fallback to initial)
         new_signals_df = pd.merge(new_signals_df, current_prices_df, on='contract_symbol', how='left')
-        new_signals_df['current_price'] = new_signals_df['current_price'].fillna(new_signals_df['initial_price'])
         
+        # NOTE: For new signals, if we have NO price data at all, we drop them. 
+        # We don't want to track something that effectively doesn't exist yet.
+        before_drop = len(new_signals_df)
         new_signals_df.dropna(subset=['initial_price'], inplace=True)
-        processed_new.append(new_signals_df)
+        
+        # If current_price is missing for a NEW signal, use initial_price to avoid NaN
+        new_signals_df['current_price'] = new_signals_df['current_price'].fillna(new_signals_df['initial_price'])
 
-    # 3. Process ACTIVE ONGOING Contracts (Update Price/Status)
+        if not new_signals_df.empty:
+            processed_new.append(new_signals_df)
+
+    # 3. Process ONGOING Contracts (Active OR Delisted)
     processed_ongoing = []
     if not active_ongoing_df.empty:
-        # Remove old current_price/gain columns to prepare for update,
-        # but keep other metadata
-        cols_to_keep = [c for c in active_ongoing_df.columns if c not in ['current_price']]
-        active_ongoing_df_clean = active_ongoing_df[cols_to_keep]
+        # Keep 'old_price' to fill gaps
+        active_ongoing_df.rename(columns={'current_price': 'old_price'}, inplace=True)
 
-        active_ongoing_df = pd.merge(active_ongoing_df_clean, current_prices_df, on='contract_symbol', how='left')
+        # Merge with new prices
+        active_ongoing_df = pd.merge(active_ongoing_df, current_prices_df, on='contract_symbol', how='left')
         
-        # FIX: Ensure prices are floats for calculation
-        active_ongoing_df['initial_price'] = pd.to_numeric(active_ongoing_df['initial_price'], errors='coerce')
-        active_ongoing_df['current_price'] = pd.to_numeric(active_ongoing_df['current_price'], errors='coerce')
+        # Coerce numeric
+        for col in ['initial_price', 'current_price', 'old_price']:
+             active_ongoing_df[col] = pd.to_numeric(active_ongoing_df[col], errors='coerce')
 
-        # Update Gains
-        mask = (active_ongoing_df["initial_price"] > 0) & (active_ongoing_df["current_price"].notna())
+        # --- RECOVERY LOGIC ---
+        # 1. If we HAVE a new price -> Status becomes 'Active' (Revival!)
+        # 2. If we DO NOT have a new price -> Status becomes 'Delisted' (or stays Delisted)
+        
+        has_new_price = active_ongoing_df['current_price'].notna()
+        active_ongoing_df.loc[has_new_price, 'status'] = 'Active'
+        active_ongoing_df.loc[~has_new_price, 'status'] = 'Delisted'
+        
+        # Fill missing current_price with old_price
+        active_ongoing_df['current_price'] = active_ongoing_df['current_price'].fillna(active_ongoing_df['old_price'])
+        
+        # Final fallback: if still NaN (no old price either), use initial_price or 0.0
+        # This fixes the DB nulls while allowing the contract to persist.
+        active_ongoing_df['current_price'] = active_ongoing_df['current_price'].fillna(active_ongoing_df['initial_price']).fillna(0.0)
+
+        # Recalculate Gains
+        mask = (active_ongoing_df["initial_price"] > 0)
         active_ongoing_df.loc[mask, "percent_gain"] = (
              (active_ongoing_df.loc[mask, "current_price"] - active_ongoing_df.loc[mask, "initial_price"]) /
               active_ongoing_df.loc[mask, "initial_price"] * 100
         ).round(2)
         
-        # Delisted Check: If we tried to fetch price but got nothing, mark Delisted
-        # (Only if it hasn't expired yet)
-        active_ongoing_df.loc[active_ongoing_df["current_price"].isna(), "status"] = "Delisted"
+        if 'old_price' in active_ongoing_df.columns:
+            active_ongoing_df.drop(columns=['old_price'], inplace=True)
         
         active_ongoing_df['last_updated'] = pd.Timestamp.utcnow()
         processed_ongoing.append(active_ongoing_df)
 
-    # 4. Process ACTIVE EXPIRED Contracts (The Freeze)
-    # We do NOT fetch new prices. We keep the old 'current_price' and 'percent_gain' 
-    # which represent the state at the last successful run (presumably close of expiry day).
+    # 4. Process EXPIRED Contracts (The Freeze)
     processed_expired = []
     if not active_expired_df.empty:
         active_expired_df["status"] = "Expired"
+        
+        # Fix NaNs for expired contracts too, just in case
+        active_expired_df['current_price'] = pd.to_numeric(active_expired_df['current_price'], errors='coerce').fillna(0.0)
+        active_expired_df['percent_gain'] = pd.to_numeric(active_expired_df['percent_gain'], errors='coerce').fillna(-100.0)
+
         active_expired_df["last_updated"] = pd.Timestamp.utcnow()
         processed_expired.append(active_expired_df)
 

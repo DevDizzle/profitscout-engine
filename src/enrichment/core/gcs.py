@@ -78,6 +78,7 @@ def list_blobs_with_content(bucket_name: str, prefix: str) -> dict:
 def delete_all_in_prefix(bucket_name: str, prefix: str, client: storage.Client | None = None) -> None:
     """
     Deletes all blobs within a given prefix (folder) in a GCS bucket.
+    Handles deletions in batches to avoid 'Too many deferred requests' errors.
     """
     try:
         logging.info(f"Starting cleanup for prefix: gs://{bucket_name}/{prefix}")
@@ -89,13 +90,26 @@ def delete_all_in_prefix(bucket_name: str, prefix: str, client: storage.Client |
             logging.info("Prefix is already empty. No files to delete.")
             return
 
-        # Note: bucket.delete_blobs is more efficient if available, but batching is fine.
-        with storage_client.batch():
-            for blob in blobs_to_delete:
-                if blob.name != prefix:
-                    blob.delete()
+        total_blobs = len(blobs_to_delete)
+        batch_size = 100 # Safe limit well below 1000
         
-        logging.info(f"Successfully deleted {len(blobs_to_delete)} blobs from prefix '{prefix}'.")
+        logging.info(f"Found {total_blobs} blobs to delete. Processing in batches of {batch_size}...")
+
+        # Process in chunks
+        for i in range(0, total_blobs, batch_size):
+            batch_blobs = blobs_to_delete[i : i + batch_size]
+            try:
+                with storage_client.batch():
+                    for blob in batch_blobs:
+                        if blob.name != prefix:
+                            blob.delete()
+                logging.info(f"Deleted batch {i // batch_size + 1}: {len(batch_blobs)} blobs.")
+            except Exception as e:
+                logging.error(f"Batch deletion failed for batch starting at index {i}: {e}")
+                # Continue to next batch instead of hard crash
+                continue
+        
+        logging.info(f"Finished cleanup for prefix '{prefix}'.")
     except Exception as e:
-        logging.error(f"Failed to delete blobs in prefix '{prefix}': {e}", exc_info=True)
+        logging.error(f"Failed to list or delete blobs in prefix '{prefix}': {e}", exc_info=True)
         raise
