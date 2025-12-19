@@ -11,11 +11,6 @@ import json
 INPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["input"] 
 OUTPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["output"]
 
-_EXAMPLE_OUTPUT = """{
-  "score": 0.38,
-  "analysis": "The earnings call for AAON presents a mildly bearish outlook, dominated by significant operational challenges. Management explicitly stated that Q2 results 'fall short of our expectations' due to a problematic ERP system rollout that disrupted production. Consequently, the company is 'revising our full year 2025 outlook lower,' now anticipating low-teens sales growth and a gross margin of 28% to 29%. While the BasX data center business remains a strong point with sales up 127%, this was offset by declines in the core AAON brand. The combination of a clear earnings miss, lowered guidance, and ongoing operational headwinds signals near-term pressure on the stock."
-}"""
-
 def read_transcript_content(raw_json: str) -> str | None:
     """Extracts the 'content' from the raw transcript JSON."""
     try:
@@ -46,7 +41,8 @@ def process_transcript(ticker: str, date_str: str):
         logging.error(f"[{ticker}] Could not extract 'content' from {input_blob_name}")
         return None
     
-    prompt = r"""You are a sharp financial analyst evaluating an earnings call transcript to find signals that may influence the stock over the next 1–3 months.
+    prompt = r"""
+You are a sharp financial analyst evaluating an earnings call transcript to find signals that may influence the stock over the next 1–3 months.
 Use **only** the full transcript provided. Your analysis **must** be grounded in the data.
 
 ### Key Interpretation Guidelines & Data Integration
@@ -58,9 +54,6 @@ Use **only** the full transcript provided. Your analysis **must** be grounded in
 
 ### CRITICAL FORMATTING RULE
 - When including direct quotes in the 'analysis' text, you MUST use single quotes ('), not double quotes ("). This is to ensure the final JSON is clean and renders correctly.
-
-### Example Output (for format and tone; do not copy values)
-{{example_output}}
 
 ### Step-by-Step Reasoning
 1.  Scan the full transcript to identify specific data points and quotes required by the guidelines.
@@ -79,9 +72,10 @@ Use **only** the full transcript provided. Your analysis **must** be grounded in
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (150-250 words) summarizing the key themes from the call, **integrating specific figures and direct quotes** to support the analysis.>"
 }
+
 Provided Transcript:
 {{transcript_content}}
-""".replace("{{transcript_content}}", transcript_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
+""".replace("{{transcript_content}}", transcript_content)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json")

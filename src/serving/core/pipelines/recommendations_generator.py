@@ -5,74 +5,58 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import bigquery
 from .. import config, gcs
 from ..clients import vertex_ai
-from datetime import date, datetime
-import re
+from datetime import date
 import json
 
-# --- ENHANCED PROMPT: For Directional Premium Buyers, No Example ---
+# --- ENHANCED PROMPT: Focus on Confluence & Timing ---
 _PROMPT_TEMPLATE = r"""
-You are a trading analyst writing a brief for a short-term, directional options trader who BUYS premium (calls/puts).
-The trader's goal is to capture a significant price move (2-5% or more) over the next 1-5 trading weeks. Your analysis must focus on identifying potential breakout catalysts and confirming technical momentum.
+You are a specialized Options Trading Strategist. Your goal is to write a high-conviction "Breakout Brief" for a directional premium buyer (Calls/Puts).
+Target Trade Duration: 1-4 Weeks.
 
-Use ONLY the facts from the `Aggregated Analysis Text`.
+### CURRENT DATE: {run_date}
+Analyze the data relative to this date.
 
-### Output Format (Strict)
+### INPUT DATA
+- **Signal:** {outlook_signal}
+- **Momentum:** {momentum_context}
+- **Deep Dive Data:**
+{aggregated_text}
+
+### THE TRADING THESIS
+Synthesize the "News Analysis" and "Technicals Analysis" sections from the input to answer: **Why will this stock move significantly NOW?**
+
+### Output Format (Return Clean Markdown)
 
 # {company_name} ({ticker}) {signal_emoji}
 
-**Outlook:** {outlook_signal} {momentum_context}
+**Signal:** {outlook_signal} {momentum_context}
 
-**Business snapshot:**
-A tight, one-sentence summary of what the company does.
+## The "Why Now?" (Thesis)
+* **Catalyst (News/Event):** Identify the specific event driving volume/interest (e.g., Earnings Beat, FDA approval, Contract win). If none, state "Technical Setup Only".
+* **Setup (Technicals):** Describe the price structure supporting the move (e.g., "Bull Flag breakout above $150", "Rejection at 200-day SMA").
+* **Confluence:** Do the news and chart agree? (e.g., "Positive news is fueling a breakout above resistance").
 
-## Directional Thesis (2-4 bullets)
-- Explain WHY this stock might make a significant move soon.
-- Each bullet must combine a theme (e.g., "Technical Breakout Confirmation," "News Catalyst," "Fundamental Shift") with specific data from the input and its direct impact on breakout potential.
-- Focus on signals of building momentum: price breaking key MAs, strong RSI/MACD readings, high-impact news, or earnings surprises.
+## Key Levels (For Option Strikes)
+* **Trigger:** The price level that confirms the move (e.g., "Entry above $155").
+* **Target:** The next logical resistance/support level (e.g., "Room to run to $165").
+* **Invalidation:** Where is the thesis wrong? (e.g., "Close below $148").
 
-## Breakout Catalysts (max 3)
-- List the most likely events that could trigger a sharp, volatile move in the near term.
-- Examples: Upcoming earnings reports, product launches, major economic data relevant to the sector, or guidance updates.
-
-## Key Price Levels
-- **Support:** <Critical support level(s) below which the bullish thesis weakens.>
-- **Resistance:** <Critical resistance level(s) that must be broken for a bullish breakout.>
-- **Invalidation Point:** <A single price level or condition that clearly invalidates the primary directional thesis.>
-
-## Risks to the Trade
-- The 1-2 most significant factors that could prevent the breakout or cause a reversal (e.g., "Failure at 50-day SMA," "Wider market weakness," "Disappointing guidance").
+## Risks & Headwinds
+* List 1-2 factor that could kill the trade (e.g., "Low volume on breakout", "Pending CPI data", "Overbought RSI divergence").
 
 ## The Bottom Line
-One concise paragraph synthesizing why the setup favors a directional breakout. State the primary thesis clearly and what would invalidate it. This should directly address the goal of capturing a sharp, near-term move.
+One punchy, decisive paragraph. Summarize the trade. Does the volatility potential justify paying the option premium?
 
-### Critical Rules
-1.  **Focus on Breakouts**: Your entire analysis must be through the lens of a premium buyer looking for a volatile move, not a range-bound stock.
-2.  **Quantify Everything**: Use specific numbers, levels, and indicators from the source text.
-3.  **No Examples**: Generate the output based solely on these instructions and the provided data. Do not replicate any previous examples.
-4.  **No Advice**: Use an informational, analytical tone (e.g., "suggests," "indicates," "could").
-5.  **No Options Jargon**: The output is about the underlying stock's direction and volatility potential.
-
-### Input Data
-- **Outlook Signal**: {outlook_signal}
-- **Momentum Context**: {momentum_context}
-- **Aggregated Analysis Text**:
-{aggregated_text}
-
-### Signal → Emoji map (internal)
-- Strongly Bullish: 🚀
-- Moderately Bullish: ⬆️
-- Neutral / Mixed: ⚖️
-- Moderately Bearish: ⬇️
-- Strongly Bearish: 🧨
+### CRITICAL RULES
+1.  **Ignore Long-Term Noise:** We don't care about a 5-year DCF valuation. We care about the next 20 days. If Fundamentals are bad but Technicals/News are great, **lean into the Trade**.
+2.  **Be Specific:** Cite numbers found in the text (e.g. "RSI at 65", "Revenue up 20%").
+3.  **No Financial Advice:** Use analytical language ("Setup suggests...", "Data indicates...").
 """
-
 
 def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[str, str]:
     """
     Determines the 5-tier outlook signal based on the ABSOLUTE WEIGHTED SCORE.
-    This ensures the label matches the semantic analysis (e.g., Bearish Technicals).
     """
-    # Absolute Thresholds based on 0.0-1.0 scale (0.5 is Neutral)
     if score >= 0.70:
         outlook = "Strongly Bullish"
     elif 0.55 <= score < 0.70:
@@ -81,7 +65,7 @@ def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[s
         outlook = "Neutral / Mixed"
     elif 0.30 <= score < 0.45:
         outlook = "Moderately Bearish"
-    else:  # score < 0.30
+    else:
         outlook = "Strongly Bearish"
 
     context = ""
@@ -98,7 +82,6 @@ def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[s
         elif is_bearish_outlook and momentum_pct > 0:
             context = "but facing a short-term counter-rally."
     
-    # Add a directional "tilt" to the neutral signal to make it more useful
     if outlook == "Neutral / Mixed":
         if score > 0.50:
             outlook += " with a bullish tilt"
@@ -109,12 +92,8 @@ def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[s
 
     return outlook, context
 
-
 def _get_daily_work_list() -> list[dict]:
-    """
-    Builds the work list from the GCS tickerlist.txt and enriches it
-    with the latest available data from BigQuery for each ticker.
-    """
+    """Builds the work list from GCS and enriches from BigQuery."""
     logging.info("Fetching work list from GCS and enriching from BigQuery...")
     tickers = gcs.get_tickers()
     if not tickers:
@@ -123,7 +102,6 @@ def _get_daily_work_list() -> list[dict]:
         
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
     
-    # Fetch score_percentile in addition to weighted_score
     query = f"""
         WITH GCS_Tickers AS (
             SELECT ticker FROM UNNEST(@tickers) AS ticker
@@ -184,19 +162,19 @@ def _get_daily_work_list() -> list[dict]:
 
     try:
         df = client.query(query, job_config=job_config).to_dataframe()
+        # Only process if we have the aggregated text analysis
         df.dropna(subset=["company_name", "weighted_score", "aggregated_text"], inplace=True)
         if df.empty:
-            logging.warning("No tickers with sufficient data found after enriching from BigQuery.")
+            logging.warning("No tickers with sufficient data found after enriching.")
             return []
         logging.info(f"Successfully created work list for {len(df)} tickers.")
         return df.to_dict("records")
     except Exception as e:
-        logging.critical(f"Failed to build and enrich work list: {e}", exc_info=True)
+        logging.critical(f"Failed to build work list: {e}", exc_info=True)
         return []
 
-
 def _delete_old_recommendation_files(ticker: str):
-    """Deletes all old recommendation files for a given ticker."""
+    """Deletes old recommendation files."""
     prefix = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_"
     blobs_to_delete = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
     for blob_name in blobs_to_delete:
@@ -205,11 +183,8 @@ def _delete_old_recommendation_files(ticker: str):
         except Exception as e:
             logging.error(f"[{ticker}] Failed to delete old file {blob_name}: {e}")
 
-
 def _process_ticker(ticker_data: dict):
-    """
-    Generates recommendation markdown and its companion JSON metadata file.
-    """
+    """Generates the recommendation."""
     ticker = ticker_data["ticker"]
     today_str = date.today().strftime("%Y-%m-%d")
     
@@ -219,18 +194,12 @@ def _process_ticker(ticker_data: dict):
     
     try:
         momentum_pct = ticker_data.get("close_30d_delta_pct")
-        if pd.isna(momentum_pct):
-            momentum_pct = None
+        if pd.isna(momentum_pct): momentum_pct = None
 
-        # --- MODIFIED: Use absolute weighted_score for signal definition ---
         score = ticker_data.get("weighted_score")
-        if pd.isna(score):
-            score = 0.5
+        if pd.isna(score): score = 0.5
 
-        outlook_signal, momentum_context = _get_signal_and_context(
-            score,
-            momentum_pct,
-        )
+        outlook_signal, momentum_context = _get_signal_and_context(score, momentum_pct)
 
         emoji_map = {
             "Strongly Bullish": "🚀",
@@ -239,13 +208,14 @@ def _process_ticker(ticker_data: dict):
             "Moderately Bearish": "⬇️",
             "Strongly Bearish": "🧨",
         }
-        # Handle cases where outlook has " with a..." or "(lacks...)"
+        # Simplify signal string for emoji lookup
         base_outlook = outlook_signal.split(" with a")[0].split(" (")[0].strip()
         signal_emoji = emoji_map.get(base_outlook, "⚖️")
 
         prompt = _PROMPT_TEMPLATE.format(
             ticker=ticker,
             company_name=ticker_data["company_name"],
+            run_date=today_str,  # INJECT DATE HERE
             signal_emoji=signal_emoji,
             outlook_signal=outlook_signal,
             momentum_context=momentum_context,
@@ -255,7 +225,7 @@ def _process_ticker(ticker_data: dict):
         recommendation_text = vertex_ai.generate(prompt)
 
         if not recommendation_text:
-            logging.error(f"[{ticker}] LLM returned no text. Aborting.")
+            logging.error(f"[{ticker}] LLM returned no text.")
             return None
         
         metadata = {
@@ -264,7 +234,6 @@ def _process_ticker(ticker_data: dict):
             "outlook_signal": outlook_signal,
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
-            # Store percentile for reference, even if not used for signal
             "score_percentile": ticker_data.get("score_percentile", 0.5), 
             "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}",
         }
@@ -274,16 +243,11 @@ def _process_ticker(ticker_data: dict):
         gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown")
         gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(metadata, indent=2), "application/json")
         
-        logging.info(
-            f"[{ticker}] Successfully generated and wrote recommendation files to "
-            f"{md_blob_path} and {json_blob_path}"
-        )
         return md_blob_path
         
     except Exception as e:
-        logging.error(f"[{ticker}] Unhandled exception in processing: {e}", exc_info=True)
+        logging.error(f"[{ticker}] Processing failed: {e}", exc_info=True)
         return None
-
 
 def run_pipeline():
     logging.info("--- Starting Directional Trading Brief Pipeline ---")
@@ -302,7 +266,4 @@ def run_pipeline():
             if future.result():
                 processed_count += 1
                 
-    logging.info(
-        f"--- Recommendation Pipeline Finished. "
-        f"Processed {processed_count} of {len(work_list)} tickers. ---"
-    )
+    logging.info(f"--- Recommendation Pipeline Finished. Processed {processed_count}/{len(work_list)} tickers. ---")

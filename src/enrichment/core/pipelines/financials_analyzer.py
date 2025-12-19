@@ -1,43 +1,29 @@
+# enrichment/core/pipelines/financials_analyzer.py
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .. import config, gcs
 from ..clients import vertex_ai
 import os
 import re
+import json
 
 INPUT_PREFIX = config.PREFIXES["financials_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["financials_analyzer"]["output"]
 
-# --- MODIFIED: A more concise one-shot example ---
-_EXAMPLE_OUTPUT = """{
-  "score": 0.45,
-  "analysis": "AAON's financials present a mixed outlook. While revenue is trending upwards, profitability and margins have been volatile. A key concern is the highly variable and recently negative operating and free cash flow. The balance sheet is weakening due to a substantial increase in total debt and rising inventory levels, suggesting potential leverage and sales conversion issues. Despite top-line growth, inconsistent cash flow and a heavier debt load raise questions about the company's near-term financial stability."
-}"""
-
-def parse_filename(blob_name: str):
-    """Parses filenames like 'AAL_2025-06-30.json'."""
-    pattern = re.compile(r"([A-Z.]+)_(\\d{4}-\\d{2}-\\d{2})\\.json$")
-    match = pattern.search(os.path.basename(blob_name))
-    return (match.group(1), match.group(2)) if match else (None, None)
-
-def process_blob(blob_name: str):
-    """Processes one financial statement file."""
-    ticker, date_str = parse_filename(blob_name)
-    if not ticker or not date_str:
-        return None
-    
-    analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
-    logging.info(f"[{ticker}] Generating financials analysis for {date_str}")
-    
-    content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-    if not content:
-        return None
-    
-# --- MODIFIED: A data-driven one-shot example ---
-_EXAMPLE_OUTPUT = """{
-  "score": 0.45,
-  "analysis": "AAON's financials present a mixed outlook. While revenue shows an upward trend from $262.1M in Q1 2024 to $311.6M in Q2 2025, profitability has been volatile, with gross margins peaking in Q3 2024 before declining. A key concern is the highly variable and recently negative operating cash flow, which registered at -$23.2M in the latest quarter. The balance sheet is weakening due to a substantial increase in total debt from $17.2M to $352M over the last year, suggesting a significant rise in leverage. Despite top-line growth, the inconsistent cash flow and heavier debt load raise questions about the company's near-term financial stability."
-}"""
+# --- ALIAS MAPPING: Defense against API inconsistency ---
+# FMP usually normalizes this, but we check aliases just in case.
+METRIC_ALIASES = {
+    "revenue": ["revenue", "sales", "totalRevenue", "totalSales"],
+    "grossProfitRatio": ["grossProfitRatio", "grossMargin"],
+    "operatingIncome": ["operatingIncome", "operatingProfit"],
+    "netIncome": ["netIncome", "netProfit", "netEarnings"],
+    "cashAndEquivalents": ["cashAndCashEquivalents", "cash", "totalCash"],
+    "totalDebt": ["totalDebt", "shortLongTermDebtTotal"],
+    "netDebt": ["netDebt"],
+    "operatingCashFlow": ["operatingCashFlow", "netCashProvidedByOperatingActivities"],
+    "freeCashFlow": ["freeCashFlow"],
+    "capitalExpenditure": ["capitalExpenditure", "investmentsInPropertyPlantAndEquipment"]
+}
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
@@ -45,6 +31,65 @@ def parse_filename(blob_name: str):
     match = pattern.search(os.path.basename(blob_name))
     return (match.group(1), match.group(2)) if match else (None, None)
 
+def _smart_get(data: dict, metric_name: str):
+    """
+    Tries to find a metric using a list of known aliases.
+    Returns the first non-None value found, or None.
+    """
+    aliases = METRIC_ALIASES.get(metric_name, [metric_name])
+    for alias in aliases:
+        val = data.get(alias)
+        if val is not None:
+            return val
+    return None
+
+def _extract_financial_trends(json_content: str, periods: int = 5) -> list:
+    """
+    Extracts high-signal metrics using defensive alias checking.
+    """
+    if not json_content:
+        return []
+    
+    try:
+        data = json.loads(json_content)
+        reports = data.get("quarterly_reports", [])
+        if not reports:
+            return []
+            
+        # Sort by date descending (newest first) and take top N
+        sorted_reports = sorted(reports, key=lambda x: x.get("date", ""), reverse=True)
+        recent_reports = sorted_reports[:periods]
+        
+        simplified_data = []
+        for report in recent_reports:
+            date = report.get("date")
+            inc = report.get("income_statement", {})
+            bal = report.get("balance_sheet", {})
+            cf = report.get("cash_flow_statement", {})
+            
+            record = {
+                "date": date,
+                # Income
+                "revenue": _smart_get(inc, "revenue"),
+                "grossProfitRatio": _smart_get(inc, "grossProfitRatio"),
+                "operatingIncome": _smart_get(inc, "operatingIncome"),
+                "netIncome": _smart_get(inc, "netIncome"),
+                # Balance Sheet
+                "cashAndEquivalents": _smart_get(bal, "cashAndEquivalents"),
+                "totalDebt": _smart_get(bal, "totalDebt"),
+                "netDebt": _smart_get(bal, "netDebt"),
+                # Cash Flow
+                "operatingCashFlow": _smart_get(cf, "operatingCashFlow"),
+                "freeCashFlow": _smart_get(cf, "freeCashFlow"),
+                "capitalExpenditure": _smart_get(cf, "capitalExpenditure")
+            }
+            simplified_data.append(record)
+            
+        return simplified_data
+
+    except (json.JSONDecodeError, AttributeError):
+        return []
+
 def process_blob(blob_name: str):
     """Processes one financial statement file."""
     ticker, date_str = parse_filename(blob_name)
@@ -58,46 +103,57 @@ def process_blob(blob_name: str):
     if not content:
         return None
     
-    # --- MODIFIED: Updated prompt to require specific data points ---
-    prompt = r"""You are a sharp financial analyst evaluating quarterly financial data to assess a company's health and trajectory over the next 6-12 months.
+    # --- STEP 1: Smart Extraction ---
+    financial_trends = _extract_financial_trends(content, periods=5)
+    
+    if not financial_trends:
+        logging.warning(f"[{ticker}] No valid financial records found after extraction.")
+        return None
 
-Use **only** the JSON provided. Your analysis **must** be grounded in the data.
+    # --- STEP 2: The "Virtual Agents" Prompt ---
+    prompt = r"""
+You are a forensic financial analyst. Your task is to evaluate the provided quarterly financial data to determine the company's operational health and direction.
 
-### Key Interpretation Guidelines
-1.  **Growth**: Is revenue growing? Cite the revenue figures from the first and last quarters provided.
-2.  **Profitability**: Are margins expanding or contracting? Reference the `grossProfitRatio`.
-3.  **Cash Flow**: Is the company generating or burning cash? Cite the `operatingCashFlow` from the most recent quarter.
-4.  **Solvency**: How is the company's debt changing? Cite the `totalDebt` from the first and last quarters.
-5.  **Synthesis**: Combine these points into a cohesive narrative.
+### ANALYSIS DATE: {date_str}
+Treat the record with date `{date_str}` as **CURRENT**. The other records are historical context for identifying trends (Year-Over-Year or Quarter-Over-Quarter).
 
-### Example Output (for format and tone; do not copy values)
-{{example_output}}
+### Curated Financial Data (Last 5 Quarters)
+{financial_trends}
 
-### Step-by-Step Reasoning
-1.  Compute and compare quarterly changes for key metrics (Revenue, Gross Margin, Operating Cash Flow, Total Debt).
-2.  Classify each as bullish, bearish, or neutral, citing the specific numbers.
-3.  Map net findings to probability bands:
-    -   0.00-0.30 - clearly bearish
-    -   0.31-0.49 - mildly bearish
-    -   0.50       - neutral / balanced
-    -   0.51-0.69 - moderately bullish
-    -   0.70-1.00 - strongly bullish
-4.  Summarize into one dense paragraph, integrating the specific data points you identified.
+### Analysis Tasks
+1.  **Income Statement Analysis**: Is Revenue growing or shrinking? Are Margins (`grossProfitRatio`) expanding or compressing?
+2.  **Cash Flow Analysis**: Check `operatingCashFlow` and `freeCashFlow`. Is the company actually generating cash from operations, or is it burning cash?
+3.  **Balance Sheet Analysis**: Compare `totalDebt` to `cashAndEquivalents`. Is leverage increasing to dangerous levels?
 
-### Output — return exactly this JSON, nothing else
-{
-  "score": <float between 0 and 1>,
-  "analysis": "<One dense, informative paragraph (150-250 words) that summarizes key trends and financial health, **integrating specific dollar amounts and percentages** from the provided data.>"
-}
+### Scoring Guide
+- **0.0 - 0.3 (Bearish):** Cash burn, declining revenue, rising debt, or negative margins.
+- **0.4 - 0.6 (Neutral):** Stable but stagnant, or mixed signals (e.g., profitable but declining revenue).
+- **0.7 - 1.0 (Bullish):** Accelerating revenue, expanding margins, positive and growing Free Cash Flow.
 
-Provided data:
-{{financial_data}}
-""".replace("{{financial_data}}", content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
+### Output — return exactly this JSON
+{{
+  "score": <float between 0.0 and 1.0>,
+  "analysis": "<One dense paragraph (150-250 words). Synthesize the findings from the three tasks above. You MUST cite specific numbers (e.g., 'Revenue grew to $X...', 'FCF turned negative at -$Y...') to support your verdict.>"
+}}
+""".format(
+        date_str=date_str,
+        financial_trends=json.dumps(financial_trends, indent=2)
+    )
 
-    analysis_json = vertex_ai.generate(prompt)
-    gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
-    gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, analysis_blob_path)
-    return analysis_blob_path
+    try:
+        analysis_json = vertex_ai.generate(prompt)
+        
+        # Basic validation
+        if "{" not in analysis_json:
+            raise ValueError("Model output not JSON")
+
+        gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
+        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, analysis_blob_path)
+        return analysis_blob_path
+
+    except Exception as e:
+        logging.error(f"[{ticker}] Financials analysis failed: {e}")
+        return None
 
 def run_pipeline():
     logging.info("--- Starting Financials Analysis Pipeline ---")
@@ -112,6 +168,8 @@ def run_pipeline():
     if not work_items:
         logging.info("All financials analyses are up-to-date.")
         return
+
+    logging.info(f"Found {len(work_items)} new financial files to analyze.")
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = [executor.submit(process_blob, item) for item in work_items]

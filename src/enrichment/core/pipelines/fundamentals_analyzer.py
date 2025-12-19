@@ -1,25 +1,37 @@
+# enrichment/core/pipelines/fundamentals_analyzer.py
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .. import config, gcs
 from ..clients import vertex_ai
 import os
 import re
+import json
 
 METRICS_INPUT_PREFIX = config.PREFIXES["fundamentals_analyzer"]["input_metrics"]
 RATIOS_INPUT_PREFIX = config.PREFIXES["fundamentals_analyzer"]["input_ratios"]
 FUNDAMENTALS_OUTPUT_PREFIX = config.PREFIXES["fundamentals_analyzer"]["output"]
-
-# --- MODIFIED: A more concise one-shot example ---
-_EXAMPLE_OUTPUT = """{
-  "score": 0.72,
-  "analysis": "The company exhibits a strong bullish fundamental profile. Consistent revenue growth is supported by expanding profitability, highlighted by a rising Return on Equity (ROE) and stable gross margins. While the P/E ratio is elevated, it appears justified by the growth trajectory. The balance sheet is robust, with a declining debt-to-equity ratio and strong liquidity, indicated by a current ratio above 2.0. This combination of growth, profitability, and financial strength points to a favorable outlook."
-}"""
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return (match.group(1), match.group(2)) if match else (None, None)
+
+def _filter_recent_data(json_content: str, periods: int = 5) -> list:
+    """
+    Parses JSON and returns only the most recent 'periods' items.
+    Assumes FMP data is sorted descending by date (newest first).
+    """
+    if not json_content:
+        return []
+    try:
+        data = json.loads(json_content)
+        if isinstance(data, list):
+            # Take the top N items (Current + Trend history)
+            return data[:periods]
+        return []
+    except json.JSONDecodeError:
+        return []
 
 def process_fundamental_files(ticker: str, date_str: str):
     """
@@ -31,58 +43,71 @@ def process_fundamental_files(ticker: str, date_str: str):
 
     logging.info(f"[{ticker}] Generating combined fundamentals analysis for {date_str}")
 
-    metrics_content = gcs.read_blob(config.GCS_BUCKET_NAME, metrics_blob_path)
-    ratios_content = gcs.read_blob(config.GCS_BUCKET_NAME, ratios_blob_path)
+    metrics_raw = gcs.read_blob(config.GCS_BUCKET_NAME, metrics_blob_path)
+    ratios_raw = gcs.read_blob(config.GCS_BUCKET_NAME, ratios_blob_path)
 
-    if not metrics_content or not ratios_content:
+    if not metrics_raw or not ratios_raw:
         logging.error(f"[{ticker}] Missing metrics or ratios data for {date_str}. Skipping.")
         return None
 
-    # --- MODIFIED: Updated prompt for a shorter, more direct analysis ---
-    prompt = r"""You are a sharp equity analyst writing for a fast-paced audience. Evaluate the company’s key metrics and financial ratios to assess its investment attractiveness for the next 6-12 months.
-Use **only** the JSON data provided.
+    # --- FILTERING: Keep only the last 5 quarters to reduce noise ---
+    # This prevents "time travel" hallucinations by limiting the context window.
+    recent_metrics = _filter_recent_data(metrics_raw, periods=5)
+    recent_ratios = _filter_recent_data(ratios_raw, periods=5)
 
-### Key Interpretation Guidelines
-1.  **Holistic View**: Synthesize insights from both metrics and ratios.
-2.  **Profitability & Growth**: Analyze revenue, margins, and returns.
-3.  **Valuation**: Assess valuation multiples in context.
-4.  **Leverage & Liquidity**: Evaluate balance sheet strength.
-5.  **No Material Signals**: If balanced, output a score of 0.50.
+    if not recent_metrics or not recent_ratios:
+        logging.warning(f"[{ticker}] Data files were empty or invalid JSON.")
+        return None
 
-### Example Output (for format only; do not copy values or wording)
-{{example_output}}
+    # --- UPDATED PROMPT: Directs the AI to use both datasets effectively ---
+    prompt = r"""
+You are a sharp equity analyst. Evaluate the company’s Key Metrics and Financial Ratios to assess its investment attractiveness for the next 6-12 months.
 
-### Step-by-Step Reasoning
-1.  Analyze trends in key metrics and financial ratios.
-2.  Synthesize the findings into a cohesive view.
-3.  Map the net result to probability bands:
-    -   0.00-0.30 - clearly bearish
-    -   0.31-0.49 - mildly bearish
-    -   0.50       - neutral / balanced
-    -   0.51-0.69 - moderately bullish
-    -   0.70-1.00 - strongly bullish
-4.  Summarize the most critical factors in one dense paragraph.
+### ANALYSIS DATE: {date_str}
+Treat the data record with date `{date_str}` as the **CURRENT** period. The other records are historical context for identifying trends.
 
-### Output — return exactly this JSON, nothing else
-{
-  "score": <float between 0 and 1>,
-  "analysis": "<One dense paragraph (150-250 words) summarizing the company's fundamental health, combining insights from its key metrics and financial ratios.>"
-}
+### Data Provided
+- **Key Metrics (Last 5 Quarters):** Use this for **Valuation** (PE, EV/EBITDA) and **Per-Share Growth** (Revenue/FCF per share).
+{recent_metrics}
 
-### Provided Data
+- **Financial Ratios (Last 5 Quarters):** Use this for **Efficiency** (Margins, ROE) and **Liquidity** (Current Ratio).
+{recent_ratios}
 
-**Key Metrics:**
-{key_metrics_data}
+### Core Tasks
+1.  **Growth & Valuation**: Are `revenuePerShare` and `freeCashFlowPerShare` growing? Is the valuation (`peRatio`, `priceToSalesRatio`) expanding or contracting?
+2.  **Operational Efficiency**: Check `grossProfitMargin` and `operatingProfitMargin`. Are margins improving or deteriorating?
+3.  **Financial Health**: Check the `debtToEquity` and `currentRatio`. Is the balance sheet getting stronger or weaker?
+4.  **Trend Verdict**: Compare the CURRENT period to the same period 1 year ago (4 quarters prior). Is the business accelerating or slowing down?
 
-**Financial Ratios:**
-{ratios_data}
-""".replace("{{key_metrics_data}}", metrics_content).replace("{{ratios_data}}", ratios_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
+### Scoring
+- **0.0 - 0.3 (Bearish):** Deteriorating fundamentals (falling margins, shrinking revenue, rising debt).
+- **0.4 - 0.6 (Neutral):** Mixed signals (e.g., cheap valuation but falling growth) or stagnation.
+- **0.7 - 1.0 (Bullish):** Improving fundamentals (expanding margins, growth, healthy balance sheet).
 
-    analysis_json = vertex_ai.generate(prompt)
-    gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
-    gcs.cleanup_old_files(config.GCS_BUCKET_NAME, FUNDAMENTALS_OUTPUT_PREFIX, ticker, analysis_blob_path)
+### Output — return exactly this JSON
+{{
+  "score": <float between 0.0 and 1.0>,
+  "analysis": "<One dense paragraph (150-250 words). Start by stating the clear fundamental trend (e.g. 'Profitability is accelerating while valuation remains attractive...'). Cite specific *current* values vs *historical* values to prove your thesis. Conclude with a verdict on the stock's fundamental setup.>"
+}}
+""".format(
+        date_str=date_str,
+        recent_metrics=json.dumps(recent_metrics),
+        recent_ratios=json.dumps(recent_ratios)
+    )
 
-    return analysis_blob_path
+    try:
+        analysis_json = vertex_ai.generate(prompt)
+        
+        if "{" not in analysis_json:
+            raise ValueError("Model output not JSON")
+
+        gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
+        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, FUNDAMENTALS_OUTPUT_PREFIX, ticker, analysis_blob_path)
+        return analysis_blob_path
+
+    except Exception as e:
+        logging.error(f"[{ticker}] Fundamentals analysis failed: {e}")
+        return None
 
 def run_pipeline():
     """
@@ -97,6 +122,7 @@ def run_pipeline():
 
     work_items = []
     for file_name in all_metrics_files:
+        # Check if we have the pair AND if we haven't analyzed it yet
         if file_name in all_ratios_files and file_name not in all_analyses:
             ticker, date_str = parse_filename(file_name)
             if ticker and date_str:

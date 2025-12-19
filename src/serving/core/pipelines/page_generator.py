@@ -12,134 +12,130 @@ from typing import Dict, Optional
 from .. import config, gcs
 from ..clients import vertex_ai
 
-# This script generates the full SEO/teaser/options package for each stock page.
-# In addition to the base fields (symbol, date, bullishScore, fullAnalysis) it
-# produces a nested object containing SEO metadata, a teaser section, related
-# tickers, AI‑driven option ideas, deeper content blocks, conversion copy,
-# internal links and a schema.org snippet. The content is generated via an
-# LLM using a template that combines the company’s outlook and momentum
-# context with its KPIs and aggregated analysis.
-
 INPUT_PREFIX = config.RECOMMENDATION_PREFIX
 OUTPUT_PREFIX = config.PAGE_JSON_PREFIX
-PREP_PREFIX = 'prep/'  # For KPI JSON path
+PREP_PREFIX = 'prep/'
 
-# --- Updated Example (includes all new fields) ---
+# --- SEO-Optimized Example Output ---
+# CRITICAL: This example enforces the schema your web app needs.
+# We added 'faq' here so your frontend can render an Accordion component.
 _EXAMPLE_JSON_FOR_LLM = """
 {
   "seo": {
-    "title": "Is Expedia Group (EXPE) Breaking Out Right Now? | ProfitScout",
-    "metaDescription": "AI-powered analysis signals a momentum-led BUY for Expedia Group (EXPE), with strong technicals, favorable news flow, and supportive earnings tone. Explore the full stock analysis.",
-    "keywords": ["Expedia Group stock", "EXPE stock analysis", "Is EXPE a buy", "AI stock signals 2025", "EXPE technicals"],
-    "h1": "Is EXPE Setting Up for a Call Play? AI Breakout Radar"
+    "title": "Blackstone (BX) Options Trade: Bullish Breakout Signal Detected | ProfitScout",
+    "metaDescription": "ProfitScout AI projects a move to $160 for Blackstone (BX). Strong technicals align with $5B Phoenix Financial investment news. See the full call option strategy.",
+    "keywords": ["Blackstone options trade", "BX stock forecast", "buy BX calls", "Blackstone private credit news", "BX technical analysis"],
+    "h1": "Blackstone (BX) Trade Alert: Bullish Breakout Confirmed"
   },
   "teaser": {
-    "signal": "Moderately Bullish outlook encountering short-term weakness",
-    "summary": "EXPE shows a momentum breakout supported by positive headlines and stable fundamentals.",
+    "signal": "Strongly Bullish outlook with confirming positive momentum",
+    "summary": "Blackstone is staging a technical breakout above $146, fueled by a major $5B capital injection from Phoenix Financial.",
     "metrics": {
-      "Price Trend": "Uptrend with higher highs",
-      "Volume Confirmation": "Above-average volume on advances",
-      "Guidance Tone": "Improving quarter over quarter"
+      "Trend": "Uptrend (Above 50 SMA)",
+      "Momentum": "RSI Reset & Rising (Bullish)",
+      "Vol": "Low IV Rank (Cheap Premiums)"
     }
   },
-  "relatedStocks": ["BKNG", "ABNB", "TRIP"],
+  "relatedStocks": ["KKR", "APO", "ARES"],
   "aiOptionsPicks": [
     {
       "strategy": "Buy Call",
-      "rationale": "Bullish outlook with positive momentum supports upside bet.",
-      "details": {"expiration": "2025-10-18", "strike": 150, "premium": "5.00 (est)", "impliedVol": "30% (from hist vol)"},
-      "riskReward": {"maxLoss": "Premium paid", "breakeven": "Strike + premium", "potential": "Profits if stock rises"}
+      "rationale": "Volatility is underpriced relative to the breakout potential driven by the new capital inflow catalyst.",
+      "details": {"expiration": "2025-11-21", "strike": 150, "premium": "3.50 (est)", "impliedVol": "Low"},
+      "riskReward": {"maxLoss": "Premium Paid", "breakeven": "153.50", "potential": "Unlimited upside"}
     }
   ],
   "contentBlocks": {
-    "whyThisMatters": "Brief explanation of why the current technical setup and fundamental backdrop matter for options traders.",
-    "catalystsToWatch": ["Upcoming earnings call", "Sector rotation into travel stocks"],
-    "riskFactors": ["Macro slowdown could hurt travel demand", "Rising fuel costs may pressure margins"]
+    "thesis": "Detailed paragraph explaining the confluence of the $138 support bounce and the news catalyst.",
+    "catalysts": ["$5B Phoenix Financial Investment", "Q3 Fee Earnings Growth (+15%)"],
+    "risks": ["Failure to hold $146 support", "Rate hike fears impacting real estate sector"]
   },
-  "conversion": {
-    "ctaBanner": "Get Tomorrow’s Options Setups Before Market Open",
-    "ctaSubtext": "Daily AI-scored call/put ideas on 1,000+ tickers, plus momentum and IV scans.",
-    "primaryAction": "Start Free Access",
-    "credibilityBullets": [
-      "We scan call/put setups across 1,000+ tickers every day.",
-      "We track implied volatility versus historical volatility.",
-      "We summarize earnings tone and guidance into simple momentum signals."
-    ]
-  },
+  "faq": [
+    {
+      "question": "Is Blackstone (BX) stock a buy right now?",
+      "answer": "ProfitScout's AI model rates BX as 'Strongly Bullish' as of Oct 25, 2025. The stock has reclaimed its 21-day EMA and is supported by rising fee-related earnings."
+    },
+    {
+      "question": "What is the price target for BX?",
+      "answer": "Technical analysis suggests an immediate upside target of $160 (recent resistance), with a secondary measured move target of $175 if volume sustains."
+    }
+  ],
   "internalLinks": [
-    {"label": "Top Call Option Setups Today", "url": "/options/call-setups"},
-    {"label": "Unusual Options Flow Scanner", "url": "/scanner/unusual-flow"},
-    {"label": "More on EXPE", "url": "/stocks/EXPE"}
+    {"label": "Compare to KKR Options", "url": "/stocks/KKR"},
+    {"label": "Today's Top Financial Sector Trades", "url": "/sectors/financials"}
   ],
   "schemaOrg": {
     "@context": "https://schema.org",
-    "@type": "FinancialProduct",
-    "name": "Expedia Group (EXPE) options outlook",
-    "description": "Example description of the outlook and momentum context.",
-    "provider": {"name": "ProfitScout", "url": "https://profitscout.app"}
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Is Blackstone (BX) stock a buy right now?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "ProfitScout's AI model rates BX as 'Strongly Bullish'..."
+        }
+      }
+    ]
   }
 }
 """
 
-# --- Updated Prompt ---
+# --- ENHANCED PROMPT: SEO Specialist Persona ---
 _PROMPT_TEMPLATE = r"""
-You are an expert financial copywriter and SEO analyst specializing in AI-powered options trades. Your task is to generate a JSON object with multiple sections based on the provided analysis.
+You are an elite SEO Strategist and Financial Editor. Your goal is to create a high-ranking content package for the stock **{ticker}** ({company_name}).
+We want to capture search traffic for terms like "{ticker} options trade", "{ticker} forecast", and specific questions about the stock's current movement.
 
-### Signal Policy (Crucial)
-- **Use the Provided Signals**: Your primary directive is to use the `Outlook Signal` and `Momentum Context` provided below.
-- **Combine for Teaser**: The `teaser.signal` MUST be a direct combination of the `Outlook Signal` and the `Momentum Context`. For example: "Strongly Bullish outlook with confirming positive momentum."
-- **Momentum-First Narrative**: Prioritize technicals and KPIs (trend, RSI, volatility) for your rationale, especially for the `aiOptionsPicks`.
+### 1. Keyword & Entity Strategy
+* **Identify the 'Why':** Why is the stock moving? (e.g. "Earnings Beat", "FDA Approval", "Rate Cut"). Use these semantic terms in your writing.
+* **Identify the 'What':** What pattern is forming? (e.g. "Bull Flag", "Oversold Bounce"). Use these technical terms.
 
-### Options Focus
-- **Directional Trades**: A "Bullish" `Outlook Signal` should lead to "Buy Call" strategies. A "Bearish" `Outlook Signal` should lead to "Buy Put" strategies. A "Neutral" signal should result in an empty `aiOptionsPicks` array.
-- **Rationale**: The rationale for each pick must tie back to the provided KPIs and analysis.
-- **Hedged Trades (Advanced)**:
-    - If a "Bullish" outlook has "short-term weakness," you can suggest a secondary, speculative "Buy Put" as a hedge.
-    - If a "Bearish" outlook has a "short-term rally," you can suggest a secondary, speculative "Buy Call" to play the bounce.
+### 2. Required JSON Sections
+Generate a JSON object matching the exact keys in the example below.
 
-### Required Sections
-Your output MUST be a valid JSON object containing the following top-level keys:
+**A. SEO Metadata (`seo`)**
+* `title`: Punchy, click-worthy (~60 chars). Pattern: "{company_name} ({ticker}) Options: [Signal] Setup & Targets".
+* `metaDescription`: Front-load the catalyst. "AI detects [Signal] for {ticker} driven by [Catalyst]. Targets: [Price]. Trade details inside." (~155 chars).
+* `h1`: A strong headline summarizing the trade thesis.
 
-1. **seo** – Include `title` (~60–70 characters, end with "| ProfitScout"), `metaDescription` (~150–160 characters), `keywords` (6–10 long-tail phrases), and `h1` (a human-friendly headline). All text must reference the specific ticker and company name.
-2. **teaser** – Include `signal` (combination of Outlook Signal and Momentum Context), a two-sentence `summary` (setup and why traders should care), and three `metrics` derived from KPIs or technical context.
-3. **relatedStocks** – An array of 2–3 competitor tickers from the same sector.
-4. **aiOptionsPicks** – Up to two option ideas with `strategy`, `rationale`, `details` (include expiration, strike, premium, impliedVol), and `riskReward` (maxLoss, breakeven, potential). Leave empty if signal is Neutral.
-5. **contentBlocks** – An object containing:
-    - `whyThisMatters`: 2–3 sentences explaining the technical setup and why options traders care.
-    - `catalystsToWatch`: A bullet list of upcoming events or drivers (earnings, product launches, macro events) gleaned from the analysis.
-    - `riskFactors`: A bullet list of conditional statements on what could go wrong (e.g. disappointing earnings, macro shocks).
-6. **conversion** – Include a short `ctaBanner`, a `ctaSubtext` summarizing the value of signing up, a `primaryAction` button label, and 2–3 `credibilityBullets` about the platform’s capabilities (never promise profits).
-7. **internalLinks** – At least three internal link objects with `label` and `url` for deeper exploration (mix global and ticker-specific routes).
-8. **schemaOrg** – A JSON-LD snippet with `@context`, `@type` set to "FinancialProduct", `name` set to "{company_name} ({ticker}) options outlook", a factual `description` adapted from your teaser summary, and a `provider` object.
+**B. Teaser & Content (`teaser`, `contentBlocks`)**
+* `teaser.summary`: 2 sentences connecting the technical setup to the fundamental catalyst.
+* `contentBlocks.thesis`: A rich paragraph. Use specific numbers (prices, dates, percentages) from the input text.
+* `contentBlocks.catalysts`: Short, punchy bullet points of the specific drivers.
+
+**C. FAQ Schema (`faq`) - CRITICAL FOR SEO**
+* Generate 2-3 high-value Questions & Answers based *specifically* on the analysis provided.
+* Q1: "Is {ticker} a buy or sell right now?" (Answer using the Signal and Score).
+* Q2: "Why is {ticker} stock moving?" (Answer citing the specific news/catalyst).
+* Q3: "What is the next price target for {ticker}?" (Answer using the Resistance/Support levels).
+
+**D. Options Strategy (`aiOptionsPicks`)**
+* Based on the `Outlook Signal`, suggest a Directional Trade (Call for Bullish, Put for Bearish).
+* If Neutral, leave array empty.
+
+**E. Schema.org (`schemaOrg`)**
+* Generate a valid `FAQPage` JSON-LD object using the questions from the `faq` section above.
 
 ### Input Data
 - **Ticker**: {ticker}
-- **Company Name**: {company_name}
-- **Current Year**: {year}
-- **Outlook Signal**: {outlook_signal}
-- **Momentum Context**: {momentum_context}
-- **KPIs (Dashboard Metrics)**: {kpis_json}
-- **Recommendation MD (Outlook)**: {recommendation_md}
-- **Full Aggregated Analysis**: {aggregated_text}
+- **Date**: {run_date}
+- **Signal**: {outlook_signal} {momentum_context}
+- **Full Analysis**:
+{aggregated_text}
 
 ### Output Instructions
-Return only the JSON object. Do not wrap it in markdown or any other text. Follow the structure of the example closely.
+Return ONLY the JSON object. No markdown formatting.
 
-### Example Output (JSON only)
+### Example JSON Structure
 {example_json}
 """
 
 def _clean_aggregated_text(text: str) -> str:
-    """
-    A simple cleaning function to replace escaped double quotes with single quotes.
-    """
     if not text or not isinstance(text, str):
         return ""
     return text.replace('\\"', "'")
 
-
 def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
-    """Splits aggregated_text into a dictionary of its component sections."""
     sections = re.split(r'\n\n---\n\n', aggregated_text.strip())
     section_dict = {}
     for section in sections:
@@ -147,25 +143,11 @@ def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
         if match:
             key = match.group(1).lower().replace(' ', '')
             text = match.group(2).strip()
-            key_map = {
-                "news": "newsSummary",
-                "technicals": "technicals",
-                "mda": "mdAndA",
-                "transcript": "earningsCall",
-                "financials": "financials",
-                "fundamentals": "fundamentals"
-            }
-            final_key = key_map.get(key, key)
-            section_dict[final_key] = text
-        elif section.startswith("## About"):
-            section_dict["about"] = re.sub(r'## About\n\n', '', section).strip()
+            section_dict[key] = text
     return section_dict
 
-
 def _get_data_from_bq(ticker: str, run_date: str) -> Optional[Dict]:
-    """
-    Fetches aggregated_text, weighted_score, and company_name for a specific ticker and date.
-    """
+    """Fetches analysis text and scores from BigQuery."""
     try:
         client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
         query = f"""
@@ -189,27 +171,16 @@ def _get_data_from_bq(ticker: str, run_date: str) -> Optional[Dict]:
         df = client.query(query, job_config=job_config).to_dataframe()
         return df.to_dict('records')[0] if not df.empty else None
     except Exception as e:
-        logging.error(f"[{ticker}] Failed to fetch BQ data for {run_date}: {e}", exc_info=True)
+        logging.error(f"[{ticker}] BQ Fetch failed: {e}")
         return None
 
-
 def _delete_old_page_files(ticker: str):
-    """Deletes all previous page JSON files for a given ticker."""
     prefix = f"{OUTPUT_PREFIX}{ticker}_page_"
-    blobs_to_delete = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
-    for blob_name in blobs_to_delete:
-        try:
-            gcs.delete_blob(config.GCS_BUCKET_NAME, blob_name)
-        except Exception as e:
-            logging.error(f"[{ticker}] Failed to delete old page file {blob_name}: {e}")
-
+    blobs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix)
+    for blob in blobs:
+        gcs.delete_blob(config.GCS_BUCKET_NAME, blob)
 
 def process_blob(blob_name: str) -> Optional[str]:
-    """
-    Processes one recommendation blob to generate a page JSON. It pulls the aggregated
-    analysis, KPI metrics, and recommendation context, calls an LLM to generate
-    the SEO/teaser/options package, and writes the combined result to GCS.
-    """
     dated_format_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$')
     file_name = os.path.basename(blob_name)
     match = dated_format_regex.match(file_name)
@@ -219,106 +190,71 @@ def process_blob(blob_name: str) -> Optional[str]:
     ticker, run_date_str = match.groups()
 
     bq_data = _get_data_from_bq(ticker, run_date_str)
-    if not bq_data or not bq_data.get("company_name"):
-        logging.error(f"[{ticker}] Could not find BQ data or company name for {run_date_str}.")
+    if not bq_data:
+        logging.error(f"[{ticker}] No data in BigQuery for {run_date_str}")
         return None
 
-    # Clean the aggregated_text immediately after fetching it.
     aggregated_text = _clean_aggregated_text(bq_data.get("aggregated_text"))
-    weighted_score = bq_data.get("weighted_score")
-    company_name = bq_data.get("company_name")
+    weighted_score = bq_data.get("weighted_score", 0.5)
+    company_name = bq_data.get("company_name", ticker)
 
-    full_analysis_sections = _split_aggregated_text(aggregated_text)
+    bullish_score = round((weighted_score - 0.5) * 20 + 50, 2) 
 
-    bullish_score = round((weighted_score - 0.5) * 20, 2) if weighted_score is not None else 0.0
-
-    # Start building the final JSON with static fields.
-    final_json = {
-        "symbol": ticker,
-        "date": run_date_str,
-        "bullishScore": bullish_score,
-        "fullAnalysis": full_analysis_sections
-    }
-
-    recommendation_json_path = blob_name.replace('.md', '.json')
-    recommendation_md = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-    try:
-        rec_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, recommendation_json_path)
-        rec_data = json.loads(rec_json_str) if rec_json_str else {}
-        outlook_signal = rec_data.get("outlook_signal", "Neutral / Mixed")
+    rec_json_path = blob_name.replace('.md', '.json')
+    rec_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, rec_json_path)
+    if rec_json_str:
+        rec_data = json.loads(rec_json_str)
+        outlook_signal = rec_data.get("outlook_signal", "Neutral")
         momentum_context = rec_data.get("momentum_context", "")
-    except Exception as e:
-        logging.error(f"[{ticker}] Failed to fetch or parse recommendation JSON: {e}")
-        outlook_signal = "Neutral / Mixed"
+    else:
+        outlook_signal = "Neutral"
         momentum_context = ""
 
     kpi_path = f"{PREP_PREFIX}{ticker}_{run_date_str}.json"
-    try:
-        kpis_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, kpi_path)
-        kpis_json = json.loads(kpis_json_str) if kpis_json_str else {}
-    except Exception as e:
-        logging.error(f"[{ticker}] Failed to fetch or parse KPI JSON: {e}")
-        kpis_json = {}
+    kpis_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, kpi_path)
+    kpis_json = json.loads(kpis_json_str) if kpis_json_str else {}
 
     prompt = _PROMPT_TEMPLATE.format(
         ticker=ticker,
         company_name=company_name,
-        year=date.today().year,
+        run_date=run_date_str,
         outlook_signal=outlook_signal,
         momentum_context=momentum_context,
         kpis_json=json.dumps(kpis_json, indent=2),
-        recommendation_md=recommendation_md,
         aggregated_text=aggregated_text,
         example_json=_EXAMPLE_JSON_FOR_LLM,
     )
 
-    json_blob_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date_str}.json"
-    logging.info(f"[{ticker}] Generating SEO/Teaser/Options JSON for {run_date_str}.")
-
-    llm_response_str = ""
     try:
-        # Call the LLM via Vertex AI. It should return a raw JSON string as described in the prompt.
-        llm_response_str = vertex_ai.generate(prompt)
+        llm_response = vertex_ai.generate(prompt)
+        clean_json = llm_response.replace("```json", "").replace("```", "").strip()
+        generated_data = json.loads(clean_json)
 
-        # Strip markdown fences if present
-        if llm_response_str.strip().startswith("```json"):
-            match = re.search(r'\{.*\}', llm_response_str, re.DOTALL)
-            if match:
-                llm_response_str = match.group(0)
+        final_json = {
+            "symbol": ticker,
+            "date": run_date_str,
+            "bullishScore": bullish_score,
+            "fullAnalysis": _split_aggregated_text(aggregated_text)
+        }
+        final_json.update(generated_data)
 
-        llm_generated_data = json.loads(llm_response_str)
-        # Merge the generated package into the final JSON. Keys like seo, teaser,
-        # relatedStocks, aiOptionsPicks, contentBlocks, conversion, internalLinks,
-        # and schemaOrg will now be present.
-        final_json.update(llm_generated_data)
-
-        # Delete any previous page files for this ticker and write the new one.
+        output_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date_str}.json"
         _delete_old_page_files(ticker)
-        gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(final_json, indent=2), "application/json")
-        logging.info(f"[{ticker}] Successfully uploaded complete JSON file to {json_blob_path}")
-        return json_blob_path
+        gcs.write_text(config.GCS_BUCKET_NAME, output_path, json.dumps(final_json, indent=2), "application/json")
+        
+        logging.info(f"[{ticker}] Generated SEO Page JSON: {output_path}")
+        return output_path
 
-    except (json.JSONDecodeError, ValueError, AttributeError) as e:
-        logging.error(f"[{ticker}] Failed to generate/parse LLM JSON. Error: {e}. Response: '{llm_response_str}'")
-        return None
     except Exception as e:
-        logging.error(f"[{ticker}] An unexpected error occurred: {e}", exc_info=True)
+        logging.error(f"[{ticker}] Page Gen Failed: {e}", exc_info=True)
         return None
-
 
 def run_pipeline():
-    """
-    Finds all available recommendations and generates a fresh page JSON for each.
-    """
-    logging.info("--- Starting Page Generation Pipeline ---")
-
+    logging.info("--- Starting Page Generation Pipeline (SEO Optimized) ---")
     work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-
+    
     if not work_items:
-        logging.info("No recommendation files found to process.")
         return
-
-    logging.info(f"Found {len(work_items)} recommendations to process into pages.")
 
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_RECOMMENDER) as executor:
@@ -327,4 +263,4 @@ def run_pipeline():
             if future.result():
                 processed_count += 1
 
-    logging.info(f"--- Page Generation Pipeline Finished. Processed {processed_count} new pages. ---")
+    logging.info(f"--- Page Generation Finished. Processed {processed_count} pages. ---")

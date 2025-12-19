@@ -11,12 +11,6 @@ import json
 INPUT_PREFIX = config.PREFIXES["mda_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["mda_analyzer"]["output"]
 
-_EXAMPLE_OUTPUT = """{
-  "score": 0.48,
-  "analysis": "AAON's management discussion reveals a mixed operational picture. While the total backlog grew an impressive 53.1% to $995.3 million, driven by strong demand for BASX data center solutions, this has strained liquidity. Net sales for the quarter were flat, decreasing 0.6%, with strong BASX growth offset by an 18.0% decline in the AAON Oklahoma segment due to supply chain and ERP implementation issues. Gross profit margin saw a significant contraction from 36.1% to 26.6%, reflecting production challenges. A key concern is the negative operating cash flow of -$31.0 million for the first six months, a sharp reversal from a $127.9 million inflow in the prior year, highlighting the working capital needed to support the growing backlog."
-}"""
-
-
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
@@ -50,6 +44,7 @@ def process_blob(blob_name: str):
     
     prompt = r"""You are a sharp financial analyst evaluating a company’s Management’s Discussion & Analysis (MD&A) to find signals that may influence the stock over the next 1-3 months.
 Use **only** the provided MD&A text. Your analysis **must** be grounded in the data.
+
 ### Core Task & Data Integration
 Summarize and analyze the most critical information, citing specific figures:
 1.  **Results of Operations**: How did total `Net Sales` change year-over-year for the three-month period? What was the `Gross Profit` margin for the current quarter versus the prior year?
@@ -60,8 +55,6 @@ Summarize and analyze the most critical information, citing specific figures:
 ### CRITICAL FORMATTING RULE
 - When including direct quotes or phrases in the 'analysis' text, you MUST use single quotes ('), not double quotes (").
 
-### Example Output (for format and tone; do not copy values)
-{{example_output}}
 ### Step-by-Step Reasoning
 1.  Identify and extract the specific data points required by the guidelines from the text.
 2.  Analyze the trends and absolute values of these metrics.
@@ -72,14 +65,16 @@ Summarize and analyze the most critical information, citing specific figures:
     -   0.51-0.69 → moderately bullish
     -   0.70-1.00 → strongly bullish
 4.  Summarize the key factors into one dense paragraph, integrating the specific data points you identified.
+
 ### Output — return exactly this JSON, nothing else
 {
   "score": <float between 0 and 1>,
   "analysis": "<One dense paragraph (150-250 words) summarizing key factors, balance-sheet strength, cash-flow trajectory, and management outlook, **integrating specific figures** from the MD&A.>"
 }
+
 Provided MD&A text:
 {{mda_content}}
-""".replace("{{mda_content}}", mda_content).replace("{{example_output}}", _EXAMPLE_OUTPUT)
+""".replace("{{mda_content}}", mda_content)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
