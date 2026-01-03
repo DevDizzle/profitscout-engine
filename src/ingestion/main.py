@@ -252,25 +252,19 @@ def refresh_stock_metadata_http(request: Request):
     return "Stock metadata refresh pipeline finished.", 200
 
 
-@functions_framework.cloud_event
-def refresh_transcripts(cloud_event):
+@functions_framework.http
+def refresh_transcripts(request: Request):  # Change signature to accept 'request'
     """
-    Pub/Sub-triggered function to run the transcript collector pipeline.
-
-    Args:
-        cloud_event: The CloudEvent object.
-
-    Returns:
-        A tuple containing a success message and HTTP status code 200.
-
-    Raises:
-        ConnectionError: If required clients are not initialized.
+    HTTP-triggered function to run the transcript collector pipeline.
     """
-    if not all([storage_client, bq_client, fmp_client]):
+    # Ensure all clients are initialized (add polygon/sec if needed, though mostly just storage/fmp)
+    if not all([storage_client, fmp_client]):
         logging.error("Transcript clients not initialized.")
-        raise ConnectionError("Server config error: transcript clients not initialized.")
+        return "Server config error: transcript clients not initialized.", 500
+    
+    # Run the pipeline
     transcript_collector.run_pipeline(fmp_client, bq_client, storage_client)
-    return "Transcript collection pipeline finished successfully.", 200
+    return "Transcript collection pipeline started.", 202
 
 
 @functions_framework.http

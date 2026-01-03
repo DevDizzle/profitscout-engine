@@ -127,3 +127,9 @@ class FMPClient:
         params = {'quarter': quarter, 'year': year}
         data = self._make_request(f"earning_call_transcript/{ticker}", params=params)
         return data[0] if isinstance(data, list) and data else None
+
+    def get_latest_transcript(self, ticker: str) -> dict | None:
+        """Fetches the most recent earnings call transcript (limit 1)."""
+        params = {"limit": 1}
+        data = self._make_request(f"earning_call_transcript/{ticker}", params=params)
+        return data[0] if isinstance(data, list) and data else None

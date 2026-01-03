@@ -1,46 +1,55 @@
 # enrichment/core/pipelines/transcript_analyzer.py
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .. import config, gcs, bq
+from .. import config, gcs
 from ..clients import vertex_ai
 import os
 import re
 import json
 
-# CORRECTED: Input is now the raw transcript from the analyzer's own config
 INPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["input"] 
 OUTPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["output"]
+
+def parse_filename(blob_name: str):
+    """Parses filenames like 'AAL_2025-06-30.json'."""
+    pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
+    match = pattern.search(os.path.basename(blob_name))
+    return (match.group(1), match.group(2)) if match else (None, None)
 
 def read_transcript_content(raw_json: str) -> str | None:
     """Extracts the 'content' from the raw transcript JSON."""
     try:
         data = json.loads(raw_json)
+        # Handle case where data might be a list (older files) or a dict (newer files)
         if isinstance(data, list) and data:
             data = data[0]
         return data.get("content")
     except (json.JSONDecodeError, TypeError, IndexError):
         return None
 
-def process_transcript(ticker: str, date_str: str):
+def process_blob(blob_name: str):
     """
-    Processes a single, raw transcript file based on the
-    ticker and date from the BigQuery work list.
+    Processes a single raw transcript file from GCS.
     """
-    input_blob_name = f"{INPUT_PREFIX}{ticker}_{date_str}.json"
+    ticker, date_str = parse_filename(blob_name)
+    if not ticker or not date_str:
+        return None
+
     output_blob_name = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
+    logging.info(f"[{ticker}] Generating transcript analysis for {date_str}")
     
-    logging.info(f"[{ticker}] Generating direct transcript analysis for {date_str}")
-    
-    raw_json_content = gcs.read_blob(config.GCS_BUCKET_NAME, input_blob_name)
+    # 1. Read Raw Content
+    raw_json_content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
     if not raw_json_content:
-        logging.error(f"[{ticker}] Could not read raw transcript content from {input_blob_name}")
+        logging.error(f"[{ticker}] Could not read raw transcript content from {blob_name}")
         return None
         
     transcript_content = read_transcript_content(raw_json_content)
     if not transcript_content:
-        logging.error(f"[{ticker}] Could not extract 'content' from {input_blob_name}")
+        logging.error(f"[{ticker}] Could not extract 'content' from {blob_name}")
         return None
     
+    # 2. Analyze with Vertex AI
     prompt = r"""
 You are a sharp financial analyst evaluating an earnings call transcript to find signals that may influence the stock over the next 1–3 months.
 Use **only** the full transcript provided. Your analysis **must** be grounded in the data.
@@ -77,42 +86,52 @@ Provided Transcript:
 {{transcript_content}}
 """.replace("{{transcript_content}}", transcript_content)
 
-    analysis_json = vertex_ai.generate(prompt)
-    gcs.write_text(config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json")
-    
-    gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, output_blob_name)
-    
-    return output_blob_name
+    try:
+        analysis_json = vertex_ai.generate(prompt)
+        
+        # Simple validation
+        if "{" not in analysis_json:
+            raise ValueError("Model output not JSON")
+
+        gcs.write_text(config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json")
+        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, output_blob_name)
+        
+        return output_blob_name
+
+    except Exception as e:
+        logging.error(f"[{ticker}] Transcript analysis failed: {e}")
+        return None
 
 def run_pipeline():
     """
-    Runs the transcript analysis pipeline by first querying BigQuery for the
-    latest work items and then processing only those that are missing.
+    Finds and processes new transcript files that have not yet been analyzed.
     """
     logging.info("--- Starting Direct Transcript Analysis Pipeline ---")
     
-    work_list_df = bq.get_latest_transcript_work_list()
-    if work_list_df.empty:
-        logging.info("No work items returned from BigQuery. Exiting.")
-        return
-
-    work_items = []
-    for _, row in work_list_df.iterrows():
-        ticker = row['ticker']
-        date_str = row['date_str']
-        expected_output = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
-        
-        if not gcs.blob_exists(config.GCS_BUCKET_NAME, expected_output):
-            work_items.append((ticker, date_str))
+    # 1. List all available raw transcripts
+    all_inputs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
+    
+    # 2. List all existing analyses
+    all_analyses = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX))
+    
+    # 3. Determine work items (Input exists but Output doesn't)
+    work_items = [
+        blob for blob in all_inputs 
+        if f"{OUTPUT_PREFIX}{os.path.basename(blob)}" not in all_analyses
+    ]
             
     if not work_items:
-        logging.info("All latest transcript analyses are already up-to-date.")
+        logging.info("All transcripts are already analyzed.")
         return
 
     logging.info(f"Found {len(work_items)} new transcripts to analyze.")
     
+    processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-        futures = [executor.submit(process_transcript, ticker, date_str) for ticker, date_str in work_items]
-        count = sum(1 for future in as_completed(futures) if future.result())
+        futures = {executor.submit(process_blob, blob): blob for blob in work_items}
         
-    logging.info(f"--- Transcript Analysis Pipeline Finished. Processed {count} new files. ---")
+        for future in as_completed(futures):
+            if future.result():
+                processed_count += 1
+        
+    logging.info(f"--- Transcript Analysis Pipeline Finished. Processed {processed_count} new files. ---")

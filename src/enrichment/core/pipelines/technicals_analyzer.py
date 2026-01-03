@@ -13,6 +13,16 @@ INPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["input"]
 PRICE_INPUT_PREFIX = "prices/"
 OUTPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["output"]
 
+# --- CONFIG: Reduce Noise for LLM ---
+HISTORY_WINDOW_DAYS = 30 
+KEEP_INDICATORS = {
+    "date", 
+    "RSI_14", 
+    "MACD_12_26_9", "MACDh_12_26_9", # MACD Line and Histogram
+    "SMA_50", "SMA_200", "EMA_21", 
+    "OBV" # On-Balance Volume for confirming breakouts
+}
+
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_technicals.json'."""
     pattern = re.compile(r"([A-Z.]+)_technicals\.json$")
@@ -24,6 +34,20 @@ def get_latest_data_point(data_list):
     if isinstance(data_list, list) and data_list:
         return data_list[-1]
     return {}
+
+def _filter_indicators(tech_list: list[dict]) -> list[dict]:
+    """
+    Strips out noisy columns (e.g. BBL, ADX, STOCH) to focus the LLM 
+    on Price + Core Momentum/Trend.
+    """
+    clean_list = []
+    for row in tech_list:
+        clean_row = {k: v for k, v in row.items() if k in KEEP_INDICATORS}
+        # Ensure date is always present if it wasn't in KEEP_INDICATORS
+        if "date" in row:
+            clean_row["date"] = row["date"]
+        clean_list.append(clean_row)
+    return clean_list
 
 def process_blob(technicals_blob_name: str):
     """Processes one daily technicals file to identify chart patterns and setups."""
@@ -50,18 +74,27 @@ def process_blob(technicals_blob_name: str):
     price_json = json.loads(price_content)
     price_list = price_json.get("prices", [])
 
-    # 3. CRITICAL FIX: Extract the LATEST snapshot in Python
-    # We strip the lists down to just the last 60 days to reduce noise,
-    # but we explicitly pull the very last row for the "Current Status".
-    
+    # --- CRITICAL FIX: Synchronize Sort Order (Oldest -> Newest) ---
+    # FMP prices come Descending (Newest first). We MUST sort Ascending.
+    try:
+        price_list.sort(key=lambda x: x.get("date", ""))
+        technicals_list.sort(key=lambda x: x.get("date", ""))
+    except Exception as e:
+        logging.error(f"[{ticker}] Critical sorting error: {e}", exc_info=True)
+        return None
+
+    # 3. Extract the TRUE Latest Snapshot (Post-Sort)
     latest_tech = get_latest_data_point(technicals_list)
     latest_price = get_latest_data_point(price_list)
     
     current_date = latest_price.get("date", "Unknown")
     
-    # Slice for context (last 45 days is enough for pattern rec)
-    recent_prices = price_list[-45:]
-    recent_techs = technicals_list[-45:]
+    # 4. Prune Data: Last 30 Days + Filtered Indicators
+    # Reduces token count and forces model to look at short-term structure.
+    recent_prices = price_list[-HISTORY_WINDOW_DAYS:]
+    
+    raw_recent_techs = technicals_list[-HISTORY_WINDOW_DAYS:]
+    recent_techs = _filter_indicators(raw_recent_techs)
 
     # --- ENHANCED PROMPT: Explicit Current State Anchor ---
     prompt = r"""
@@ -69,7 +102,7 @@ You are a master technical analyst. Analyze the provided data to identify the CU
 
 ### DATA HIERARCHY (CRITICAL)
 1. **CURRENT SNAPSHOT**: This is the ABSOLUTE TRUTH for price and indicators right now. You must NOT cite data older than this date as "current".
-2. **Recent History**: Use this only to determine the trend (e.g., is the stock rising into this price, or falling into it?).
+2. **Recent History (30 Days)**: Use this only to identify the Formation/Pattern (e.g., Bull Flag, Double Bottom, Channel).
 
 ### Current Snapshot ({current_date})
 - **Price:** {latest_price}
@@ -78,7 +111,7 @@ You are a master technical analyst. Analyze the provided data to identify the CU
 ### Task
 1.  **Trend Identification**: Look at the `Recent History`. Is the stock making higher highs (Uptrend) or lower lows (Downtrend)?
 2.  **Current Status**: Look at the `Current Snapshot`. Is RSI overbought (>70) or oversold (<30) *TODAY*? Where is the price relative to the SMA_50 *TODAY*?
-3.  **Pattern Recognition**: Identify the pattern forming over the last 10-20 data points (e.g., Bull Flag, Consolidation, Parabolic Extension).
+3.  **Pattern Recognition**: Identify the pattern forming over the last 15-30 days (e.g., Bull Flag, Consolidation, Parabolic Extension).
 
 ### Scoring Rules
 - **0.80 - 1.00 (Bullish Breakout):** Price is trending up AND consolidating near highs OR breaking out on volume.
@@ -99,14 +132,16 @@ Return strictly valid JSON.
   "analysis": "<string>"
 }}
 
-### Historical Context (Last 45 Days)
+### Historical Context (Last {window} Days)
 Prices: {recent_prices}
 Indicators: {recent_techs}
 """.format(
         ticker=ticker,
         current_date=current_date,
+        window=HISTORY_WINDOW_DAYS,
         latest_price=json.dumps(latest_price),
-        latest_tech=json.dumps(latest_tech),
+        # Filter the latest snapshot too for consistency
+        latest_tech=json.dumps({k: v for k, v in latest_tech.items() if k in KEEP_INDICATORS}),
         recent_prices=json.dumps(recent_prices),
         recent_techs=json.dumps(recent_techs)
     )
