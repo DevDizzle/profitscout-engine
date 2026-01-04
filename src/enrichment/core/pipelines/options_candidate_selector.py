@@ -40,7 +40,15 @@ def _create_candidates_table(bq: bigquery.Client):
     ),
     ml_picks AS (
       -- [NEW] Fetch Top 10 ML Predictions for today (Global Rank)
-      SELECT ticker, contract_type AS ml_direction, prob
+      -- Normalize contract_type: LONG -> CALL, SHORT -> PUT to match Option Types
+      SELECT 
+        ticker, 
+        CASE 
+            WHEN UPPER(contract_type) IN ('LONG', 'CALL') THEN 'CALL'
+            WHEN UPPER(contract_type) IN ('SHORT', 'PUT') THEN 'PUT'
+            ELSE UPPER(contract_type)
+        END AS ml_direction, 
+        prob
       FROM `{DAILY_PRED_TABLE}`
       WHERE date = (SELECT MAX(date) FROM `{DAILY_PRED_TABLE}`)
       QUALIFY ROW_NUMBER() OVER (ORDER BY prob DESC) <= 10
@@ -125,6 +133,10 @@ def _create_candidates_table(bq: bigquery.Client):
                     e.spread_pct <= 0.50                -- Allow up to 50% spread
                     AND (e.vol_nz > 0 OR e.oi_nz > 100) -- Minimal liquidity proof
                     AND e.dte BETWEEN 5 AND 25          -- Target the immediate move
+                    AND (                               -- [NEW] Moneyness Guardrail
+                        (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.90 AND 1.20) OR
+                        (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.90 AND 1.20)
+                    )
                 )
             )
             OR
@@ -136,7 +148,7 @@ def _create_candidates_table(bq: bigquery.Client):
                 AND (s.weighted_score >= 0.70 OR s.weighted_score <= 0.30 OR s.news_score >= 0.90)
                 AND (
                     e.spread_pct <= 0.25
-                    AND e.vol_nz >= 50
+                    AND e.vol_nz >= 150         -- [UPDATED] Increased from 50 to 150 (Ghost Town Filter)
                     AND e.dte BETWEEN 10 AND 60
                     AND (
                         (e.option_type_lc = 'call' AND e.mny_call BETWEEN 1.00 AND 1.15) OR
@@ -152,7 +164,7 @@ def _create_candidates_table(bq: bigquery.Client):
                 s.weighted_score IS NOT NULL
                 AND (s.weighted_score BETWEEN 0.30 AND 0.70)
                 AND (
-                    e.spread_pct <= 0.20
+                    e.spread_pct <= 0.15        -- [UPDATED] Tightened from 0.20 to 0.15 (Efficiency Filter)
                     AND e.vol_nz >= 500
                     AND e.oi_nz >= 200
                     AND e.dte BETWEEN 14 AND 45
