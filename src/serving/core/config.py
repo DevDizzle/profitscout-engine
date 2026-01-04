@@ -39,8 +39,6 @@ PRICE_DATA_TABLE_ID = f"{SOURCE_PROJECT_ID}.profit_scout.price_data"
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
 
 # --- Chart Generator ---
-# Note: The chart-generator.py script hardcodes subfolders.
-# This is a general prefix for organization.
 CHART_GCS_FOLDER = "charts/"
 
 # --- Options Explainer (Serving) ---
@@ -82,3 +80,6 @@ OUTPUT_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.performance_tracker"
 
 SPY_PRICE_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.spy_price_history"
 SPY_PRICE_FIRESTORE_COLLECTION = "spy_price_history"
+
+# --- ML Predictions (NEW) ---
+DAILY_PREDICTIONS_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.daily_predictions"

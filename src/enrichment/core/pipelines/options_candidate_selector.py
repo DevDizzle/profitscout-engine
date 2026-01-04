@@ -10,21 +10,13 @@ CHAIN_TABLE  = f"{PROJECT}.{DATASET}.options_chain"
 CAND_TABLE   = f"{PROJECT}.{DATASET}.options_candidates"
 PRICE_TABLE  = f"{PROJECT}.{DATASET}.price_data"
 SCORES_TABLE = config.SCORES_TABLE_ID
+DAILY_PRED_TABLE = f"{PROJECT}.{DATASET}.daily_predictions" # [NEW]
 
 def _create_candidates_table(bq: bigquery.Client):
     """
-    Selects option contracts using 'Absolute Conviction' thresholds.
-    
-    The Logic:
-    1. FILTER: Ignore all stocks with a Weighted Score between 0.45 and 0.55 (Neutral).
-    
-    2. TIER 1: "Rip Hunters" (Strong Conviction)
-       - Score >= 0.70 (Strongly Bullish) OR <= 0.30 (Strongly Bearish) OR Breaking News.
-       - Rules: 10 DTE min, 25% Spread max, 15% OTM max.
-       
-    3. TIER 2: "Swing Traders" (Moderate Conviction)
-       - Score 0.55-0.70 (Mod Bullish) OR 0.30-0.45 (Mod Bearish).
-       - Rules: 14 DTE min, 20% Spread max, High Liquidity (Strict safety).
+    Selects option contracts using a Hybrid Approach:
+    1. FUNDAMENTAL CONVICTION (Tier 1/2): High LLM Score -> Safe Options.
+    2. ML SNIPER (Tier 3): High ML Probability -> Aggressive Options.
     """
     
     logging.info(f"Dropping {CAND_TABLE} to ensure clean schema creation...")
@@ -33,7 +25,7 @@ def _create_candidates_table(bq: bigquery.Client):
     except Exception as e:
         logging.warning(f"Error dropping table (proceeding anyway): {e}")
 
-    logging.info(f"Creating {CAND_TABLE} with ABSOLUTE SCORE & TIGHTENED Logic...")
+    logging.info(f"Creating {CAND_TABLE} with TIER 3 (ML SNIPER) Logic...")
     
     q = f"""
     CREATE OR REPLACE TABLE `{CAND_TABLE}`
@@ -41,11 +33,17 @@ def _create_candidates_table(bq: bigquery.Client):
     CLUSTER BY ticker, option_type
     AS
     WITH latest_scores AS (
-      -- Get the latest absolute weighted_scores
       SELECT ticker, weighted_score, news_score
       FROM `{SCORES_TABLE}`
-      -- OPTIMIZATION: Filter out Neutrals immediately to reduce processing
+      -- Filter out neutrals for Tier 1/2, but we keep this loose for joining
       WHERE weighted_score > 0.55 OR weighted_score < 0.45 OR news_score >= 0.90
+    ),
+    ml_picks AS (
+      -- [NEW] Fetch Top 10 ML Predictions for today (Global Rank)
+      SELECT ticker, contract_type AS ml_direction, prob
+      FROM `{DAILY_PRED_TABLE}`
+      WHERE date = (SELECT MAX(date) FROM `{DAILY_PRED_TABLE}`)
+      QUALIFY ROW_NUMBER() OVER (ORDER BY prob DESC) <= 10
     ),
     latest_chain_per_ticker AS (
       SELECT ticker, MAX(fetch_date) AS fetch_date
@@ -101,25 +99,45 @@ def _create_candidates_table(bq: bigquery.Client):
         CASE 
           WHEN e.vol_nz > e.oi_nz AND e.vol_nz > 500 THEN TRUE 
           ELSE FALSE 
-        END AS is_uoa
+        END AS is_uoa,
+        
+        -- [NEW] Flag ONLY if this contract matches the ML prediction direction
+        CASE 
+            WHEN m.ticker IS NOT NULL AND UPPER(e.option_type) = m.ml_direction THEN TRUE 
+            ELSE FALSE 
+        END AS is_ml_pick
+        
       FROM enriched e
-      JOIN latest_scores s ON e.ticker = s.ticker
+      LEFT JOIN latest_scores s ON e.ticker = s.ticker
+      LEFT JOIN ml_picks m ON e.ticker = m.ticker
       WHERE 
         e.spread_pct IS NOT NULL 
         
         AND (
             -- ==================================================
-            -- TIER 1: RIP HUNTERS (Strong Conviction)
+            -- TIER 3: ML SNIPER (Top 10 High Probability)
+            -- Rules: Strict Direction, Relaxed Liquidity/Spread, Short Duration
             -- ==================================================
             (
-                -- Condition: Absolute Score > 0.70 (Bull) or < 0.30 (Bear) or News Catalyst
-                (s.weighted_score >= 0.70 OR s.weighted_score <= 0.30 OR s.news_score >= 0.90)
+                m.ticker IS NOT NULL
+                AND UPPER(e.option_type) = m.ml_direction -- Strict Direction Match
                 AND (
-                    -- Constraints: 10 DTE min, 25% Spread max (Tightened)
+                    e.spread_pct <= 0.50                -- Allow up to 50% spread
+                    AND (e.vol_nz > 0 OR e.oi_nz > 100) -- Minimal liquidity proof
+                    AND e.dte BETWEEN 5 AND 25          -- Target the immediate move
+                )
+            )
+            OR
+            -- ==================================================
+            -- TIER 1: RIP HUNTERS (Strong Fundamental Conviction)
+            -- ==================================================
+            (
+                s.weighted_score IS NOT NULL
+                AND (s.weighted_score >= 0.70 OR s.weighted_score <= 0.30 OR s.news_score >= 0.90)
+                AND (
                     e.spread_pct <= 0.25
                     AND e.vol_nz >= 50
                     AND e.dte BETWEEN 10 AND 60
-                    -- Moneyness: 15% OTM max (Tightened)
                     AND (
                         (e.option_type_lc = 'call' AND e.mny_call BETWEEN 1.00 AND 1.15) OR
                         (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 1.00 AND 1.15)
@@ -131,14 +149,13 @@ def _create_candidates_table(bq: bigquery.Client):
             -- TIER 2: SWING TRADERS (Moderate Conviction)
             -- ==================================================
             (
-                -- Condition: Score is Moderate (0.55-0.70 or 0.30-0.45)
-                -- (Neutrals already removed by WHERE clause)
-                (
+                s.weighted_score IS NOT NULL
+                AND (s.weighted_score BETWEEN 0.30 AND 0.70)
+                AND (
                     e.spread_pct <= 0.20
                     AND e.vol_nz >= 500
                     AND e.oi_nz >= 200
                     AND e.dte BETWEEN 14 AND 45
-                    -- Moneyness: 15% OTM max
                     AND (
                         (e.option_type_lc = 'call' AND e.mny_call BETWEEN 1.00 AND 1.15) OR
                         (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 1.00 AND 1.15)
@@ -150,8 +167,9 @@ def _create_candidates_table(bq: bigquery.Client):
     ranked AS (
       SELECT
         f.*,
-        -- Score favors Volume and Tight Spreads
+        -- Scoring: ML Picks get a massive boost to ensure they rank #1
         (
+           (CASE WHEN is_ml_pick THEN 100 ELSE 0 END) +
            (SAFE_DIVIDE(vol_nz, 1000) * 0.4) + 
            ((1 - spread_pct) * 0.4) + 
            (CASE WHEN is_uoa THEN 0.2 ELSE 0 END)
@@ -160,7 +178,7 @@ def _create_candidates_table(bq: bigquery.Client):
         -- Pick the #1 best contract per Ticker/Side
         ROW_NUMBER() OVER (
           PARTITION BY ticker, option_type_lc
-          ORDER BY vol_nz DESC, oi_nz DESC
+          ORDER BY (CASE WHEN is_ml_pick THEN 1 ELSE 0 END) DESC, vol_nz DESC, oi_nz DESC
         ) AS rn
       FROM filtered f
     )
@@ -170,17 +188,17 @@ def _create_candidates_table(bq: bigquery.Client):
       contract_symbol, option_type, expiration_date, strike,
       last_price, bid, ask, volume, open_interest, implied_volatility,
       delta, theta, vega, gamma, underlying_price, fetch_date,
-      options_score, rn, is_uoa
+      options_score, rn, is_uoa, is_ml_pick
     FROM ranked
     """
 
     job = bq.query(q)
     job.result()
-    logging.info("Created %s with %s rows using ABSOLUTE SCORE Logic.", CAND_TABLE, job.num_dml_affected_rows or "unknown")
+    logging.info("Created %s with Tier 3 (ML Sniper) Logic.", CAND_TABLE)
 
 
 def run_pipeline(bq_client: bigquery.Client | None = None):
-    logging.info("--- Starting Options Candidate Selector (Absolute Conviction) ---")
+    logging.info("--- Starting Options Candidate Selector (With ML Sniper) ---")
     bq = bq_client or bigquery.Client(project=PROJECT)
     _create_candidates_table(bq)
     logging.info("--- Options Candidate Selector Finished ---")

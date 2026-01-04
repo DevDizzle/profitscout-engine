@@ -9,7 +9,6 @@ from google.cloud import bigquery
 from .. import config
 
 # --- Configuration ---
-# REMOVED: MIN_SCORE. We now trust the Selector's "Rip Hunter" logic implicitly.
 MAX_WORKERS = 16
 OUTPUT_TABLE_ID = (
     f"{config.PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
@@ -99,7 +98,8 @@ def _breakeven_distance_pct(
         return (spot - breakeven) / spot * 100.0
 
 
-def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 0.85) -> float | None:
+def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 1.0) -> float | None:
+    # UPDATED: Haircut reset to 1.0 (Was 0.85) to assume full move potential.
     if pd.isna(implied_volatility) or implied_volatility <= 0 or pd.isna(dte) or dte <= 0:
         return None
     return implied_volatility * (dte / 365.0) ** 0.5 * haircut * 100.0
@@ -108,11 +108,12 @@ def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 0.8
 def _price_bucketed_spread_ok(mid: float | None, spread_pct: float | None) -> bool:
     if mid is None or spread_pct is None:
         return False
+    # UPDATED: Relaxed buckets for Tier 1/2 trades (Quality of Life)
     if mid < 0.75:
-        return spread_pct <= 10
+        return spread_pct <= 25  # Was 10 (Too strict)
     if mid < 1.50:
-        return spread_pct <= 12
-    return spread_pct <= 15
+        return spread_pct <= 20  # Was 12
+    return spread_pct <= 15      # Standard
 
 
 def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
@@ -145,13 +146,12 @@ def _get_signal_from_percentile(percentile: float) -> str:
 def _fetch_candidates_all() -> pd.DataFrame:
     """
     Fetches candidates joined with ticker-level features (Total GEX) and Scores.
+    NOW INCLUDES: is_ml_pick from the candidates table.
     """
     client = bigquery.Client(project=config.PROJECT_ID)
     project = config.PROJECT_ID
     dataset = config.BIGQUERY_DATASET
 
-    # UPDATED: Removed the WHERE clause filtering by options_score.
-    # We now trust the selector to have done the filtering.
     query = f"""
     WITH LatestRun AS (
         SELECT MAX(selection_run_ts) AS max_ts
@@ -218,7 +218,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
 
 def _process_contract(row: pd.Series) -> dict | None:
     """
-    Contract-level scoring with 'Rip Hunter' logic.
+    Contract-level scoring with 'ML Sniper' Override.
     """
     ticker = row["ticker"]
     csym = row.get("contract_symbol")
@@ -242,6 +242,9 @@ def _process_contract(row: pd.Series) -> dict | None:
     total_gex = row.get("total_gex", 0)
     is_uoa = row.get("is_uoa", False)
     
+    # [NEW] Check for ML flag
+    is_ml_pick = row.get("is_ml_pick", False)
+    
     # --- CONVICTION CHECK (Tier 1 Detection) ---
     score_pct = row.get("score_percentile", 0.5)
     news_score = row.get("news_score", 0.0)
@@ -260,20 +263,22 @@ def _process_contract(row: pd.Series) -> dict | None:
     vol_cmp_signal = _get_volatility_signal(contract_iv, hv_30)
     
     # --- Forgiveness Logic ---
-    # Volatility: If Rip Hunter, allow Expensive IV
-    if is_rip_hunter:
+    if is_ml_pick:
+        # ML Sniper Override: We forgive almost everything for these top 10
         vol_ok = True
+        spread_ok = True # We accepted up to 50% in selector
+        be_ok = True     # ML predicts big move, assume BE is reachable
+        aligned = True   # The selector enforced direction match with ML model
+    elif is_rip_hunter:
+        # Volatility: If Rip Hunter, allow Expensive IV
+        vol_ok = True
+        # Spread: If Rip Hunter, allow wide spreads
+        spread_ok = True 
+        be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
     else:
         vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
-
-    # Spread: If Rip Hunter, allow wide spreads (up to the 40% allowed by selector)
-    if is_rip_hunter:
-        spread_ok = True 
-    else:
         spread_ok = _price_bucketed_spread_ok(mid_px, spread)
-
-    # Breakeven: Logic remains, we still want the move to be somewhat realistic
-    be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
+        be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
 
     red_flags = 0
     if not aligned:
@@ -285,20 +290,25 @@ def _process_contract(row: pd.Series) -> dict | None:
     if not be_ok:
         red_flags += 1
     
-    # Theta Check: Avoid short-term decay traps UNLESS it's a Rip Hunter (Gamma play)
-    if not is_rip_hunter:
+    # Theta Check: Avoid short-term decay traps UNLESS it's a Rip Hunter or Sniper
+    if not (is_rip_hunter or is_ml_pick):
         if row.get("theta") is not None and row.get("theta") < -0.05 and (dte is not None and dte <= 7):
             red_flags += 1
     
     # --- GEX Logic ---
-    if total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
-        red_flags += 1  
+    # UPDATED: We no longer penalize based on GEX for ANY tier.
+    # if total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
+    #    red_flags += 1  
 
     # --- Scoring Logic ---
     quality = "Fair"
     summary_parts = []
 
-    if is_rip_hunter and aligned:
+    if is_ml_pick:
+        # FORCE STRONG for ML Snipers
+        quality = "Strong"
+        summary_parts.append("ML SNIPER ALERT: Top 10 High-Probability Volatility Setup.")
+    elif is_rip_hunter and aligned:
         # FORCE STRONG for Rip Hunters if direction aligns
         quality = "Strong"
         summary_parts.append("High Conviction Setup: Prioritizing directional move over structure.")
@@ -307,7 +317,7 @@ def _process_contract(row: pd.Series) -> dict | None:
         summary_parts.append("Solid setup: Direction aligns, IV reasonable, liquidity good.")
     elif red_flags >= 2:
         quality = "Weak"
-        summary_parts.append("Multiple risks (direction, vol, or liquidity).")
+        summary_parts.append("Multiple risks.")
     else:
         summary_parts.append("Mixed setup.")
 
@@ -355,7 +365,7 @@ def run_pipeline():
     """
     Runs the contract-level deterministic decisioning pipeline and loads results to BigQuery.
     """
-    logging.info("--- Starting Options Analysis Signal Generation (UOA + GEX aware) ---")
+    logging.info("--- Starting Options Analysis Signal Generation (UOA + GEX + ML Sniper) ---")
     df = _fetch_candidates_all()
     if df.empty:
         logging.warning("No candidate contracts found. Exiting.")

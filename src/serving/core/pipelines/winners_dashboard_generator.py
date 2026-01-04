@@ -11,12 +11,14 @@ RECOMMENDATION_PREFIX = "recommendations/"
 SIGNALS_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
 ASSET_METADATA_TABLE_ID = f"{config.DESTINATION_PROJECT_ID}.{config.BIGQUERY_DATASET}.asset_metadata"
 OUTPUT_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.winners_dashboard"
+DAILY_PREDICTIONS_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.daily_predictions"
 
 # --- Main Logic ---
 
-def _get_strong_stock_recommendations() -> pd.DataFrame:
+def _get_all_stock_recommendations() -> pd.DataFrame:
     """
-    Fetches all companion JSON files and filters them for strong bullish or bearish signals.
+    Fetches ALL companion JSON files.
+    REMOVED: The filter for 'strong' signals. We want the signal text for ANY winner.
     """
     all_rec_jsons = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=RECOMMENDATION_PREFIX)
     json_paths = [path for path in all_rec_jsons if path.endswith('.json')]
@@ -47,21 +49,19 @@ def _get_strong_stock_recommendations() -> pd.DataFrame:
 
     df = pd.DataFrame(all_data)
     
-    strong_signals = [
-        "Strongly Bullish", "Moderately Bullish",
-        "Strongly Bearish", "Moderately Bearish"
-    ]
-    filtered_df = df[df['outlook_signal'].isin(strong_signals)]
+    if 'outlook_signal' not in df.columns:
+         return pd.DataFrame()
+
+    # Sort by date and keep latest per ticker
+    latest_df = df.sort_values('run_date', ascending=False).drop_duplicates('ticker')
     
-    latest_df = filtered_df.sort_values('run_date', ascending=False).drop_duplicates('ticker')
-    
-    # We only need the ticker and the specific signal information from this step
     return latest_df[['ticker', 'outlook_signal', 'run_date']]
 
 def _get_strong_options_setups() -> pd.DataFrame:
     """
     Queries the options signals table to find 'Strong' setups.
     Returns ONLY the #1 highest scoring contract per ticker.
+    This includes Tier 1 (Fundamental) AND Tier 3 (ML Sniper) picks.
     """
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
     
@@ -103,6 +103,37 @@ def _get_strong_options_setups() -> pd.DataFrame:
         logging.error(f"Failed to query strong options setups: {e}")
         return pd.DataFrame()
 
+def _get_daily_predictions(tickers: list) -> pd.DataFrame:
+    """
+    Fetches the latest ML predictions (prob, prediction, contract_type).
+    """
+    if not tickers:
+        return pd.DataFrame()
+
+    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    
+    query = f"""
+        SELECT
+            ticker,
+            prob,
+            prediction,
+            contract_type
+        FROM `{DAILY_PREDICTIONS_TABLE_ID}`
+        WHERE ticker IN UNNEST(@tickers)
+        QUALIFY ROW_NUMBER() OVER(PARTITION BY ticker, contract_type ORDER BY date DESC) = 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("tickers", "STRING", tickers),
+        ]
+    )
+    try:
+        df = client.query(query, job_config=job_config).to_dataframe()
+        return df
+    except Exception as e:
+        logging.error(f"Failed to query daily predictions: {e}")
+        return pd.DataFrame()
+
 def _get_asset_metadata_for_winners(tickers: list) -> pd.DataFrame:
     """
     Fetches all required asset metadata for the final list of winner tickers.
@@ -138,48 +169,78 @@ def _get_asset_metadata_for_winners(tickers: list) -> pd.DataFrame:
 def run_pipeline():
     """
     Orchestrates the creation of the 'winners_dashboard' table.
-    Produces one row per ticker (best strong contract).
+    Logic: If it is a 'Strong' option setup (verified by Analyzer), it goes on the board.
+    We append Context (Recs) and Predictions (ML) if available.
     """
-    logging.info("--- Starting Winners Dashboard Generation Pipeline ---")
+    logging.info("--- Starting Winners Dashboard Generation Pipeline (Relaxed) ---")
 
-    strong_recs_df = _get_strong_stock_recommendations()
+    # 1. Gather The Winners (Source of Truth is Options Analyzer)
     strong_options_df = _get_strong_options_setups()
-
-    # Define final schema including contract details
+    
+    # Define final schema
     final_columns = [
         "image_uri", "company_name", "ticker", "outlook_signal",
         "last_close", "thirty_day_change_pct", "industry", "run_date", "weighted_score",
         # Contract Fields
         "contract_symbol", "option_type", "strike_price", "expiration_date",
-        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score"
+        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score",
+        # ML Prediction Fields
+        "prob", "prediction"
     ]
     empty_df = pd.DataFrame(columns=final_columns)
 
-    if strong_recs_df.empty or strong_options_df.empty:
-        logging.warning("No strong signals found. Winners table will be cleared.")
+    if strong_options_df.empty:
+        logging.warning("No strong options signals found. Winners table will be cleared.")
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
         return
 
-    # Step 1: Merge. Since strong_options_df is now unique on ticker (rn=1),
-    # this ensures the result is also unique on ticker.
-    winners_df = pd.merge(strong_recs_df, strong_options_df, on='ticker', how='inner')
+    # 2. Fetch Context: Recommendations (Outlook Signal)
+    # We use ALL recommendations, so even "Neutral" outlooks are attached to Sniper trades
+    recs_df = _get_all_stock_recommendations()
 
-    if winners_df.empty:
-        logging.warning("No tickers matched. Final table will be empty.")
-        bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
-        return
+    # 3. Fetch Context: ML Predictions
+    candidate_tickers = strong_options_df['ticker'].unique().tolist()
+    predictions_df = _get_daily_predictions(candidate_tickers)
+
+    # 4. Merge Data (Left Joins to preserve the Winners)
+    
+    # Merge Recommendations (Outlook)
+    # We LEFT JOIN because if a Rec is missing, we still want the trade (it's likely a Sniper pick)
+    winners_with_recs = pd.merge(strong_options_df, recs_df, on='ticker', how='left')
+
+    # Merge Predictions (Probabilities)
+    # We need to match Ticker AND Option Type to get the right probability
+    if not predictions_df.empty:
+        predictions_df['option_type'] = predictions_df['contract_type'].astype(str).str.lower()
         
-    # Step 2: Get metadata for the unique tickers involved
-    winner_tickers = winners_df['ticker'].unique().tolist()
-    asset_metadata_df = _get_asset_metadata_for_winners(winner_tickers)
+        # LEFT JOIN: Keep the winner even if it's a Tier 1 trade with no ML prediction
+        winners_complete = pd.merge(
+            winners_with_recs,
+            predictions_df[['ticker', 'option_type', 'prob', 'prediction']], 
+            on=['ticker', 'option_type'], 
+            how='left'
+        )
+    else:
+        winners_complete = winners_with_recs
+        winners_complete['prob'] = None
+        winners_complete['prediction'] = None
+
+    if winners_complete.empty:
+        logging.warning("Merge resulted in empty dataset.")
+        bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
+        return
+
+    # 5. Fetch Metadata
+    final_tickers = winners_complete['ticker'].unique().tolist()
+    asset_metadata_df = _get_asset_metadata_for_winners(final_tickers)
 
     if asset_metadata_df.empty:
         logging.error("Could not retrieve asset metadata. Clearing table.")
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
         return
 
-    # Step 3: Join metadata back to the contract list
-    final_df = pd.merge(winners_df, asset_metadata_df, on='ticker', how='left')
+    # 6. Final Assembly
+    final_df = pd.merge(winners_complete, asset_metadata_df, on='ticker', how='left')
     
     # Fill missing cols
     for col in final_columns:
