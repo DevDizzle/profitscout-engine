@@ -80,7 +80,10 @@ def _get_strong_options_setups() -> pd.DataFrame:
                 -- Rank contracts by score within each ticker
                 ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY options_score DESC) as rn
             FROM `{SIGNALS_TABLE_ID}`
-            WHERE setup_quality_signal = 'Strong'
+            WHERE (
+                setup_quality_signal = 'Strong' -- Accepts Tier 1, 2, AND 3 (ML Sniper)
+                OR (setup_quality_signal = 'Fair' AND summary LIKE '%ML SNIPER ALERT%') -- Accepts Tier 3 (ML Sniper) only
+            )
               AND run_date = (SELECT MAX(run_date) FROM `{SIGNALS_TABLE_ID}`)
         )
         SELECT 
@@ -117,7 +120,11 @@ def _get_daily_predictions(tickers: list) -> pd.DataFrame:
             ticker,
             prob,
             prediction,
-            contract_type
+            CASE 
+                WHEN UPPER(contract_type) IN ('LONG', 'CALL') THEN 'CALL'
+                WHEN UPPER(contract_type) IN ('SHORT', 'PUT') THEN 'PUT'
+                ELSE UPPER(contract_type)
+            END AS contract_type
         FROM `{DAILY_PREDICTIONS_TABLE_ID}`
         WHERE ticker IN UNNEST(@tickers)
         QUALIFY ROW_NUMBER() OVER(PARTITION BY ticker, contract_type ORDER BY date DESC) = 1

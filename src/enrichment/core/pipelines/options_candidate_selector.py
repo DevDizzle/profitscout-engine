@@ -124,16 +124,16 @@ def _create_candidates_table(bq: bigquery.Client):
         AND (
             -- ==================================================
             -- TIER 3: ML SNIPER (Top 10 High Probability)
-            -- Rules: Strict Direction, Relaxed Liquidity/Spread, Short Duration
+            -- Rules: Strict Direction, MODERATE Liquidity, Swing Duration
             -- ==================================================
             (
                 m.ticker IS NOT NULL
                 AND UPPER(e.option_type) = m.ml_direction -- Strict Direction Match
                 AND (
-                    e.spread_pct <= 0.50                -- Allow up to 50% spread
-                    AND (e.vol_nz > 0 OR e.oi_nz > 100) -- Minimal liquidity proof
-                    AND e.dte BETWEEN 5 AND 25          -- Target the immediate move
-                    AND (                               -- [NEW] Moneyness Guardrail
+                    e.spread_pct <= 0.25                -- [UPDATED] Global Limit: Max 25% Spread
+                    AND (e.vol_nz >= 50 OR e.oi_nz >= 500) -- [UPDATED] Min Volume 50 OR High OI
+                    AND e.dte BETWEEN 7 AND 45          -- [UPDATED] Min DTE 7 (High Gamma)
+                    AND (                               
                         (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.90 AND 1.20) OR
                         (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.90 AND 1.20)
                     )
@@ -147,12 +147,12 @@ def _create_candidates_table(bq: bigquery.Client):
                 s.weighted_score IS NOT NULL
                 AND (s.weighted_score >= 0.70 OR s.weighted_score <= 0.30 OR s.news_score >= 0.90)
                 AND (
-                    e.spread_pct <= 0.25
-                    AND e.vol_nz >= 150         -- [UPDATED] Increased from 50 to 150 (Ghost Town Filter)
-                    AND e.dte BETWEEN 10 AND 60
+                    e.spread_pct <= 0.25        -- [UPDATED] Global Limit: Max 25% Spread
+                    AND (e.vol_nz >= 50 OR e.oi_nz >= 500) -- [UPDATED] Min Volume 50 OR High OI
+                    AND e.dte BETWEEN 7 AND 60  -- [UPDATED] Min DTE 7
                     AND (
-                        (e.option_type_lc = 'call' AND e.mny_call BETWEEN 1.00 AND 1.15) OR
-                        (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 1.00 AND 1.15)
+                        (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.90 AND 1.20) OR
+                        (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.90 AND 1.20)
                     )
                 )
             )
@@ -164,10 +164,10 @@ def _create_candidates_table(bq: bigquery.Client):
                 s.weighted_score IS NOT NULL
                 AND (s.weighted_score BETWEEN 0.30 AND 0.70)
                 AND (
-                    e.spread_pct <= 0.15        -- [UPDATED] Tightened from 0.20 to 0.15 (Efficiency Filter)
+                    e.spread_pct <= 0.25        -- [UPDATED] Global Limit: Max 25% Spread
                     AND e.vol_nz >= 500
                     AND e.oi_nz >= 200
-                    AND e.dte BETWEEN 14 AND 45
+                    AND e.dte BETWEEN 7 AND 45  -- [UPDATED] Min DTE 7
                     AND (
                         (e.option_type_lc = 'call' AND e.mny_call BETWEEN 1.00 AND 1.15) OR
                         (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 1.00 AND 1.15)

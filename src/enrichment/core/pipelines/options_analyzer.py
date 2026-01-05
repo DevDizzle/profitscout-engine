@@ -98,8 +98,8 @@ def _breakeven_distance_pct(
         return (spot - breakeven) / spot * 100.0
 
 
-def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 1.0) -> float | None:
-    # UPDATED: Haircut reset to 1.0 (Was 0.85) to assume full move potential.
+def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 0.75) -> float | None:
+    # UPDATED: Haircut reset to 0.75 (Was 1.0) for conservative projections.
     if pd.isna(implied_volatility) or implied_volatility <= 0 or pd.isna(dte) or dte <= 0:
         return None
     return implied_volatility * (dte / 365.0) ** 0.5 * haircut * 100.0
@@ -263,17 +263,11 @@ def _process_contract(row: pd.Series) -> dict | None:
     vol_cmp_signal = _get_volatility_signal(contract_iv, hv_30)
     
     # --- Forgiveness Logic ---
-    if is_ml_pick:
-        # ML Sniper Override: We forgive almost everything for these top 10
-        vol_ok = True
-        spread_ok = True # We accepted up to 50% in selector
-        be_ok = True     # ML predicts big move, assume BE is reachable
-        aligned = True   # The selector enforced direction match with ML model
-    elif is_rip_hunter:
-        # Volatility: If Rip Hunter, allow Expensive IV
-        vol_ok = True
-        # Spread: If Rip Hunter, allow wide spreads
-        spread_ok = True 
+    if is_rip_hunter:
+        # Volatility: Enforce "Not Expensive" (Proxy for IV Percentile check)
+        vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
+        # Spread: Enforce spread check even for Rip Hunters
+        spread_ok = _price_bucketed_spread_ok(mid_px, spread) 
         be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
     else:
         vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
@@ -281,7 +275,7 @@ def _process_contract(row: pd.Series) -> dict | None:
         be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
 
     red_flags = 0
-    if not aligned:
+    if not aligned and not is_ml_pick: # ML picks are aligned by definition in selection
         red_flags += 1
     if not vol_ok:
         red_flags += 1
@@ -305,13 +299,22 @@ def _process_contract(row: pd.Series) -> dict | None:
     summary_parts = []
 
     if is_ml_pick:
-        # FORCE STRONG for ML Snipers
-        quality = "Strong"
-        summary_parts.append("ML SNIPER ALERT: Top 10 High-Probability Volatility Setup.")
-    elif is_rip_hunter and aligned:
-        # FORCE STRONG for Rip Hunters if direction aligns
+        # ML Sniper Logic:
+        if red_flags == 0:
+            quality = "Strong"
+            summary_parts.append("ML SNIPER ALERT: Top 10 High-Probability Volatility Setup.")
+        elif red_flags >= 2:
+            quality = "Weak"
+            summary_parts.append("ML SNIPER ALERT (High Risk): Multiple checks failed.")
+        else:
+            quality = "Fair"
+            summary_parts.append("ML SNIPER ALERT (Risky): Checks failed but high probability.")
+
+    elif is_rip_hunter and aligned and red_flags == 0:
+        # FORCE STRONG for Rip Hunters ONLY if they pass the (forgiven) checks
         quality = "Strong"
         summary_parts.append("High Conviction Setup: Prioritizing directional move over structure.")
+
     elif red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
         quality = "Strong"
         summary_parts.append("Solid setup: Direction aligns, IV reasonable, liquidity good.")

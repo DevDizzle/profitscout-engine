@@ -88,8 +88,11 @@ You are a news catalyst analyst for a directional options trader. Your job is to
 
 ### 3. Your Mission
 - **Analyze the provided text first.** You have headlines and summaries from premium feeds.
+- **RECENCY MATTERS:** Pay closest attention to news published in the last **24-48 hours**. Old news (>3 days) is priced in and is NOISE.
 - **Synthesize:** Is this news actually material? (e.g. "Earnings Beat" is material; "10-Year History" is noise).
-- **Verify:** If a headline says "Earnings Released" but doesn't give numbers, use your **Browser Tool** to find the specific EPS/Revenue figures.
+- **MANDATORY EVIDENCE:** You must cite specific numbers (EPS $x.xx vs $y.yy exp, Revenue $xB vs $yB exp, Guidance Range) and dates. Do not just say "bullish earnings"; say "reported EPS of $1.50 beating est. $1.20".
+- **VERIFY WITH TOOLS:** If a headline mentions earnings, guidance, or a contract but lacks the numbers, you **MUST use your Browser Tool** to find them. Do not hallucinate numbers.
+
 - **Score:**
     - **0.50:** Noise / No Catalyst.
     - **>0.70:** Strong Bullish (Beats, Raised Guidance, Contracts).
@@ -102,7 +105,7 @@ You are a news catalyst analyst for a directional options trader. Your job is to
 {{
   "score": <float 0.0-1.0>,
   "catalyst_type": "<String e.g. 'Earnings Beat', 'Neutral/Noise', 'Macro Headwind'>",
-  "analysis": "<Dense paragraph (150 words). Start with the primary catalyst. Cite specific numbers if available. Conclude with the directional bias.>"
+  "analysis": "<Dense paragraph (150 words). Start with the primary catalyst. Cite specific numbers and dates. Explain WHY it moves the stock >3% now.>"
 }}
 """.format(
         ticker=ticker,
