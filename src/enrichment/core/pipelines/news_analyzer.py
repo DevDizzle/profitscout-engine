@@ -8,6 +8,7 @@ from google.cloud import bigquery, storage
 import os
 import re
 import json
+import datetime
 
 INPUT_PREFIX = config.PREFIXES["news_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["output"]
@@ -67,36 +68,40 @@ def process_blob(blob_name: str, storage_client: storage.Client):
     try:
         data = json.loads(content)
         stock_news = data.get("stock_news", [])
-        macro_news = data.get("macro_news", [])
+        # Macro news is no longer fetched, so we ignore it or treat as empty
     except json.JSONDecodeError:
         logging.error(f"[{ticker}] Invalid JSON in {blob_name}")
         return None
     
     # 2. Format the text for the prompt
     formatted_stock_news = _format_news_items(stock_news)
-    formatted_macro_news = _format_news_items(macro_news)
+    
+    # 3. Get Current Date for Grounding
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
 
-    # 3. Prompt: "Read this text first, search only if needed"
+    # 4. Prompt: "Verify recency with Google"
     prompt = r"""
-You are a news catalyst analyst for a directional options trader. Your job is to identify if there is a **high-impact catalyst** right now that will move {ticker} price significantly (>3%) in the next few days.
+You are a news catalyst analyst. Today is **{today_str}**.
 
-### 1. Stock-Specific News (from Wire Feeds)
+Your job is to identify if there is a **fresh, high-impact catalyst** for {ticker} that occurred in the last **48-72 hours**.
+
+### Input Headlines (Potential Catalysts)
 {formatted_stock_news}
 
-### 2. Macro Context
-{formatted_macro_news}
+### Your Mission
+1. **CHECK THE DATE:** Compare the "Input Headlines" against Today's Date ({today_str}).
+   - If the news is older than 3 days, it is **NOISE** (Score 0.5).
+   - Example: If today is Jan 6, and the news is "Oct 22 Earnings", that is ANCIENT HISTORY. Discard it.
+   
+2. **VERIFY WITH GOOGLE:** 
+   - You **MUST** use Google Search to confirm if a headline is actually recent.
+   - Search query: "{ticker} news last 2 days".
+   - If the headlines provided above are old, but you find *new* breaking news on Google (e.g., today/yesterday), USE THE NEW INFO.
 
-### 3. Your Mission
-- **Analyze the provided text first.** You have headlines and summaries from premium feeds.
-- **RECENCY MATTERS:** Pay closest attention to news published in the last **24-48 hours**. Old news (>3 days) is priced in and is NOISE.
-- **Synthesize:** Is this news actually material? (e.g. "Earnings Beat" is material; "10-Year History" is noise).
-- **MANDATORY EVIDENCE:** You must cite specific numbers (EPS $x.xx vs $y.yy exp, Revenue $xB vs $yB exp, Guidance Range) and dates. Do not just say "bullish earnings"; say "reported EPS of $1.50 beating est. $1.20".
-- **VERIFY WITH TOOLS:** If a headline mentions earnings, guidance, or a contract but lacks the numbers, you **MUST use your Browser Tool** to find them. Do not hallucinate numbers.
-
-- **Score:**
-    - **0.50:** Noise / No Catalyst.
-    - **>0.70:** Strong Bullish (Beats, Raised Guidance, Contracts).
-    - **<0.30:** Strong Bearish (Misses, Lowered Guidance, Lawsuits).
+3. **Score:**
+   - **0.50:** Noise / Old News / No Catalyst.
+   - **>0.70:** CONFIRMED Fresh Bullish Catalyst (Earnings Beat *Yesterday*, Upgrade *Today*, New Contract *Today*).
+   - **<0.30:** CONFIRMED Fresh Bearish Catalyst (Miss *Yesterday*, Lawsuit *Today*).
 
 ### Output (JSON)
 {{example_output}}
@@ -104,13 +109,13 @@ You are a news catalyst analyst for a directional options trader. Your job is to
 ### Output — return exactly this JSON
 {{
   "score": <float 0.0-1.0>,
-  "catalyst_type": "<String e.g. 'Earnings Beat', 'Neutral/Noise', 'Macro Headwind'>",
-  "analysis": "<Dense paragraph (150 words). Start with the primary catalyst. Cite specific numbers and dates. Explain WHY it moves the stock >3% now.>"
+  "catalyst_type": "<String e.g. 'Earnings Beat', 'Neutral/Old News', 'Analyst Upgrade'>",
+  "analysis": "<Strictly factual paragraph. Start by stating the DATE of the event. If the event was months ago, say 'No recent news; last major event was [Date]'. If fresh, explain why it moves the stock >3% now.>"
 }}
 """.format(
         ticker=ticker,
+        today_str=today_str,
         formatted_stock_news=formatted_stock_news,
-        formatted_macro_news=formatted_macro_news,
         example_output=_EXAMPLE_OUTPUT
     )
     

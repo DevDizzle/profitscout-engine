@@ -109,9 +109,16 @@ def _create_candidates_table(bq: bigquery.Client):
           ELSE FALSE 
         END AS is_uoa,
         
-        -- [NEW] Flag ONLY if this contract matches the ML prediction direction
+        -- [UPDATED] Flag ONLY if ML direction matches AND aligns with Fundamentals (Confluence)
+        -- Prevents "Strong Buy" stocks getting "Put" recommendations.
         CASE 
-            WHEN m.ticker IS NOT NULL AND UPPER(e.option_type) = m.ml_direction THEN TRUE 
+            WHEN m.ticker IS NOT NULL 
+                 AND UPPER(e.option_type) = m.ml_direction 
+                 AND (
+                    (m.ml_direction = 'CALL' AND COALESCE(s.weighted_score, 0.5) >= 0.45) OR 
+                    (m.ml_direction = 'PUT'  AND COALESCE(s.weighted_score, 0.5) <= 0.55)
+                 )
+            THEN TRUE 
             ELSE FALSE 
         END AS is_ml_pick
         
@@ -121,22 +128,26 @@ def _create_candidates_table(bq: bigquery.Client):
       WHERE 
         e.spread_pct IS NOT NULL 
         
+        -- [SWING TRADER BASELINE STANDARDS]
+        AND e.dte BETWEEN 14 AND 60         -- 14-60 Days: Time for trade to materialize
+        AND e.spread_pct <= 0.20            -- Max 20% Spread: No liquidity traps
+        AND (e.vol_nz >= 250 OR e.oi_nz >= 500) -- High Liquidity Only
+        
         AND (
             -- ==================================================
-            -- TIER 3: ML SNIPER (Top 10 High Probability)
-            -- Rules: Strict Direction, MODERATE Liquidity, Swing Duration
+            -- TIER 3: SWING SNIPER (ML + Confluence)
             -- ==================================================
             (
                 m.ticker IS NOT NULL
-                AND UPPER(e.option_type) = m.ml_direction -- Strict Direction Match
+                AND UPPER(e.option_type) = m.ml_direction
+                -- Alignment Check (Must match logic in is_ml_pick above)
                 AND (
-                    e.spread_pct <= 0.25                -- [UPDATED] Global Limit: Max 25% Spread
-                    AND (e.vol_nz >= 50 OR e.oi_nz >= 500) -- [UPDATED] Min Volume 50 OR High OI
-                    AND e.dte BETWEEN 7 AND 45          -- [UPDATED] Min DTE 7 (High Gamma)
-                    AND (                               
-                        (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.90 AND 1.20) OR
-                        (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.90 AND 1.20)
-                    )
+                    (m.ml_direction = 'CALL' AND COALESCE(s.weighted_score, 0.5) >= 0.45) OR 
+                    (m.ml_direction = 'PUT'  AND COALESCE(s.weighted_score, 0.5) <= 0.55)
+                )
+                AND (
+                    (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.95 AND 1.10) OR -- Slightly OTM/ATM
+                    (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.95 AND 1.10)
                 )
             )
             OR
@@ -147,52 +158,46 @@ def _create_candidates_table(bq: bigquery.Client):
                 s.weighted_score IS NOT NULL
                 AND (s.weighted_score >= 0.70 OR s.weighted_score <= 0.30 OR s.news_score >= 0.90)
                 AND (
-                    e.spread_pct <= 0.25        -- [UPDATED] Global Limit: Max 25% Spread
-                    AND (e.vol_nz >= 50 OR e.oi_nz >= 500) -- [UPDATED] Min Volume 50 OR High OI
-                    AND e.dte BETWEEN 7 AND 60  -- [UPDATED] Min DTE 7
-                    AND (
-                        (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.90 AND 1.20) OR
-                        (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.90 AND 1.20)
-                    )
-                )
-            )
-            OR
-            -- ==================================================
-            -- TIER 2: SWING TRADERS (Moderate Conviction)
-            -- ==================================================
-            (
-                s.weighted_score IS NOT NULL
-                AND (s.weighted_score BETWEEN 0.30 AND 0.70)
-                AND (
-                    e.spread_pct <= 0.25        -- [UPDATED] Global Limit: Max 25% Spread
-                    AND e.vol_nz >= 500
-                    AND e.oi_nz >= 200
-                    AND e.dte BETWEEN 7 AND 45  -- [UPDATED] Min DTE 7
-                    AND (
-                        (e.option_type_lc = 'call' AND e.mny_call BETWEEN 1.00 AND 1.15) OR
-                        (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 1.00 AND 1.15)
-                    )
+                    (e.option_type_lc = 'call' AND e.mny_call BETWEEN 0.90 AND 1.15) OR
+                    (e.option_type_lc = 'put'  AND e.mny_put  BETWEEN 0.90 AND 1.15)
                 )
             )
         )
     ),
-    ranked AS (
+    scored AS (
       SELECT
         f.*,
         -- Scoring: ML Picks get a massive boost to ensure they rank #1
+        -- Tightened Logic:
+        -- 1. Volume Capped at 5k (approx 2 pts max)
+        -- 2. Spread Penalty: Linear decay. 0% spread = +1.0, 25% spread = 0.0
+        -- 3. Gamma Bonus: +0.5 for NTM (0.95-1.05)
         (
            (CASE WHEN is_ml_pick THEN 100 ELSE 0 END) +
-           (SAFE_DIVIDE(vol_nz, 1000) * 0.4) + 
-           ((1 - spread_pct) * 0.4) + 
+           
+           (LEAST(SAFE_DIVIDE(vol_nz, 1000), 5.0) * 0.4) + 
+           
+           (CASE WHEN spread_pct <= 0.25 THEN (1.0 - (spread_pct * 4.0)) ELSE 0 END) + 
+           
+           (CASE 
+               WHEN (option_type_lc = 'call' AND mny_call BETWEEN 0.95 AND 1.05) THEN 0.5 
+               WHEN (option_type_lc = 'put' AND mny_put BETWEEN 0.95 AND 1.05) THEN 0.5 
+               ELSE 0 
+            END) +
+            
            (CASE WHEN is_uoa THEN 0.2 ELSE 0 END)
-        ) as options_score,
-        
+        ) as options_score
+      FROM filtered f
+    ),
+    ranked AS (
+      SELECT
+        s.*,
         -- Pick the #1 best contract per Ticker/Side
         ROW_NUMBER() OVER (
           PARTITION BY ticker, option_type_lc
-          ORDER BY (CASE WHEN is_ml_pick THEN 1 ELSE 0 END) DESC, vol_nz DESC, oi_nz DESC
+          ORDER BY (CASE WHEN is_ml_pick THEN 1 ELSE 0 END) DESC, options_score DESC
         ) AS rn
-      FROM filtered f
+      FROM scored s
     )
     SELECT
       CURRENT_TIMESTAMP() AS selection_run_ts,

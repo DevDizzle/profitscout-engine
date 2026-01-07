@@ -11,7 +11,6 @@ RECOMMENDATION_PREFIX = "recommendations/"
 SIGNALS_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
 ASSET_METADATA_TABLE_ID = f"{config.DESTINATION_PROJECT_ID}.{config.BIGQUERY_DATASET}.asset_metadata"
 OUTPUT_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.winners_dashboard"
-DAILY_PREDICTIONS_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.daily_predictions"
 
 # --- Main Logic ---
 
@@ -77,6 +76,7 @@ def _get_strong_options_setups() -> pd.DataFrame:
                 volatility_comparison_signal,
                 summary,
                 options_score,
+                run_date,
                 -- Rank contracts by score within each ticker
                 ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY options_score DESC) as rn
             FROM `{SIGNALS_TABLE_ID}`
@@ -95,7 +95,8 @@ def _get_strong_options_setups() -> pd.DataFrame:
             setup_quality_signal,
             volatility_comparison_signal,
             summary,
-            options_score
+            options_score,
+            run_date
         FROM RankedOptions
         WHERE rn = 1
     """
@@ -104,41 +105,6 @@ def _get_strong_options_setups() -> pd.DataFrame:
         return df
     except Exception as e:
         logging.error(f"Failed to query strong options setups: {e}")
-        return pd.DataFrame()
-
-def _get_daily_predictions(tickers: list) -> pd.DataFrame:
-    """
-    Fetches the latest ML predictions (prob, prediction, contract_type).
-    """
-    if not tickers:
-        return pd.DataFrame()
-
-    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    
-    query = f"""
-        SELECT
-            ticker,
-            prob,
-            prediction,
-            CASE 
-                WHEN UPPER(contract_type) IN ('LONG', 'CALL') THEN 'CALL'
-                WHEN UPPER(contract_type) IN ('SHORT', 'PUT') THEN 'PUT'
-                ELSE UPPER(contract_type)
-            END AS contract_type
-        FROM `{DAILY_PREDICTIONS_TABLE_ID}`
-        WHERE ticker IN UNNEST(@tickers)
-        QUALIFY ROW_NUMBER() OVER(PARTITION BY ticker, contract_type ORDER BY date DESC) = 1
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ArrayQueryParameter("tickers", "STRING", tickers),
-        ]
-    )
-    try:
-        df = client.query(query, job_config=job_config).to_dataframe()
-        return df
-    except Exception as e:
-        logging.error(f"Failed to query daily predictions: {e}")
         return pd.DataFrame()
 
 def _get_asset_metadata_for_winners(tickers: list) -> pd.DataFrame:
@@ -190,9 +156,7 @@ def run_pipeline():
         "last_close", "thirty_day_change_pct", "industry", "run_date", "weighted_score",
         # Contract Fields
         "contract_symbol", "option_type", "strike_price", "expiration_date",
-        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score",
-        # ML Prediction Fields
-        "prob", "prediction"
+        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score"
     ]
     empty_df = pd.DataFrame(columns=final_columns)
 
@@ -204,40 +168,30 @@ def run_pipeline():
     # 2. Fetch Context: Recommendations (Outlook Signal)
     # We use ALL recommendations, so even "Neutral" outlooks are attached to Sniper trades
     recs_df = _get_all_stock_recommendations()
+    # recs_df = pd.DataFrame(columns=['ticker', 'outlook_signal', 'rec_run_date']) # SKIP GCS FOR DEBUGGING
 
-    # 3. Fetch Context: ML Predictions
-    candidate_tickers = strong_options_df['ticker'].unique().tolist()
-    predictions_df = _get_daily_predictions(candidate_tickers)
-
-    # 4. Merge Data (Left Joins to preserve the Winners)
+    # 3. Merge Data (Left Joins to preserve the Winners)
     
     # Merge Recommendations (Outlook)
     # We LEFT JOIN because if a Rec is missing, we still want the trade (it's likely a Sniper pick)
-    winners_with_recs = pd.merge(strong_options_df, recs_df, on='ticker', how='left')
+    # Rename recs_df 'run_date' to avoid collision with signal 'run_date'
+    if not recs_df.empty:
+        recs_df = recs_df.rename(columns={'run_date': 'rec_run_date'})
 
-    # Merge Predictions (Probabilities)
-    # We need to match Ticker AND Option Type to get the right probability
-    if not predictions_df.empty:
-        predictions_df['option_type'] = predictions_df['contract_type'].astype(str).str.lower()
-        
-        # LEFT JOIN: Keep the winner even if it's a Tier 1 trade with no ML prediction
-        winners_complete = pd.merge(
-            winners_with_recs,
-            predictions_df[['ticker', 'option_type', 'prob', 'prediction']], 
-            on=['ticker', 'option_type'], 
-            how='left'
-        )
+    winners_complete = pd.merge(strong_options_df, recs_df, on='ticker', how='left')
+    
+    # Fill missing outlook_signal if no rec found
+    if 'outlook_signal' in winners_complete.columns:
+        winners_complete['outlook_signal'] = winners_complete['outlook_signal'].fillna('Neutral')
     else:
-        winners_complete = winners_with_recs
-        winners_complete['prob'] = None
-        winners_complete['prediction'] = None
+        winners_complete['outlook_signal'] = 'Neutral'
 
     if winners_complete.empty:
         logging.warning("Merge resulted in empty dataset.")
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
         return
 
-    # 5. Fetch Metadata
+    # 4. Fetch Metadata
     final_tickers = winners_complete['ticker'].unique().tolist()
     asset_metadata_df = _get_asset_metadata_for_winners(final_tickers)
 
@@ -246,13 +200,25 @@ def run_pipeline():
         bq.load_df_to_bq(empty_df, OUTPUT_TABLE_ID, config.SOURCE_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
         return
 
-    # 6. Final Assembly
+    # 5. Final Assembly
     final_df = pd.merge(winners_complete, asset_metadata_df, on='ticker', how='left')
     
-    # Fill missing cols
+    # Fill missing cols with defaults to satisfy Firestore schema
+    defaults = {
+        "company_name": "Unknown Company",
+        "industry": "Unknown",
+        "outlook_signal": "Neutral",
+        "last_close": 0.0,
+        "thirty_day_change_pct": 0.0,
+        "weighted_score": 0.0
+    }
+
     for col in final_columns:
         if col not in final_df.columns:
             final_df[col] = None
+        # Apply defaults if applicable
+        if col in defaults:
+            final_df[col] = final_df[col].fillna(defaults[col])
             
     final_df = final_df[final_columns]
 
