@@ -4,54 +4,8 @@ import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import bigquery
 from .. import config, gcs
-from ..clients import vertex_ai
 from datetime import date
 import json
-
-# --- ENHANCED PROMPT: Focus on Confluence & Timing ---
-_PROMPT_TEMPLATE = r"""
-You are a specialized Options Trading Strategist. Your goal is to write a high-conviction "Breakout Brief" for a directional premium buyer (Calls/Puts).
-Target Trade Duration: 1-4 Weeks.
-
-### CURRENT DATE: {run_date}
-Analyze the data relative to this date.
-
-### INPUT DATA
-- **Signal:** {outlook_signal}
-- **Momentum:** {momentum_context}
-- **Deep Dive Data:**
-{aggregated_text}
-
-### THE TRADING THESIS
-Synthesize the "News Analysis" and "Technicals Analysis" sections from the input to answer: **Why will this stock move significantly NOW?**
-
-### Output Format (Return Clean Markdown)
-
-# {company_name} ({ticker}) {signal_emoji}
-
-**Signal:** {outlook_signal} {momentum_context}
-
-## The "Why Now?" (Thesis)
-* **Catalyst (News/Event):** Identify the specific event driving volume/interest (e.g., Earnings Beat, FDA approval, Contract win). If none, state "Technical Setup Only".
-* **Setup (Technicals):** Describe the price structure supporting the move (e.g., "Bull Flag breakout above $150", "Rejection at 200-day SMA").
-* **Confluence:** Do the news and chart agree? (e.g., "Positive news is fueling a breakout above resistance").
-
-## Key Levels (For Option Strikes)
-* **Trigger:** The price level that confirms the move (e.g., "Entry above $155").
-* **Target:** The next logical resistance/support level (e.g., "Room to run to $165").
-* **Invalidation:** Where is the thesis wrong? (e.g., "Close below $148").
-
-## Risks & Headwinds
-* List 1-2 factor that could kill the trade (e.g., "Low volume on breakout", "Pending CPI data", "Overbought RSI divergence").
-
-## The Bottom Line
-One punchy, decisive paragraph. Summarize the trade. Does the volatility potential justify paying the option premium?
-
-### CRITICAL RULES
-1.  **Ignore Long-Term Noise:** We don't care about a 5-year DCF valuation. We care about the next 20 days. If Fundamentals are bad but Technicals/News are great, **lean into the Trade**.
-2.  **Be Specific:** Cite numbers found in the text (e.g. "RSI at 65", "Revenue up 20%").
-3.  **No Financial Advice:** Use analytical language ("Setup suggests...", "Data indicates...").
-"""
 
 def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[str, str]:
     """
@@ -184,12 +138,11 @@ def _delete_old_recommendation_files(ticker: str):
             logging.error(f"[{ticker}] Failed to delete old file {blob_name}: {e}")
 
 def _process_ticker(ticker_data: dict):
-    """Generates the recommendation."""
+    """Generates the recommendation metadata (JSON only)."""
     ticker = ticker_data["ticker"]
     today_str = date.today().strftime("%Y-%m-%d")
     
     base_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}"
-    md_blob_path = f"{base_blob_path}.md"
     json_blob_path = f"{base_blob_path}.json"
     
     try:
@@ -200,33 +153,6 @@ def _process_ticker(ticker_data: dict):
         if pd.isna(score): score = 0.5
 
         outlook_signal, momentum_context = _get_signal_and_context(score, momentum_pct)
-
-        emoji_map = {
-            "Strongly Bullish": "🚀",
-            "Moderately Bullish": "⬆️",
-            "Neutral / Mixed": "⚖️",
-            "Moderately Bearish": "⬇️",
-            "Strongly Bearish": "🧨",
-        }
-        # Simplify signal string for emoji lookup
-        base_outlook = outlook_signal.split(" with a")[0].split(" (")[0].strip()
-        signal_emoji = emoji_map.get(base_outlook, "⚖️")
-
-        prompt = _PROMPT_TEMPLATE.format(
-            ticker=ticker,
-            company_name=ticker_data["company_name"],
-            run_date=today_str,  # INJECT DATE HERE
-            signal_emoji=signal_emoji,
-            outlook_signal=outlook_signal,
-            momentum_context=momentum_context,
-            aggregated_text=ticker_data["aggregated_text"],
-        )
-        
-        recommendation_text = vertex_ai.generate(prompt)
-
-        if not recommendation_text:
-            logging.error(f"[{ticker}] LLM returned no text.")
-            return None
         
         metadata = {
             "ticker": ticker,
@@ -235,22 +161,19 @@ def _process_ticker(ticker_data: dict):
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
             "score_percentile": ticker_data.get("score_percentile", 0.5), 
-            "recommendation_md_path": f"gs://{config.GCS_BUCKET_NAME}/{md_blob_path}",
         }
         
         _delete_old_recommendation_files(ticker)
-        
-        gcs.write_text(config.GCS_BUCKET_NAME, md_blob_path, recommendation_text, "text/markdown")
         gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(metadata, indent=2), "application/json")
         
-        return md_blob_path
+        return json_blob_path
         
     except Exception as e:
         logging.error(f"[{ticker}] Processing failed: {e}", exc_info=True)
         return None
 
 def run_pipeline():
-    logging.info("--- Starting Directional Trading Brief Pipeline ---")
+    logging.info("--- Starting Recommendation Metadata Pipeline (No LLM) ---")
     
     work_list = _get_daily_work_list()
     if not work_list:
@@ -266,4 +189,4 @@ def run_pipeline():
             if future.result():
                 processed_count += 1
                 
-    logging.info(f"--- Recommendation Pipeline Finished. Processed {processed_count}/{len(work_list)} tickers. ---")
+    logging.info(f"--- Recommendation Metadata Pipeline Finished. Processed {processed_count}/{len(work_list)} tickers. ---")

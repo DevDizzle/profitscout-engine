@@ -90,3 +90,88 @@ def upsert_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
         raise
     finally:
         client.delete_table(temp_table_id, not_found_ok=True)
+
+def fetch_options_market_structure(ticker: str) -> dict:
+    """
+    Aggregates the raw options chain to identify structural walls and flow sentiment.
+    Returns a dictionary suitable for LLM context or Dashboard widgets.
+    """
+    from . import config  # lazy import to avoid circular dependency
+    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    
+    query = f"""
+    WITH LatestChain AS (
+        SELECT *
+        FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}`
+        WHERE ticker = @ticker
+          AND fetch_date = (
+              SELECT MAX(fetch_date) 
+              FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}` 
+              WHERE ticker = @ticker
+          )
+    ),
+    SentimentStats AS (
+        SELECT
+            SUM(CASE WHEN LOWER(option_type) = 'call' THEN volume ELSE 0 END) as total_call_vol,
+            SUM(CASE WHEN LOWER(option_type) = 'put' THEN volume ELSE 0 END) as total_put_vol,
+            SUM(CASE WHEN LOWER(option_type) = 'call' THEN open_interest ELSE 0 END) as total_call_oi,
+            SUM(CASE WHEN LOWER(option_type) = 'put' THEN open_interest ELSE 0 END) as total_put_oi,
+            -- Rough GEX Proxy: Gamma * OI
+            SUM(CASE WHEN LOWER(option_type) = 'call' THEN IFNULL(gamma,0) * open_interest ELSE 0 END) as net_call_gamma,
+            SUM(CASE WHEN LOWER(option_type) = 'put' THEN IFNULL(gamma,0) * open_interest ELSE 0 END) as net_put_gamma
+        FROM LatestChain
+    ),
+    Walls AS (
+        SELECT
+            -- Call Wall: Strike with highest Call OI (Resistance)
+            (SELECT strike FROM LatestChain WHERE LOWER(option_type) = 'call' ORDER BY open_interest DESC LIMIT 1) as call_wall,
+            -- Put Wall: Strike with highest Put OI (Support)
+            (SELECT strike FROM LatestChain WHERE LOWER(option_type) = 'put' ORDER BY open_interest DESC LIMIT 1) as put_wall,
+            -- Volatility Wall: Highest IV usually indicates fear or expected move
+            (SELECT strike FROM LatestChain ORDER BY implied_volatility DESC LIMIT 1) as max_iv_strike
+    ),
+    TopFlows AS (
+        SELECT 
+            ARRAY_AGG(
+                STRUCT(
+                    option_type, 
+                    strike, 
+                    expiration_date, 
+                    volume, 
+                    open_interest, 
+                    implied_volatility,
+                    last_price
+                ) ORDER BY volume DESC LIMIT 5
+            ) as top_active_contracts
+        FROM LatestChain
+    )
+    SELECT
+        s.*,
+        w.*,
+        f.top_active_contracts
+    FROM SentimentStats s, Walls w, TopFlows f
+    """
+    
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("ticker", "STRING", ticker)]
+    )
+    
+    try:
+        df = client.query(query, job_config=job_config).to_dataframe()
+        if df.empty:
+            return {}
+            
+        # Convert to a clean dict using pandas built-in JSON serialization
+        # This handles numpy types (int64, float64, ndarray) automatically.
+        import json
+        data = json.loads(df.to_json(orient='records', date_format='iso'))[0]
+        
+        # Calculate a derived "Sentiment Label" for the LLM
+        call_vol = data.get('total_call_vol', 0) or 0
+        put_vol = data.get('total_put_vol', 0) or 0
+        data['put_call_vol_ratio'] = round(put_vol / call_vol, 2) if call_vol > 0 else 0
+        
+        return data
+    except Exception as e:
+        logging.error(f"[{ticker}] Failed to fetch options market structure: {e}")
+        return {}

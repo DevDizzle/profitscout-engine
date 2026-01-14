@@ -10,6 +10,7 @@ from datetime import date
 from typing import Dict, Optional
 
 from .. import config, gcs
+from .. import bq
 from ..clients import vertex_ai
 
 INPUT_PREFIX = config.RECOMMENDATION_PREFIX
@@ -22,109 +23,72 @@ PREP_PREFIX = 'prep/'
 _EXAMPLE_JSON_FOR_LLM = """
 {
   "seo": {
-    "title": "Blackstone (BX) Options Trade: Bullish Breakout Signal Detected | ProfitScout",
-    "metaDescription": "ProfitScout AI projects a move to $160 for Blackstone (BX). Strong technicals align with $5B Phoenix Financial investment news. See the full call option strategy.",
-    "keywords": ["Blackstone options trade", "BX stock forecast", "buy BX calls", "Blackstone private credit news", "BX technical analysis"],
-    "h1": "Blackstone (BX) Trade Alert: Bullish Breakout Confirmed"
+    "title": "Blackstone (BX) Options Flow: Bullish Gamma Setup & Targets | ProfitScout",
+    "metaDescription": "ProfitScout AI projects a move to $160 for Blackstone (BX). Strong call buying at $150 strike suggests institutional positioning. See the full gamma analysis.",
+    "keywords": ["Blackstone options trade", "BX stock forecast", "buy BX calls", "Blackstone private credit news", "BX gamma exposure"],
+    "h1": "Blackstone (BX) Call Wall Test: Breakout Imminent"
   },
-  "teaser": {
-    "signal": "Strongly Bullish outlook with confirming positive momentum",
-    "summary": "Blackstone is staging a technical breakout above $146, fueled by a major $5B capital injection from Phoenix Financial.",
-    "metrics": {
-      "Trend": "Uptrend (Above 50 SMA)",
-      "Momentum": "RSI Reset & Rising (Bullish)",
-      "Vol": "Low IV Rank (Cheap Premiums)"
-    }
+  "analystBrief": {
+    "headline": "Bulls attacking the $150 Call Wall",
+    "content": "<p>Today's order flow for <strong>Blackstone (BX)</strong> reveals a distinct <strong>bullish gamma setup</strong>. We are tracking significant <strong>unusual call volume</strong> at the $150 strike, which currently acts as the primary <strong>Call Wall</strong>. A clean break above this level could trigger a dealer hedging event (Gamma Squeeze), accelerating the move toward $160.</p><p>Conversely, support is firm at the $140 <strong>Put Wall</strong>. With the <strong>Put/Call Ratio</strong> at 0.65, sentiment is aggressively bullish, suggesting traders are positioning for an upside surprise driven by the recent Phoenix Financial news.</p>"
   },
-  "relatedStocks": ["KKR", "APO", "ARES"],
-  "aiOptionsPicks": [
-    {
-      "strategy": "Buy Call",
-      "rationale": "Volatility is underpriced relative to the breakout potential driven by the new capital inflow catalyst.",
-      "details": {"expiration": "2025-11-21", "strike": 150, "premium": "3.50 (est)", "impliedVol": "Low"},
-      "riskReward": {"maxLoss": "Premium Paid", "breakeven": "153.50", "potential": "Unlimited upside"}
-    }
-  ],
-  "contentBlocks": {
-    "thesis": "Detailed paragraph explaining the confluence of the $138 support bounce and the news catalyst.",
-    "catalysts": ["$5B Phoenix Financial Investment", "Q3 Fee Earnings Growth (+15%)"],
-    "risks": ["Failure to hold $146 support", "Rate hike fears impacting real estate sector"]
+  "tradeSetup": {
+    "signal": "Bullish",
+    "confidence": "High",
+    "strategy": "Long Calls",
+    "catalyst": "Gamma Squeeze Potential + News"
   },
   "faq": [
     {
-      "question": "Is Blackstone (BX) stock a buy right now?",
-      "answer": "ProfitScout's AI model rates BX as 'Strongly Bullish' as of Oct 25, 2025. The stock has reclaimed its 21-day EMA and is supported by rising fee-related earnings."
+      "question": "What is the max pain for Blackstone (BX)?",
+      "answer": "The current Max Pain level is $145. However, heavy call buying at $150 suggests traders expect the price to pin higher by expiry."
     },
     {
-      "question": "What is the price target for BX?",
-      "answer": "Technical analysis suggests an immediate upside target of $160 (recent resistance), with a secondary measured move target of $175 if volume sustains."
+      "question": "Is BX seeing unusual options activity?",
+      "answer": "Yes, we detected unusual flow in the Nov $150 Calls, with volume exceeding open interest by 2x, indicating fresh institutional entry."
     }
-  ],
-  "internalLinks": [
-    {"label": "Compare to KKR Options", "url": "/stocks/KKR"},
-    {"label": "Today's Top Financial Sector Trades", "url": "/sectors/financials"}
-  ],
-  "schemaOrg": {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "mainEntity": [
-      {
-        "@type": "Question",
-        "name": "Is Blackstone (BX) stock a buy right now?",
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": "ProfitScout's AI model rates BX as 'Strongly Bullish'..."
-        }
-      }
-    ]
-  }
+  ]
 }
 """
 
 # --- ENHANCED PROMPT: SEO Specialist Persona ---
 _PROMPT_TEMPLATE = r"""
-You are an elite SEO Strategist and Financial Editor. Your goal is to create a high-ranking content package for the stock **{ticker}** ({company_name}).
-We want to capture search traffic for terms like "{ticker} options trade", "{ticker} forecast", and specific questions about the stock's current movement.
-
-### 1. Keyword & Entity Strategy
-* **Identify the 'Why':** Why is the stock moving? (e.g. "Earnings Beat", "FDA Approval", "Rate Cut"). Use these semantic terms in your writing.
-* **Identify the 'What':** What pattern is forming? (e.g. "Bull Flag", "Oversold Bounce"). Use these technical terms.
-
-### 2. Required JSON Sections
-Generate a JSON object matching the exact keys in the example below.
-
-**A. SEO Metadata (`seo`)**
-* `title`: Punchy, click-worthy (~60 chars). Pattern: "{company_name} ({ticker}) Options: [Signal] Setup & Targets".
-* `metaDescription`: Front-load the catalyst. "AI detects [Signal] for {ticker} driven by [Catalyst]. Targets: [Price]. Trade details inside." (~155 chars).
-* `h1`: A strong headline summarizing the trade thesis.
-
-**B. Teaser & Content (`teaser`, `contentBlocks`)**
-* `teaser.summary`: 2 sentences connecting the technical setup to the fundamental catalyst.
-* `contentBlocks.thesis`: A rich paragraph. Use specific numbers (prices, dates, percentages) from the input text.
-* `contentBlocks.catalysts`: Short, punchy bullet points of the specific drivers.
-
-**C. FAQ Schema (`faq`) - CRITICAL FOR SEO**
-* Generate 2-3 high-value Questions & Answers based *specifically* on the analysis provided.
-* Q1: "Is {ticker} a buy or sell right now?" (Answer using the Signal and Score).
-* Q2: "Why is {ticker} stock moving?" (Answer citing the specific news/catalyst).
-* Q3: "What is the next price target for {ticker}?" (Answer using the Resistance/Support levels).
-
-**D. Options Strategy (`aiOptionsPicks`)**
-* Based on the `Outlook Signal`, suggest a Directional Trade (Call for Bullish, Put for Bearish).
-* If Neutral, leave array empty.
-
-**E. Schema.org (`schemaOrg`)**
-* Generate a valid `FAQPage` JSON-LD object using the questions from the `faq` section above.
+You are a Senior Derivatives Analyst and SEO Specialist. Your job is to write a high-impact "Daily Options Brief" for {ticker} ({company_name}).
+Your audience consists of traders looking for "Gamma Squeezes", "Unusual Flow", and "Vol Windows".
 
 ### Input Data
 - **Ticker**: {ticker}
 - **Date**: {run_date}
-- **Signal**: {outlook_signal} {momentum_context}
-- **Full Analysis**:
+- **Signal**: {outlook_signal}
+- **Market Structure (The "Greeks"):**
+{options_context}
+- **News & Technicals:**
 {aggregated_text}
 
-### Output Instructions
-Return ONLY the JSON object. No markdown formatting.
+### Instructions
+Generate a JSON object matching the exact keys in the example below.
+
+**1. SEO Metadata (`seo`)**
+* `title`: "{ticker} Options Flow: [Bullish/Bearish] Gamma Setup & Targets"
+* `h1`: Strong headline focusing on the directional bias (e.g., "{ticker} Call Wall Test: Breakout Imminent").
+
+**2. Analyst Brief (`analystBrief`)**
+* `headline`: A punchy sub-headline summarizing the immediate setup (e.g., "Bulls attacking the ${{call_wall}} Call Wall").
+* `content`: A ~250 word HTML-formatted analysis (<p>, <strong>).
+    * **CRITICAL:** You MUST reference the specific data from "Market Structure".
+    * Analyze the **Call Wall** (Resistance) and **Put Wall** (Support).
+    * Interpret the **Put/Call Ratio** and **Net Gamma** (e.g., "Negative Gamma regime implies higher volatility").
+    * Cite the **Top Active Contracts** as evidence of "Smart Money" positioning.
+    * Use professional lexicon: "Dealer Hedging", "Implied Volatility", "Vanna", "Oversold".
+
+**3. Trade Setup (`tradeSetup`)**
+* `signal`: The directional bias ("Bullish", "Bearish", "Neutral").
+* `confidence`: "High", "Medium", "Low".
+* `strategy`: Specific trade type (e.g., "Long Calls", "Debit Spread", "Cash Secured Puts").
+* `catalyst`: The primary fundamental or technical driver.
+
+**4. FAQ (`faq`)**
+* Generate 2 SEO-rich Q&As (e.g., "What is the max pain for {ticker}?", "Is {ticker} seeing unusual call volume?").
 
 ### Example JSON Structure
 {example_json}
@@ -205,22 +169,18 @@ def process_blob(blob_name: str) -> Optional[str]:
     if rec_json_str:
         rec_data = json.loads(rec_json_str)
         outlook_signal = rec_data.get("outlook_signal", "Neutral")
-        momentum_context = rec_data.get("momentum_context", "")
     else:
         outlook_signal = "Neutral"
-        momentum_context = ""
 
-    kpi_path = f"{PREP_PREFIX}{ticker}_{run_date_str}.json"
-    kpis_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, kpi_path)
-    kpis_json = json.loads(kpis_json_str) if kpis_json_str else {}
-
+    # --- NEW: Fetch Options Market Structure ---
+    options_market_structure = bq.fetch_options_market_structure(ticker)
+    
     prompt = _PROMPT_TEMPLATE.format(
         ticker=ticker,
         company_name=company_name,
         run_date=run_date_str,
         outlook_signal=outlook_signal,
-        momentum_context=momentum_context,
-        kpis_json=json.dumps(kpis_json, indent=2),
+        options_context=json.dumps(options_market_structure, indent=2),
         aggregated_text=aggregated_text,
         example_json=_EXAMPLE_JSON_FOR_LLM,
     )
@@ -234,7 +194,8 @@ def process_blob(blob_name: str) -> Optional[str]:
             "symbol": ticker,
             "date": run_date_str,
             "bullishScore": bullish_score,
-            "fullAnalysis": _split_aggregated_text(aggregated_text)
+            "fullAnalysis": _split_aggregated_text(aggregated_text),
+            "marketStructure": options_market_structure # Pass raw data to frontend
         }
         final_json.update(generated_data)
 
