@@ -23,8 +23,8 @@ PREP_PREFIX = 'prep/'
 _EXAMPLE_JSON_FOR_LLM = """
 {
   "seo": {
-    "title": "Blackstone (BX) Options Flow: Bullish Gamma Setup & Targets | ProfitScout",
-    "metaDescription": "ProfitScout AI projects a move to $160 for Blackstone (BX). Strong call buying at $150 strike suggests institutional positioning. See the full gamma analysis.",
+    "title": "Blackstone (BX) Options Flow: Bullish Gamma Setup & Targets | GammaRips",
+    "metaDescription": "GammaRips AI projects a move to $160 for Blackstone (BX). Strong call buying at $150 strike suggests institutional positioning. See the full gamma analysis.",
     "keywords": ["Blackstone options trade", "BX stock forecast", "buy BX calls", "Blackstone private credit news", "BX gamma exposure"],
     "h1": "Blackstone (BX) Call Wall Test: Breakout Imminent"
   },
