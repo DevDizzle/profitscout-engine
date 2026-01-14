@@ -59,20 +59,17 @@ def _sync_gcs_data():
     # A single, comprehensive list of all folders to be completely refreshed daily.
     all_prefixes_to_sync = [
         "dashboards/",
-        "financial-statements/",
-        "headline-news/",
         "images/",
-        "key-metrics/",
         "news-analysis/",
         "pages/",
         "price-chart-json/",
-        "price-chart-images/", # Add the new image folder
-        "ratios/",
+        "price-chart-images/",
         "recommendations/",
-        "sec-business/",
-        "sec-mda/",
-        "sec-risk/",
-        "technicals/",
+        "macro-thesis/",
+        "mda-analysis/",
+        "transcript-analysis/",
+        "business-summaries/",
+        "fundamentals-analysis/",
     ]
 
 
@@ -178,11 +175,11 @@ def _get_ticker_work_list() -> pd.DataFrame:
     return client.query(query).to_dataframe()
 
 def _get_weighted_scores() -> pd.DataFrame:
-    """Fetches the latest weighted_score for each ticker."""
+    """Fetches the latest weighted_score and details for each ticker."""
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
     query = f"""
-        SELECT ticker, weighted_score FROM (
-            SELECT ticker, weighted_score, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY run_date DESC) as rn
+        SELECT * EXCEPT(rn) FROM (
+            SELECT *, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY run_date DESC) as rn
             FROM `{config.BUNDLER_SCORES_TABLE_ID}`
             WHERE weighted_score IS NOT NULL
         ) WHERE rn = 1
@@ -221,6 +218,18 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
             record["price"] = float(ticker_kpis.get("price")) if ticker_kpis.get("price") is not None else None
             record["thirty_day_change_pct"] = float(ticker_kpis.get("thirty_day_change_pct")) if ticker_kpis.get("thirty_day_change_pct") is not None else None
             record["weighted_score"] = float(row.get("weighted_score")) if row.get("weighted_score") is not None else None
+            
+            # --- New Fields for Agent ---
+            record["score_percentile"] = float(row.get("score_percentile")) if row.get("score_percentile") is not None else None
+            record["aggregated_text"] = row.get("aggregated_text")
+            
+            for score_col in ["news_score", "technicals_score", "fundamentals_score", "financials_score", "mda_score", "transcript_score"]:
+                 if row.get(score_col) is not None:
+                     try:
+                        record[score_col] = float(row.get(score_col))
+                     except (ValueError, TypeError):
+                        record[score_col] = None
+            
         except (ValueError, TypeError):
             record["price"] = record.get("price")
             record["thirty_day_change_pct"] = record.get("thirty_day_change_pct")
@@ -239,6 +248,31 @@ def _assemble_final_metadata(work_list_df: pd.DataFrame, scores_df: pd.DataFrame
         
         final_records.append(record)
     return final_records
+
+def _sync_bq_table(source_table_id: str, destination_table_id: str):
+    """
+    Efficiently copies a BigQuery table from source to destination using the Copy Job API.
+    This avoids pulling data into memory and is suitable for large tables.
+    """
+    client = bigquery.Client(project=config.DESTINATION_PROJECT_ID)
+    
+    # Check if source exists (sanity check to avoid errors on empty source)
+    source_client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    try:
+        source_client.get_table(source_table_id)
+    except Exception:
+        logging.warning(f"Source table {source_table_id} does not exist. Skipping sync.")
+        return
+
+    job_config = bigquery.CopyJobConfig(write_disposition="WRITE_TRUNCATE")
+    
+    try:
+        logging.info(f"Starting Copy Job: {source_table_id} -> {destination_table_id}")
+        job = client.copy_table(source_table_id, destination_table_id, job_config=job_config)
+        job.result()  # Wait for job to complete
+        logging.info(f"Successfully copied table to {destination_table_id}")
+    except Exception as e:
+        logging.error(f"Failed to copy table {source_table_id} to {destination_table_id}: {e}", exc_info=True)
 
 def run_pipeline():
     """Orchestrates the final assembly and loading of asset metadata."""
@@ -262,6 +296,18 @@ def run_pipeline():
         
     df = pd.DataFrame(final_metadata)
     
-    bq.upsert_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID)
+    # Use load_df_to_bq with WRITE_TRUNCATE to handle schema evolution (e.g. adding run_date)
+    # and ensure the agent always sees a clean, up-to-date snapshot.
+    bq.load_df_to_bq(df, config.BUNDLER_ASSET_METADATA_TABLE_ID, config.DESTINATION_PROJECT_ID, write_disposition="WRITE_TRUNCATE")
     
+    # --- Sync Calendar Events Table ---
+    logging.info("Syncing Calendar Events table...")
+    _sync_bq_table(config.SOURCE_CALENDAR_EVENTS_TABLE_ID, config.DESTINATION_CALENDAR_EVENTS_TABLE_ID)
+
+    # --- Sync Agent Tables (Winners, Options, Price) ---
+    logging.info("Syncing Agent Data Tables...")
+    _sync_bq_table(config.SOURCE_WINNERS_DASHBOARD_TABLE_ID, config.DESTINATION_WINNERS_DASHBOARD_TABLE_ID)
+    _sync_bq_table(config.SOURCE_OPTIONS_CHAIN_TABLE_ID, config.DESTINATION_OPTIONS_CHAIN_TABLE_ID)
+    _sync_bq_table(config.SOURCE_PRICE_DATA_TABLE_ID, config.DESTINATION_PRICE_DATA_TABLE_ID)
+
     logging.info(f"--- Data Bundler (Final Assembly) Pipeline Finished ---")

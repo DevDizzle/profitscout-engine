@@ -89,6 +89,21 @@ main:
             max_delay: 60
             multiplier: 2
 
+    - call_macro_thesis_generator:
+        try:
+          call: http.post
+          args:
+            url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/macro-thesis-generator"}'
+            auth: { type: OIDC }
+            timeout: 900
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 5
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
+
     - call_news_analyzer:
         try:
           call: http.post

@@ -25,7 +25,16 @@ def _init_client() -> genai.Client | None:
         _log.critical("FAILED to initialize Vertex AI client: %s", e, exc_info=True)
         return None
 
-_client = _init_client()
+_client = None
+
+def _get_client() -> genai.Client:
+    """Lazy loader for the Vertex AI client."""
+    global _client
+    if _client is None:
+        _client = _init_client()
+        if _client is None:
+            raise RuntimeError("Vertex AI client is not available.")
+    return _client
 
 
 @retry(
@@ -37,12 +46,7 @@ _client = _init_client()
 )
 def generate(prompt: str) -> str:
     """Generates content using the Vertex AI client with retry logic (streaming)."""
-    global _client
-    if _client is None:
-        _log.warning("Vertex client was None; attempting re-init now…")
-        _client = _init_client()
-        if _client is None:
-            raise RuntimeError("Vertex AI client is not available.")
+    client = _get_client()
 
     _log.info("Generating content with Vertex AI (model=%s, prompt_tokens=%d)…", config.MODEL_NAME, len(prompt.split()))
     cfg = types.GenerateContentConfig(
@@ -50,7 +54,7 @@ def generate(prompt: str) -> str:
         seed=config.SEED, candidate_count=config.CANDIDATE_COUNT, max_output_tokens=config.MAX_OUTPUT_TOKENS,
     )
     text = ""
-    for chunk in _client.models.generate_content_stream(model=config.MODEL_NAME, contents=prompt, config=cfg):
+    for chunk in client.models.generate_content_stream(model=config.MODEL_NAME, contents=prompt, config=cfg):
         if chunk.text:
             text += chunk.text
     _log.info("Successfully received full streamed response from Vertex AI.")
@@ -76,12 +80,7 @@ def generate_with_tools(
     It enables the necessary tools for the model to perform both Google searches and
     browse specific URLs mentioned in the prompt.
     """
-    global _client
-    if _client is None:
-        _log.warning("Vertex client was None; attempting re-init now…")
-        _client = _init_client()
-        if _client is None:
-            raise RuntimeError("Vertex AI client is not available.")
+    client = _get_client()
 
     # Use pipeline-specific model/temp, or fall back to global defaults
     effective_model = model_name or config.MODEL_NAME
@@ -105,7 +104,7 @@ def generate_with_tools(
         tools=[google_search_tool],
     )
 
-    response = _client.models.generate_content(
+    response = client.models.generate_content(
         model=effective_model, contents=prompt, config=cfg
     )
 

@@ -104,4 +104,4 @@ MACRO_THESIS_SOURCE_CHAR_LIMIT = 15000
 MACRO_THESIS_SOURCES: list[dict] = []
 
 def macro_thesis_blob_name() -> str:
-    return "macro_thesis.txt"
+    return "macro-thesis/macro_thesis.txt"
