@@ -69,8 +69,9 @@ Your audience consists of traders looking for "Gamma Squeezes", "Unusual Flow", 
 Generate a JSON object matching the exact keys in the example below.
 
 **1. SEO Metadata (`seo`)**
-* `title`: "{ticker} Options Flow: [Bullish/Bearish] Gamma Setup & Targets"
+* `title`: "{ticker} Options Flow: [Bullish/Bearish] Gamma Setup & Targets | GammaRips"
 * `h1`: Strong headline focusing on the directional bias (e.g., "{ticker} Call Wall Test: Breakout Imminent").
+* **Brand Compliance:** Ensure the title ends with "| GammaRips". Do NOT use "ProfitScout".
 
 **2. Analyst Brief (`analystBrief`)**
 * `headline`: A punchy sub-headline summarizing the immediate setup (e.g., "Bulls attacking the ${{call_wall}} Call Wall").
@@ -145,13 +146,31 @@ def _delete_old_page_files(ticker: str):
         gcs.delete_blob(config.GCS_BUCKET_NAME, blob)
 
 def process_blob(blob_name: str) -> Optional[str]:
-    dated_format_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.md$')
+    dated_format_regex = re.compile(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.json$')
     file_name = os.path.basename(blob_name)
     match = dated_format_regex.match(file_name)
     if not match:
         return None
 
-    ticker, run_date_str = match.groups()
+    ticker_from_filename, _ = match.groups()
+
+    # 1. Read JSON content FIRST to get the correct date
+    rec_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
+    if not rec_json_str:
+        logging.error(f"[{ticker_from_filename}] Could not read blob {blob_name}")
+        return None
+        
+    rec_data = json.loads(rec_json_str)
+    # Prioritize JSON date, fallback to nothing (we need the date for BQ)
+    run_date_str = rec_data.get("run_date") 
+    ticker = rec_data.get("ticker", ticker_from_filename)
+    outlook_signal = rec_data.get("outlook_signal", "Neutral")
+
+    if not run_date_str:
+        # If not in JSON, try to recover from filename as last resort
+        _, filename_date = match.groups()
+        logging.warning(f"[{ticker}] 'run_date' missing in JSON. Falling back to filename date: {filename_date}")
+        run_date_str = filename_date
 
     bq_data = _get_data_from_bq(ticker, run_date_str)
     if not bq_data:
@@ -162,15 +181,7 @@ def process_blob(blob_name: str) -> Optional[str]:
     weighted_score = bq_data.get("weighted_score", 0.5)
     company_name = bq_data.get("company_name", ticker)
 
-    bullish_score = round((weighted_score - 0.5) * 20 + 50, 2) 
-
-    rec_json_path = blob_name.replace('.md', '.json')
-    rec_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, rec_json_path)
-    if rec_json_str:
-        rec_data = json.loads(rec_json_str)
-        outlook_signal = rec_data.get("outlook_signal", "Neutral")
-    else:
-        outlook_signal = "Neutral"
+    bullish_score = round(weighted_score * 100, 2) 
 
     # --- NEW: Fetch Options Market Structure ---
     options_market_structure = bq.fetch_options_market_structure(ticker)
