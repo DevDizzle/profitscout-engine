@@ -8,11 +8,27 @@ from .. import config, gcs, bq
 
 # --- Configuration ---
 RECOMMENDATION_PREFIX = "recommendations/"
+PAGE_JSON_PREFIX = "pages/"
 SIGNALS_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
 ASSET_METADATA_TABLE_ID = f"{config.DESTINATION_PROJECT_ID}.{config.BIGQUERY_DATASET}.asset_metadata"
 OUTPUT_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.winners_dashboard"
 
 # --- Main Logic ---
+
+def _get_page_headline(ticker: str, run_date: str) -> str | None:
+    """
+    Fetches the 'analystBrief.headline' from the SEO JSON file.
+    """
+    blob_name = f"{PAGE_JSON_PREFIX}{ticker}_page_{run_date}.json"
+    try:
+        content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
+        if content:
+            data = json.loads(content)
+            return data.get("analystBrief", {}).get("headline")
+    except Exception as e:
+        # It's okay if it fails or file doesn't exist, we just won't have the improved summary
+        pass
+    return None
 
 def _get_all_stock_recommendations() -> pd.DataFrame:
     """
@@ -202,6 +218,24 @@ def run_pipeline():
 
     # 5. Final Assembly
     final_df = pd.merge(winners_complete, asset_metadata_df, on='ticker', how='left')
+    
+    # --- NEW: Inject Gamma/Analyst Headline into Summary ---
+    # Iterate over rows and fetch the improved headline if available
+    
+    updated_summaries = []
+    for _, row in final_df.iterrows():
+        ticker = row['ticker']
+        run_date_str = str(row['run_date']) # Ensure string format
+        current_summary = row.get('summary', '')
+        
+        headline = _get_page_headline(ticker, run_date_str)
+        if headline:
+            updated_summaries.append(headline)
+        else:
+            updated_summaries.append(current_summary)
+            
+    final_df['summary'] = updated_summaries
+    # -------------------------------------------------------
     
     # Fill missing cols with defaults to satisfy Firestore schema
     defaults = {

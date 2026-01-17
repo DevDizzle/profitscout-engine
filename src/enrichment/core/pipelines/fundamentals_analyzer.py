@@ -111,28 +111,53 @@ Treat the data record with date `{date_str}` as the **CURRENT** period. The othe
 
 def run_pipeline():
     """
-    Finds and processes pairs of key metrics and ratios files that have not yet
-    been analyzed by the combined fundamentals_analyzer.
+    Finds and processes pairs of key metrics and ratios files.
+    Implements timestamp-based caching: Only re-runs analysis if the input data 
+    (metrics) is newer than the existing analysis output.
     """
     logging.info("--- Starting Combined Fundamentals Analysis Pipeline ---")
 
-    all_metrics_files = {os.path.basename(p): p for p in gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=METRICS_INPUT_PREFIX)}
-    all_ratios_files = {os.path.basename(p): p for p in gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=RATIOS_INPUT_PREFIX)}
-    all_analyses = set(os.path.basename(p) for p in gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=FUNDAMENTALS_OUTPUT_PREFIX))
+    # Fetch all files with metadata (updated timestamps)
+    all_metrics_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=METRICS_INPUT_PREFIX)
+    all_ratios_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=RATIOS_INPUT_PREFIX)
+    all_analysis_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=FUNDAMENTALS_OUTPUT_PREFIX)
+
+    # Map filenames to timestamps for easier lookup
+    metrics_map = {os.path.basename(k): v for k, v in all_metrics_blobs.items()}
+    ratios_map = {os.path.basename(k): v for k, v in all_ratios_blobs.items()}
+    analysis_map = {os.path.basename(k): v for k, v in all_analysis_blobs.items()}
 
     work_items = []
-    for file_name in all_metrics_files:
-        # Check if we have the pair AND if we haven't analyzed it yet
-        if file_name in all_ratios_files and file_name not in all_analyses:
-            ticker, date_str = parse_filename(file_name)
-            if ticker and date_str:
-                work_items.append((ticker, date_str))
+    skipped_count = 0
+
+    for file_name, metrics_timestamp in metrics_map.items():
+        # We need both metrics and ratios to proceed
+        if file_name not in ratios_map:
+            continue
+            
+        ticker, date_str = parse_filename(file_name)
+        if not ticker or not date_str:
+            continue
+
+        # Check if we already have an analysis for this file
+        if file_name in analysis_map:
+            analysis_timestamp = analysis_map[file_name]
+            
+            # CACHE LOGIC: If Analysis is NEWER than Metrics, we can skip.
+            # (Assuming Ratios update roughly at same time as Metrics, checking one is usually enough)
+            if analysis_timestamp > metrics_timestamp:
+                skipped_count += 1
+                continue
+            else:
+                logging.info(f"[{ticker}] Data updated (Metrics: {metrics_timestamp} > Analysis: {analysis_timestamp}). Re-running.")
+        
+        work_items.append((ticker, date_str))
 
     if not work_items:
-        logging.info("All fundamental analyses are up-to-date.")
+        logging.info(f"All fundamental analyses are up-to-date. (Skipped {skipped_count})")
         return
 
-    logging.info(f"Found {len(work_items)} new sets of fundamentals to analyze.")
+    logging.info(f"Found {len(work_items)} sets of fundamentals to analyze (Skipped {skipped_count} up-to-date).")
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = [executor.submit(process_fundamental_files, ticker, date_str) for ticker, date_str in work_items]

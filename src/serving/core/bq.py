@@ -101,7 +101,9 @@ def fetch_options_market_structure(ticker: str) -> dict:
     
     query = f"""
     WITH LatestChain AS (
-        SELECT *
+        SELECT 
+            *,
+            DATE_DIFF(expiration_date, fetch_date, DAY) as dte
         FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}`
         WHERE ticker = @ticker
           AND fetch_date = (
@@ -123,10 +125,10 @@ def fetch_options_market_structure(ticker: str) -> dict:
     ),
     Walls AS (
         SELECT
-            -- Call Wall: Strike with highest Call OI (Resistance)
-            (SELECT strike FROM LatestChain WHERE LOWER(option_type) = 'call' ORDER BY open_interest DESC LIMIT 1) as call_wall,
-            -- Put Wall: Strike with highest Put OI (Support)
-            (SELECT strike FROM LatestChain WHERE LOWER(option_type) = 'put' ORDER BY open_interest DESC LIMIT 1) as put_wall,
+            -- Call Wall: Strike with highest Call Net Gamma (Resistance) - updated to avoid deep ITM strikes
+            (SELECT strike FROM LatestChain WHERE LOWER(option_type) = 'call' ORDER BY (IFNULL(gamma, 0) * open_interest) DESC LIMIT 1) as call_wall,
+            -- Put Wall: Strike with highest Put Net Gamma (Support) - updated to avoid deep ITM strikes
+            (SELECT strike FROM LatestChain WHERE LOWER(option_type) = 'put' ORDER BY (IFNULL(gamma, 0) * open_interest) DESC LIMIT 1) as put_wall,
             -- Volatility Wall: Highest IV usually indicates fear or expected move
             (SELECT strike FROM LatestChain ORDER BY implied_volatility DESC LIMIT 1) as max_iv_strike
     ),
@@ -144,6 +146,7 @@ def fetch_options_market_structure(ticker: str) -> dict:
                 ) ORDER BY volume DESC LIMIT 5
             ) as top_active_contracts
         FROM LatestChain
+        WHERE dte BETWEEN 14 AND 60
     )
     SELECT
         s.*,

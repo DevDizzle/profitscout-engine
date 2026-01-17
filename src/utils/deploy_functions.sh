@@ -76,6 +76,8 @@ deploy_http_function "score-aggregator" "${ENRICHMENT_SOURCE_DIR}" "run_score_ag
 deploy_http_function "technicals-analyzer" "${ENRICHMENT_SOURCE_DIR}" "run_technicals_analyzer"
 deploy_http_function "transcript-analyzer" "${ENRICHMENT_SOURCE_DIR}" "run_transcript_analyzer"
 deploy_http_function "macro-thesis-generator" "${ENRICHMENT_SOURCE_DIR}" "run_thesis_generator"
+deploy_http_function "options-analyzer" "${ENRICHMENT_SOURCE_DIR}" "run_options_analyzer"
+deploy_http_function "options-candidate-selector" "${ENRICHMENT_SOURCE_DIR}" "run_options_candidate_selector"
 
 # --- Serving Functions ---
 echo "Deploying SERVING functions..."
@@ -83,5 +85,6 @@ deploy_http_function "page-generator" "./src/serving" "run_page_generator"
 deploy_http_function "dashboard-generator" "./src/serving" "run_page_generator"
 deploy_http_function "run-dashboard-generator" "./src/serving" "run_dashboard_generator"
 deploy_http_function "recommendations-generator" "./src/serving" "run_recommendations_generator"
+deploy_http_function "run-winners-dashboard-generator" "./src/serving" "run_winners_dashboard_generator"
 
 echo "--- All functions deployed successfully. ---"

@@ -156,20 +156,47 @@ Treat the record with date `{date_str}` as **CURRENT**. The other records are hi
         return None
 
 def run_pipeline():
+    """
+    Finds and processes financial statement files.
+    Implements timestamp-based caching: Only re-runs analysis if the input data 
+    is newer than the existing analysis output.
+    """
     logging.info("--- Starting Financials Analysis Pipeline ---")
-    all_inputs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-    all_analyses = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX))
     
-    work_items = [
-        blob for blob in all_inputs 
-        if not f"{OUTPUT_PREFIX}{os.path.basename(blob)}" in all_analyses
-    ]
+    # Fetch all files with metadata (updated timestamps)
+    all_input_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
+    all_analysis_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX)
+    
+    # Map filenames to timestamps for easier lookup
+    # Note: Input is like 'merged_financials/TICKER_DATE.json', output is 'financials_analysis/TICKER_DATE.json'
+    # We match on basename.
+    inputs_map = {os.path.basename(k): (k, v) for k, v in all_input_blobs.items()}
+    analysis_map = {os.path.basename(k): v for k, v in all_analysis_blobs.items()}
+    
+    work_items = []
+    skipped_count = 0
+    
+    for file_name, (full_blob_path, input_timestamp) in inputs_map.items():
+        # Check if we already have an analysis for this file
+        if file_name in analysis_map:
+            analysis_timestamp = analysis_map[file_name]
+            
+            # CACHE LOGIC: If Analysis is NEWER than Input, we can skip.
+            if analysis_timestamp > input_timestamp:
+                skipped_count += 1
+                continue
+            else:
+                ticker, _ = parse_filename(file_name)
+                logging.info(f"[{ticker}] Financials updated (Input: {input_timestamp} > Analysis: {analysis_timestamp}). Re-running.")
+        
+        # If we are here, we need to process (either missing or outdated)
+        work_items.append(full_blob_path)
             
     if not work_items:
-        logging.info("All financials analyses are up-to-date.")
+        logging.info(f"All financials analyses are up-to-date. (Skipped {skipped_count})")
         return
 
-    logging.info(f"Found {len(work_items)} new financial files to analyze.")
+    logging.info(f"Found {len(work_items)} financial files to analyze (Skipped {skipped_count} up-to-date).")
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = [executor.submit(process_blob, item) for item in work_items]

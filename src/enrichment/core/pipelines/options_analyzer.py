@@ -190,6 +190,11 @@ def _fetch_candidates_all() -> pd.DataFrame:
         a.latest_macd,
         a.latest_sma50,
         a.total_gex,
+        a.call_wall,
+        a.put_wall,
+        a.max_pain,
+        a.put_call_vol_ratio AS market_pc_ratio,
+        a.net_call_gamma,
         s.score_percentile,
         s.news_score
     FROM candidates c
@@ -218,7 +223,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
 
 def _process_contract(row: pd.Series) -> dict | None:
     """
-    Contract-level scoring with 'ML Sniper' Override.
+    Contract-level scoring with 'Strategy' and 'Market Structure' Awareness.
     """
     ticker = row["ticker"]
     csym = row.get("contract_symbol")
@@ -242,17 +247,26 @@ def _process_contract(row: pd.Series) -> dict | None:
     total_gex = row.get("total_gex", 0)
     is_uoa = row.get("is_uoa", False)
     
-    # [NEW] Check for ML flag
-    is_ml_pick = row.get("is_ml_pick", False)
+    # Market Structure (Walls & Flow)
+    call_wall = row.get("call_wall")
+    put_wall = row.get("put_wall")
+    pc_ratio = row.get("market_pc_ratio") or row.get("pc_ratio") # Prefer analysis, fallback to candidate
+    strike = row.get("strike", 0)
     
-    # --- CONVICTION CHECK (Tier 1 Detection) ---
+    # [NEW] Strategy Tag
+    strategy = row.get("strategy", "STANDARD")
+    is_ml_pick = row.get("is_ml_pick", False) or strategy == "ML_SNIPER"
+    is_conviction = strategy == "CONVICTION"
+    
+    # Fallback identification
     score_pct = row.get("score_percentile", 0.5)
     news_score = row.get("news_score", 0.0)
     if pd.isna(news_score): news_score = 0.0
     if pd.isna(score_pct): score_pct = 0.5
     
-    # Is this a "Rip Hunter" setup? (Top/Bottom 20% OR Breaking News)
-    is_rip_hunter = (score_pct >= 0.80 or score_pct <= 0.20 or news_score >= 0.90)
+    if strategy == "STANDARD" and (score_pct >= 0.80 or score_pct <= 0.20 or news_score >= 0.90):
+        is_conviction = True
+        strategy = "CONVICTION"
 
     direction_bull = row.get("outlook_signal") in ("Strongly Bullish", "Moderately Bullish")
     direction_bear = row.get("outlook_signal") in ("Strongly Bearish", "Moderately Bearish")
@@ -262,20 +276,37 @@ def _process_contract(row: pd.Series) -> dict | None:
 
     vol_cmp_signal = _get_volatility_signal(contract_iv, hv_30)
     
-    # --- Forgiveness Logic ---
-    if is_rip_hunter:
-        # Volatility: Enforce "Not Expensive" (Proxy for IV Percentile check)
-        vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
-        # Spread: Enforce spread check even for Rip Hunters
-        spread_ok = _price_bucketed_spread_ok(mid_px, spread) 
-        be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
+    # --- Market Structure Checks ---
+    structure_warning = []
+    
+    # 1. Wall Check (Don't buy calls ABOVE the Call Wall unless it's a breakout)
+    if is_call and call_wall and strike > call_wall:
+         structure_warning.append("Strike > Call Wall (Resistance)")
+    
+    # 2. Sentiment Check
+    if is_call and pc_ratio and pc_ratio > 2.0:
+        structure_warning.append("Bearish Flow (High P/C Ratio)")
+    
+    # --- Dynamic Risk Management (Forgiveness Logic) ---
+    if is_ml_pick or is_conviction:
+         vol_ok = True 
     else:
         vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
+
+    if is_ml_pick:
+         spread_ok = (spread is not None and spread <= 25)
+    elif is_conviction:
+         spread_ok = (spread is not None and spread <= 20)
+    else:
         spread_ok = _price_bucketed_spread_ok(mid_px, spread)
+
+    if is_ml_pick or is_conviction:
+        be_ok = (be_pct is not None and exp_move is not None and be_pct <= (exp_move * 1.2))
+    else:
         be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
 
     red_flags = 0
-    if not aligned and not is_ml_pick: # ML picks are aligned by definition in selection
+    if not aligned and not is_ml_pick: 
         red_flags += 1
     if not vol_ok:
         red_flags += 1
@@ -283,60 +314,53 @@ def _process_contract(row: pd.Series) -> dict | None:
         red_flags += 1
     if not be_ok:
         red_flags += 1
+    if len(structure_warning) > 0 and not is_ml_pick: # ML picks override structure warnings (contrarian)
+        red_flags += 1
     
-    # Theta Check: Avoid short-term decay traps UNLESS it's a Rip Hunter or Sniper
-    if not (is_rip_hunter or is_ml_pick):
+    if not (is_conviction or is_ml_pick):
         if row.get("theta") is not None and row.get("theta") < -0.05 and (dte is not None and dte <= 7):
             red_flags += 1
-    
-    # --- GEX Logic ---
-    # UPDATED: We no longer penalize based on GEX for ANY tier.
-    # if total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
-    #    red_flags += 1  
 
     # --- Scoring Logic ---
     quality = "Fair"
     summary_parts = []
 
     if is_ml_pick:
-        # ML Sniper Logic:
         if red_flags == 0:
             quality = "Strong"
-            summary_parts.append("ML SNIPER ALERT: Top 10 High-Probability Volatility Setup.")
+            summary_parts.append("ML SNIPER: Algorithmic Conviction Setup.")
         elif red_flags >= 2:
             quality = "Weak"
-            summary_parts.append("ML SNIPER ALERT (High Risk): Multiple checks failed.")
+            summary_parts.append("ML SNIPER (Risky): Signal strong but structure/flow weak.")
         else:
             quality = "Fair"
-            summary_parts.append("ML SNIPER ALERT (Risky): Checks failed but high probability.")
+            summary_parts.append("ML SNIPER: Moderate structural risk.")
 
-    elif is_rip_hunter and aligned and red_flags == 0:
-        # FORCE STRONG for Rip Hunters ONLY if they pass the (forgiven) checks
+    elif is_conviction and aligned and red_flags == 0:
         quality = "Strong"
-        summary_parts.append("High Conviction Setup: Prioritizing directional move over structure.")
+        summary_parts.append("CONVICTION PLAY: Strong fundamental tailwinds.")
 
     elif red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
         quality = "Strong"
-        summary_parts.append("Solid setup: Direction aligns, IV reasonable, liquidity good.")
+        summary_parts.append("Standard Setup: Direction aligns with structure.")
     elif red_flags >= 2:
         quality = "Weak"
-        summary_parts.append("Multiple risks.")
+        summary_parts.append("Multiple risks detected.")
     else:
         summary_parts.append("Mixed setup.")
 
-    # --- UOA Boost ---
-    if is_uoa:
-        summary_parts.append("Unusual Options Activity detected (Vol > OI).")
-        if quality == "Weak":
-            quality = "Fair"
-        elif quality == "Fair":
-            quality = "Strong"
+    if structure_warning:
+        summary_parts.append(f"Caution: {', '.join(structure_warning)}.")
 
-    # --- GEX Commentary ---
+    if is_uoa:
+        summary_parts.append("Unusual Options Activity (Vol > OI).")
+        if quality == "Weak": quality = "Fair"
+        elif quality == "Fair": quality = "Strong"
+
     if total_gex and total_gex < NEGATIVE_GEX_THRESHOLD:
-        summary_parts.append("Negative Gamma Exposure suggests high volatility potential.")
+        summary_parts.append("Negative Gamma Regime (Volatile).")
     elif total_gex and total_gex > POSITIVE_GEX_THRESHOLD:
-        summary_parts.append("High Positive Gamma may pin price/suppress volatility.")
+        summary_parts.append("Positive Gamma Regime (Pinned).")
 
     summary = " ".join(summary_parts)
 
@@ -355,7 +379,8 @@ def _process_contract(row: pd.Series) -> dict | None:
             "option_type": str(row.get("option_type")).lower()
             if row.get("option_type") is not None
             else None,
-            "options_score": row.get("options_score")
+            "options_score": row.get("options_score"),
+            "strategy": strategy 
         }
     except Exception as e:
         logging.error(

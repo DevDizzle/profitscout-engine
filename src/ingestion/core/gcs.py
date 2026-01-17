@@ -70,6 +70,20 @@ def cleanup_old_files(storage_client: storage.Client, folder: str, ticker: str, 
             logger.error(f"Failed to delete blob {blob.name}: {e}")
 
 
+def read_blob(bucket_name: str, blob_name: str) -> Optional[str]:
+    """Reads a blob from GCS and returns its content as a string."""
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        if not blob.exists():
+            return None
+        return blob.download_as_text()
+    except Exception as e:
+        logger.error(f"Failed to read blob {blob_name}: {e}")
+        return None
+
+
 def list_existing_transcripts(storage_client: storage.Client) -> set:
     """Lists existing transcripts in GCS and returns a set of (ticker, date_str) tuples."""
     bucket = storage_client.bucket(config.GCS_BUCKET_NAME)

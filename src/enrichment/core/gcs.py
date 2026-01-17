@@ -46,6 +46,17 @@ def list_blobs(bucket_name: str, prefix: str | None = None, client: storage.Clie
     blobs = storage_client.list_blobs(bucket_name, prefix=prefix)
     return [blob.name for blob in blobs]
 
+
+def list_blobs_with_properties(bucket_name: str, prefix: str | None = None, client: storage.Client | None = None) -> dict[str, object]:
+    """
+    Lists blobs with their metadata properties (specifically 'updated' timestamp).
+    Returns a dict: {blob_name: blob_updated_datetime}
+    """
+    storage_client = client or _client()
+    blobs = storage_client.list_blobs(bucket_name, prefix=prefix)
+    return {blob.name: blob.updated for blob in blobs}
+
+
 def cleanup_old_files(bucket_name: str, folder: str, ticker: str, keep_filename: str):
     """Deletes all files for a ticker in a folder except for the one to keep."""
     # This function is less intensive usually, but we could update it too.

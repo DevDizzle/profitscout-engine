@@ -76,7 +76,7 @@ def _process_ticker(
 ) -> Optional[dict]:
     """
     Worker function to process data for one ticker.
-    Now calculates Total Net Gamma Exposure (GEX).
+    Now calculates Total Net Gamma Exposure (GEX) and Market Structure.
     """
     try:
         if price_history_df.empty:
@@ -88,7 +88,8 @@ def _process_ticker(
         latest_price_row = price_history_df.sort_values("date").iloc[-1]
         as_of_date = pd.to_datetime(latest_price_row["date"]).date()
 
-        iv_avg, iv_signal, total_gex = None, None, None
+        iv_avg, iv_signal = None, None
+        market_structure = {}
         
         if not chain_df.empty:
             uprice = (
@@ -106,9 +107,8 @@ def _process_ticker(
             if iv_avg is not None and hv_30_for_signal is not None:
                 iv_signal = "high" if iv_avg > (hv_30_for_signal + 0.10) else "low"
                 
-            # Calculate Total Net Gamma Exposure using the helper
-            if hasattr(helper, 'compute_net_gex'):
-                total_gex = helper.compute_net_gex(chain_df, uprice)
+            # Calculate Market Structure (Walls, GEX, Max Pain)
+            market_structure = helper.compute_market_structure(chain_df, uprice)
 
         hv_30 = helper.compute_hv30(
             None, ticker, as_of_date, price_history_df=price_history_df
@@ -146,7 +146,15 @@ def _process_ticker(
             "iv_avg": iv_avg,
             "hv_30": hv_30,
             "iv_signal": iv_signal,
-            "total_gex": total_gex,
+            # Unpack Market Structure
+            "total_gex": market_structure.get("total_gex"),
+            "call_wall": market_structure.get("call_wall"),
+            "put_wall": market_structure.get("put_wall"),
+            "max_pain": market_structure.get("max_pain"),
+            "put_call_vol_ratio": market_structure.get("put_call_vol_ratio"),
+            "put_call_oi_ratio": market_structure.get("put_call_oi_ratio"),
+            "net_call_gamma": market_structure.get("net_call_gamma"),
+            "net_put_gamma": market_structure.get("net_put_gamma"),
             **tech,
         }
     except Exception as e:

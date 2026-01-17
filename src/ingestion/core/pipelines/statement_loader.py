@@ -11,45 +11,83 @@ def find_match_by_date(data_list: list[dict], target_date: str) -> dict:
     """Finds the record in a list that matches a specific date."""
     return next((item for item in data_list if item.get("date") == target_date), {})
 
+def _is_statement_incomplete(data) -> bool:
+    """
+    Checks if the most recent financial statement record appears to be a placeholder (zeros).
+    """
+    if not data or not isinstance(data, list):
+        return True
+    
+    latest = data[0]
+    
+    # Check key fields across different statement types.
+    # We use .get() so this works for Income, Balance Sheet, and Cash Flow.
+    revenue = latest.get('revenue', -1) # Default -1 to ignore if field invalid for this type
+    assets = latest.get('totalAssets', -1)
+    ocf = latest.get('operatingCashFlow', -1)
+    
+    # Heuristic: If it's an Income Statement (has revenue) and revenue is 0.
+    if revenue == 0:
+        return True
+    
+    # Heuristic: If it's a Balance Sheet (has assets) and assets are 0.
+    if assets == 0:
+        return True
+        
+    # Heuristic: If it's a Cash Flow Statement (has OCF) and OCF is 0.
+    if ocf == 0:
+        return True
+        
+    return False
+
 def process_ticker(ticker: str, fmp_client: FMPClient, storage_client: storage.Client):
-    """Applies the hybrid update logic for a single ticker's statements."""
+    """
+    Orchestrates the fetch and load of Income, Balance Sheet, and Cash Flow statements.
+    """
+    endpoints = {
+        "income-statement": config.INCOME_STATEMENT_FOLDER,
+        "balance-sheet-statement": config.BALANCE_SHEET_FOLDER,
+        "cash-flow-statement": config.CASH_FLOW_FOLDER
+    }
+
+    # We need a reference date to name the files correctly. 
+    # Usually we use the latest quarter date from the API.
     latest_date = fmp_client.get_latest_quarter_end_date(ticker)
     if not latest_date:
-        return f"{ticker}: No latest date found, skipped."
+        return f"{ticker}: No latest date found (statements), skipped."
 
-    expected_filename = f"{config.FINANCIAL_STATEMENTS_FOLDER}{ticker}_{latest_date}.json"
+    for endpoint_name, gcs_folder in endpoints.items():
+        expected_filename = f"{gcs_folder}{ticker}_{latest_date}.json"
+        fetch_needed = True
 
-    if blob_exists(storage_client, expected_filename):
-        return f"{ticker}: Financial statements are already up-to-date."
+        if blob_exists(storage_client, expected_filename):
+            # TRUST BUT VERIFY
+            from ..gcs import read_blob
+            existing_json_str = read_blob(config.GCS_BUCKET_NAME, expected_filename)
+            import json
+            try:
+                existing_data = json.loads(existing_json_str) if existing_json_str else []
+                if _is_statement_incomplete(existing_data):
+                    logging.warning(f"{ticker} ({endpoint_name}): Existing file found but data is INCOMPLETE (zeros). Forcing refresh.")
+                    fetch_needed = True
+                else:
+                    logging.info(f"{ticker} ({endpoint_name}) is up-to-date and complete.")
+                    fetch_needed = False
+            except Exception as e:
+                logging.warning(f"{ticker}: Failed to validate existing statement {expected_filename}: {e}. Refreshing.")
+                fetch_needed = True
 
-    logging.info(f"{ticker}: Statements are outdated. Fetching new data...")
-    all_data = fmp_client.get_financial_statements(ticker, limit=config.QUARTERS_TO_FETCH)
+        if fetch_needed:
+            logging.info(f"{ticker} ({endpoint_name}) fetching new data...")
+            data = fmp_client.get_financial_data(ticker, endpoint_name, limit=config.QUARTERS_TO_FETCH)
+            if not data:
+                logging.warning(f"{ticker}: No {endpoint_name} data returned.")
+                continue
 
-    if not any(all_data.values()):
-        return f"{ticker}: No financial statement data returned from API."
-
-    # Get all unique dates from the fetched data
-    all_dates = sorted(pd.to_datetime(
-        [item['date'] for statement_list in all_data.values() for item in statement_list]
-    ).unique(), reverse=True)
-
-    quarterly_reports = []
-    for date_obj in all_dates:
-        date_str = date_obj.strftime('%Y-%m-%d')
-        report = {
-            "date": date_str,
-            "income_statement": find_match_by_date(all_data.get('income', []), date_str),
-            "balance_sheet": find_match_by_date(all_data.get('balance', []), date_str),
-            "cash_flow_statement": find_match_by_date(all_data.get('cashflow', []), date_str)
-        }
-        quarterly_reports.append(report)
-
-    output_doc = {"symbol": ticker, "quarterly_reports": quarterly_reports}
-
-    upload_json_to_gcs(storage_client, output_doc, expected_filename)
-    cleanup_old_files(storage_client, config.FINANCIAL_STATEMENTS_FOLDER, ticker, expected_filename)
-
-    return f"{ticker}: Statements processed and uploaded."
+            upload_json_to_gcs(storage_client, data, expected_filename)
+            cleanup_old_files(storage_client, gcs_folder, ticker, expected_filename)
+            
+    return f"{ticker}: Statements processing complete."
 
 
 def run_pipeline(fmp_client: FMPClient, storage_client: storage.Client):

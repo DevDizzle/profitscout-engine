@@ -26,12 +26,15 @@ ATM_DTE_MIN, ATM_DTE_MAX, ATM_MNY_PCT = 7, 90, 0.05
 
 def ensure_table_exists(bq: bigquery.Client) -> None:
     """Create the options_analysis_input table if it doesn't exist."""
-    # Added total_gex to the schema
+    # Added market structure columns to schema
     ddl = f"""
     CREATE TABLE IF NOT EXISTS `{TARGET_TABLE_ID}` (
         ticker STRING, date DATE, open FLOAT64, high FLOAT64, low FLOAT64,
         adj_close FLOAT64, volume INT64, iv_avg FLOAT64, hv_30 FLOAT64,
         iv_industry_avg FLOAT64, iv_signal STRING, total_gex FLOAT64,
+        call_wall FLOAT64, put_wall FLOAT64, max_pain FLOAT64,
+        put_call_vol_ratio FLOAT64, put_call_oi_ratio FLOAT64,
+        net_call_gamma FLOAT64, net_put_gamma FLOAT64,
         latest_rsi FLOAT64, latest_macd FLOAT64, latest_sma50 FLOAT64, latest_sma200 FLOAT64,
         close_30d_delta_pct FLOAT64, rsi_30d_delta FLOAT64, macd_30d_delta FLOAT64,
         close_90d_delta_pct FLOAT64, rsi_90d_delta FLOAT64, macd_90d_delta FLOAT64
@@ -232,6 +235,106 @@ def compute_net_gex(
     except Exception as e:
         print(f"Error computing GEX: {e}")
         return None
+
+
+def compute_market_structure(
+    full_chain_df: pd.DataFrame, underlying_price: Optional[float]
+) -> Dict[str, Optional[float]]:
+    """
+    Computes key Market Structure metrics:
+    - Walls (Call/Put OI Leaders)
+    - Max Pain (Strike where option holders lose most)
+    - P/C Ratios (Sentiment)
+    - Net Gamma Breakdown
+    """
+    out = {
+        "call_wall": None,
+        "put_wall": None,
+        "max_pain": None,
+        "put_call_vol_ratio": None,
+        "put_call_oi_ratio": None,
+        "net_call_gamma": None,
+        "net_put_gamma": None,
+        "total_gex": None
+    }
+
+    if full_chain_df is None or full_chain_df.empty or not underlying_price:
+        return out
+
+    try:
+        df = full_chain_df.copy()
+        
+        # Ensure numeric types
+        cols = ["gamma", "open_interest", "volume", "strike", "last_price"]
+        for c in cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        
+        # 1. P/C Ratios
+        total_call_vol = df[df["option_type"].str.lower() == "call"]["volume"].sum()
+        total_put_vol = df[df["option_type"].str.lower() == "put"]["volume"].sum()
+        total_call_oi = df[df["option_type"].str.lower() == "call"]["open_interest"].sum()
+        total_put_oi = df[df["option_type"].str.lower() == "put"]["open_interest"].sum()
+        
+        if total_call_vol > 0:
+            out["put_call_vol_ratio"] = _safe_float(total_put_vol / total_call_vol)
+        if total_call_oi > 0:
+            out["put_call_oi_ratio"] = _safe_float(total_put_oi / total_call_oi)
+            
+        # 2. Walls (Strike with Max OI)
+        calls = df[df["option_type"].str.lower() == "call"]
+        puts = df[df["option_type"].str.lower() == "put"]
+        
+        if not calls.empty:
+            out["call_wall"] = _safe_float(calls.loc[calls["open_interest"].idxmax()]["strike"])
+        if not puts.empty:
+            out["put_wall"] = _safe_float(puts.loc[puts["open_interest"].idxmax()]["strike"])
+            
+        # 3. Gamma Exposure (GEX)
+        # Gamma * OI * 100 * Spot
+        # Call GEX is Positive, Put GEX is Negative
+        if "gamma" in df.columns:
+            df["contract_gex"] = df["gamma"] * df["open_interest"] * 100 * underlying_price
+            
+            call_gex = df[df["option_type"].str.lower() == "call"]["contract_gex"].sum()
+            put_gex = df[df["option_type"].str.lower() == "put"]["contract_gex"].sum() # Positive magnitude
+            
+            out["net_call_gamma"] = _safe_float(call_gex)
+            out["net_put_gamma"] = _safe_float(put_gex) # Stored as positive magnitude usually
+            out["total_gex"] = _safe_float(call_gex - put_gex)
+
+        # 4. Max Pain
+        # The strike price where the total intrinsic value of all options (Calls + Puts) is minimized.
+        strikes = df["strike"].unique()
+        min_pain = float('inf')
+        pain_strike = None
+        
+        # Optimization: Only check strikes with significant OI to save time
+        relevant_strikes = df[df["open_interest"] > 100]["strike"].unique()
+        if len(relevant_strikes) == 0:
+            relevant_strikes = strikes
+
+        for k in relevant_strikes:
+            # Intrinsic Value of Calls if expired at k: max(0, k - strike) * OI_call  <-- WRONG direction
+            # Intrinsic Value of Calls if expired at k: max(0, k - call_strike) -> Calls are ITM if k > strike.
+            # wait, if price settles at 'k':
+            # Call Value = max(0, k - call_strike) * OI
+            # Put Value = max(0, put_strike - k) * OI
+            
+            call_loss = calls.apply(lambda row: max(0, k - row['strike']) * row['open_interest'], axis=1).sum()
+            put_loss = puts.apply(lambda row: max(0, row['strike'] - k) * row['open_interest'], axis=1).sum()
+            
+            total_loss = call_loss + put_loss
+            if total_loss < min_pain:
+                min_pain = total_loss
+                pain_strike = k
+                
+        out["max_pain"] = _safe_float(pain_strike)
+
+    except Exception as e:
+        print(f"Error computing Market Structure: {e}")
+        
+    return out
 
 
 def compute_technicals_and_deltas(

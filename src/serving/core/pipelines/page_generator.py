@@ -77,6 +77,8 @@ Generate a JSON object matching the exact keys in the example below.
 * `headline`: A punchy sub-headline summarizing the immediate setup (e.g., "Bulls attacking the ${{call_wall}} Call Wall").
 * `content`: A ~250 word HTML-formatted analysis (<p>, <strong>).
     * **CRITICAL:** You MUST reference the specific data from "Market Structure".
+    * **Focus your analysis on the provided top active contracts which are 14-60 days out (Swing Trade window).**
+    * **Avoid referencing 0DTE or near-term expiring contracts unless identifying immediate risk.**
     * Analyze the **Call Wall** (Resistance) and **Put Wall** (Support).
     * Interpret the **Put/Call Ratio** and **Net Gamma** (e.g., "Negative Gamma regime implies higher volatility").
     * Cite the **Top Active Contracts** as evidence of "Smart Money" positioning.

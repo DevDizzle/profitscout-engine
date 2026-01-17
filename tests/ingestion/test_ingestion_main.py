@@ -82,24 +82,22 @@ class TestIngestionMain(unittest.TestCase):
         self.assertIn("Server config error", response)
         mock_run_pipeline.assert_not_called()
 
-    @patch("src.ingestion.core.pipelines.spy_price_sync.run_pipeline")
-    def test_sync_spy_price_history_success(self, mock_run_pipeline):
-        """Test running the SPY price sync when clients are configured."""
-        self.main.bq_client = MagicMock()
-        self.main.firestore_client = self.mock_firestore_client
-        self.main.fmp_client = self.mock_fmp_client
-
-        mock_request = MagicMock()
-        response, status_code = self.main.sync_spy_price_history(mock_request)
-
-        self.assertEqual(status_code, 202)
-        self.assertEqual(response, "SPY price sync pipeline started.")
-        mock_run_pipeline.assert_called_once_with(
-            bq_client=self.main.bq_client,
-            firestore_client=self.main.firestore_client,
-            fmp_client=self.main.fmp_client,
-        )
-
+        @patch("src.ingestion.core.pipelines.spy_price_sync.run_pipeline")
+        def test_sync_spy_price_history_success(self, mock_run_pipeline):
+            """Test running the SPY price sync when clients are configured."""
+            self.main.bq_client = MagicMock()
+            self.main.firestore_client = self.mock_firestore_client
+            self.main.fmp_client = self.mock_fmp_client
+    
+            mock_request = MagicMock()
+            response, status_code = self.main.sync_spy_price_history(mock_request)
+    
+            self.assertEqual(status_code, 202)
+            self.assertEqual(response, "SPY price sync pipeline started.")
+            mock_run_pipeline.assert_called_once_with(
+                bq_client=self.main.bq_client,
+                fmp_client=self.main.fmp_client,
+            )
 
 if __name__ == "__main__":
     unittest.main()

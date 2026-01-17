@@ -74,6 +74,15 @@ def _create_candidates_table(bq: bigquery.Client):
       FROM `{CHAIN_TABLE}` t
       JOIN latest_chain_per_ticker l USING (ticker, fetch_date)
     ),
+    sentiment AS (
+      -- [NEW] Calculate Daily P/C Ratio for Sentiment Validation
+      SELECT 
+        ticker,
+        SAFE_DIVIDE(SUM(CASE WHEN LOWER(option_type)='put' THEN volume ELSE 0 END), 
+                    NULLIF(SUM(CASE WHEN LOWER(option_type)='call' THEN volume ELSE 0 END), 0)) as pc_ratio
+      FROM chain_scoped
+      GROUP BY ticker
+    ),
     base AS (
       SELECT
         c.*,
@@ -168,12 +177,15 @@ def _create_candidates_table(bq: bigquery.Client):
       SELECT
         f.*,
         -- Scoring: ML Picks get a massive boost to ensure they rank #1
-        -- Tightened Logic:
-        -- 1. Volume Capped at 5k (approx 2 pts max)
-        -- 2. Spread Penalty: Linear decay. 0% spread = +1.0, 25% spread = 0.0
-        -- 3. Gamma Bonus: +0.5 for NTM (0.95-1.05)
+        -- GammaRips Logic: 
+        -- 1. ML Override: +100 pts (Top Priority)
+        -- 2. Gamma Sensitivity: Reward high gamma (e.g., 0.05 gamma * 20 = +1.0 pt). 
+        -- 3. Liquidity: Volume up to 5k.
+        -- 4. Spread: Penalize wide spreads.
         (
            (CASE WHEN is_ml_pick THEN 100 ELSE 0 END) +
+           
+           (COALESCE(gamma, 0) * 20.0) +
            
            (LEAST(SAFE_DIVIDE(vol_nz, 1000), 5.0) * 0.4) + 
            
@@ -205,7 +217,7 @@ def _create_candidates_table(bq: bigquery.Client):
       contract_symbol, option_type, expiration_date, strike,
       last_price, bid, ask, volume, open_interest, implied_volatility,
       delta, theta, vega, gamma, underlying_price, fetch_date,
-      options_score, rn, is_uoa, is_ml_pick
+      options_score, rn, is_uoa, is_ml_pick, strategy, pc_ratio
     FROM ranked
     """
 
