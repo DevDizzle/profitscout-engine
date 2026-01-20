@@ -9,6 +9,7 @@ main:
           - technicals_analyzer_name: "technicals-analyzer"
           - mda_analyzer_name: "mda-analyzer"
           - transcript_analyzer_name: "transcript-analyzer"
+          - macro_thesis_generator_name: "macro-thesis-generator"
           - news_analyzer_name: "news-analyzer"
           - business_summarizer_name: "business-summarizer"
           - price_chart_generator_name: "run-price-chart-generator"
@@ -93,7 +94,7 @@ main:
         try:
           call: http.post
           args:
-            url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/macro-thesis-generator"}'
+            url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + macro_thesis_generator_name}'
             auth: { type: OIDC }
             timeout: 900
         retry:
