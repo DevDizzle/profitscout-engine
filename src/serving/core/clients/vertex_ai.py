@@ -26,7 +26,7 @@ def _init_client() -> genai.Client | None:
             vertexai=True,
             project=project,
             location=location,
-            http_options=types.HttpOptions(api_version="v1"),
+            http_options=types.HttpOptions(api_version="v1beta1"),
         )
         _log.info("Vertex GenAI client initialized successfully.")
         return client

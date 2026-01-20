@@ -101,7 +101,7 @@ MAX_WORKERS_TIERING = {
 BATCH_SIZE = 100 # Used by populate_price_data and technicals_collector
 
 # --- Vertex AI Gen AI ---
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.6"))
 TOP_P = float(os.getenv("TOP_P", "0.95"))
 TOP_K = int(os.getenv("TOP_K", "30"))

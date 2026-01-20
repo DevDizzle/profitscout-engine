@@ -86,7 +86,7 @@ TICKER_LIST_PATH = "tickerlist.txt"
 IMAGE_FETCHER_BATCH_SIZE = 50
 
 # --- Vertex AI (Shared) ---
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.0-flash")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-3-flash-preview")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
 TOP_P = float(os.getenv("TOP_P", "0.95"))
 TOP_K = int(os.getenv("TOP_K", "40"))
@@ -102,3 +102,10 @@ SPY_PRICE_FIRESTORE_COLLECTION = "spy_price_history"
 
 # --- ML Predictions (NEW) ---
 DAILY_PREDICTIONS_TABLE_ID = f"{SOURCE_PROJECT_ID}.{BIGQUERY_DATASET}.daily_predictions"
+
+# --- Social Media (X/Twitter) ---
+X_API_KEY = os.environ.get("X_API_KEY")
+X_API_SECRET = os.environ.get("X_API_SECRET")
+X_ACCESS_TOKEN = os.environ.get("X_ACCESS_TOKEN")
+X_ACCESS_TOKEN_SECRET = os.environ.get("X_ACCESS_TOKEN_SECRET")
+SOCIAL_MEDIA_HISTORY_COLLECTION = "social_media_history"
