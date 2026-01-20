@@ -102,8 +102,7 @@ def fetch_options_market_structure(ticker: str) -> dict:
     query = f"""
     WITH LatestChain AS (
         SELECT 
-            *,
-            DATE_DIFF(expiration_date, fetch_date, DAY) as dte
+            *
         FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}`
         WHERE ticker = @ticker
           AND fetch_date = (
