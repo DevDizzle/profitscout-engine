@@ -18,7 +18,7 @@ def _init_client() -> genai.Client | None:
         project = config.PROJECT_ID
         location = getattr(config, "LOCATION", "global")
         _log.info("Initializing Vertex GenAI client (project=%s, location=%s)…", project, location)
-        client = genai.Client(vertexai=True, project=project, location=location, http_options=types.HttpOptions(api_version="v1"))
+        client = genai.Client(vertexai=True, project=project, location=location, http_options=types.HttpOptions(api_version="v1beta1"))
         _log.info("Vertex GenAI client initialized successfully.")
         return client
     except Exception as e:
