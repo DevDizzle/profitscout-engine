@@ -3,15 +3,28 @@ import logging
 import pandas as pd
 from google.cloud import bigquery
 import time
+import json
+
+# --- Singleton Client ---
+_BQ_CLIENT = None
+
+def _get_client() -> bigquery.Client:
+    """Returns a shared BigQuery client instance (Singleton)."""
+    global _BQ_CLIENT
+    if _BQ_CLIENT is None:
+        # Initialize with project from config if needed, or let env vars handle it
+        # Importing config here to avoid circular imports at module level
+        from . import config
+        _BQ_CLIENT = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    return _BQ_CLIENT
 
 def load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str, write_disposition: str = "WRITE_TRUNCATE"):
     """
     Loads a pandas DataFrame into a BigQuery table.
     If the DataFrame is empty and the write disposition is TRUNCATE, it will wipe the table.
     """
-    client = bigquery.Client(project=project_id)
+    client = _get_client()
     
-    # --- THIS IS THE FIX ---
     # If the dataframe is empty but the goal is to truncate,
     # execute a direct TRUNCATE statement and exit.
     if df.empty and write_disposition == "WRITE_TRUNCATE":
@@ -52,7 +65,7 @@ def upsert_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
         logging.warning("DataFrame is empty. Skipping BigQuery MERGE operation.")
         return
 
-    client = bigquery.Client(project=project_id)
+    client = _get_client()
     
     dataset_id = table_id.split('.')[-2]
     final_table_name = table_id.split('.')[-1]
@@ -91,13 +104,51 @@ def upsert_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
     finally:
         client.delete_table(temp_table_id, not_found_ok=True)
 
+def fetch_analysis_scores(ticker: str, run_date: str) -> dict:
+    """
+    Fetches the text analysis and score from the aggregated scores table.
+    Returns an empty dict if no data is found, preventing pipeline crashes.
+    """
+    from . import config
+    client = _get_client()
+    
+    query = f"""
+        SELECT
+            t1.aggregated_text,
+            t1.weighted_score,
+            t2.company_name
+        FROM `{config.SCORES_TABLE_ID}` AS t1
+        LEFT JOIN `{config.BUNDLER_STOCK_METADATA_TABLE_ID}` AS t2
+            ON t1.ticker = t2.ticker
+        WHERE t1.ticker = @ticker 
+        -- Relaxed date constraint: look for data generated on run_date OR recently
+        -- AND t1.run_date = @run_date 
+        ORDER BY t1.run_date DESC
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
+            # bigquery.ScalarQueryParameter("run_date", "DATE", run_date),
+        ]
+    )
+    
+    try:
+        job = client.query(query, job_config=job_config)
+        job.result(timeout=15) # Fast timeout
+        df = job.to_dataframe()
+        return df.to_dict('records')[0] if not df.empty else {}
+    except Exception as e:
+        logging.warning(f"[{ticker}] Analysis Scores fetch failed/empty: {e}")
+        return {}
+
 def fetch_options_market_structure(ticker: str) -> dict:
     """
     Aggregates the raw options chain to identify structural walls and flow sentiment.
     Returns a dictionary suitable for LLM context or Dashboard widgets.
     """
     from . import config  # lazy import to avoid circular dependency
-    client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
+    client = _get_client()
     
     query = f"""
     WITH LatestChain AS (
@@ -159,13 +210,15 @@ def fetch_options_market_structure(ticker: str) -> dict:
     )
     
     try:
-        df = client.query(query, job_config=job_config).to_dataframe()
+        job = client.query(query, job_config=job_config)
+        # Add timeout to fail fast if BQ is unresponsive
+        job.result(timeout=15) 
+        df = job.to_dataframe()
         if df.empty:
             return {}
             
         # Convert to a clean dict using pandas built-in JSON serialization
         # This handles numpy types (int64, float64, ndarray) automatically.
-        import json
         data = json.loads(df.to_json(orient='records', date_format='iso'))[0]
         
         # Calculate a derived "Sentiment Label" for the LLM

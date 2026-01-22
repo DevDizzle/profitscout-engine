@@ -88,6 +88,7 @@ def process_prep_file(prep_blob_name: str) -> Optional[str]:
         
         analysis_section = {}
         seo_section = {}
+        faq_section = []
         
         if page_json:
             # 1. Summary (Execution Deck)
@@ -112,11 +113,17 @@ def process_prep_file(prep_blob_name: str) -> Optional[str]:
             thesis_content = content_blocks.get("thesis")
             if not thesis_content and full_analysis:
                 # Fallback: Merge News + Fundamentals if specific thesis block is missing
-                thesis_content = f"<h3>Recent Developments</h3><p>{full_analysis.get('news', '')}</p><h3>Fundamental Outlook</h3><p>{full_analysis.get('fundamentals', '')}</p>"
+                news_text = full_analysis.get('news', '')
+                fund_text = full_analysis.get('fundamentals', '')
+                thesis_content = ""
+                if news_text:
+                    thesis_content += f"<h3>Recent Developments</h3><p>{news_text}</p>"
+                if fund_text:
+                    thesis_content += f"<h3>Fundamental Outlook</h3><p>{fund_text}</p>"
                 
             analysis_section["fundamentalThesis"] = {
                 "headline": "Macro & Fundamental Drivers", 
-                "content": thesis_content,
+                "content": thesis_content or "<p>Fundamental analysis pending.</p>",
                 "catalysts": content_blocks.get("catalysts", page_json.get("tradeSetup", {}).get("catalyst", []))
             }
             if isinstance(analysis_section["fundamentalThesis"]["catalysts"], str):
@@ -125,15 +132,23 @@ def process_prep_file(prep_blob_name: str) -> Optional[str]:
             # 4. Trade Plan
             analysis_section["tradeSetup"] = page_json.get("tradeSetup", {})
             
-            # 5. SEO Metadata
+            # 5. Top-Level Enrichments for SEO & Frontend
+            analysis_section["marketStructure"] = page_json.get("marketStructure", {})
+            analysis_section["fullAnalysis"] = full_analysis
+            
+            # 6. SEO Metadata & FAQ
             seo_section = page_json.get("seo", {})
+            faq_section = page_json.get("faq", [])
+            
         else:
             # Fallback if SEO page generation failed or hasn't run yet
             analysis_section = {
                 "summary": {"signal": "Pending", "score": 50, "confidence": "Low"},
                 "optionsBrief": {"headline": "Analysis Pending", "content": "<p>Options data is currently processing.</p>"},
                 "fundamentalThesis": {"headline": "Analysis Pending", "content": "<p>Fundamental data is processing.</p>"},
-                "tradeSetup": {}
+                "tradeSetup": {},
+                "marketStructure": {},
+                "fullAnalysis": {}
             }
 
         # Assemble the final dashboard
@@ -144,7 +159,8 @@ def process_prep_file(prep_blob_name: str) -> Optional[str]:
             "kpis": prep_data.get("kpis"),
             "priceChartData": _get_price_chart_data(ticker),
             "analysis": analysis_section,
-            "seo": seo_section
+            "seo": seo_section,
+            "faq": faq_section
         }
         
         _delete_old_dashboard_files(ticker)

@@ -38,12 +38,12 @@ _client = _init_client()
 
 @retry(
     retry=retry_if_exception_type(Exception),
-    wait=wait_exponential_jitter(initial=2, max=60),
-    stop=stop_after_attempt(5),
+    wait=wait_exponential_jitter(initial=2, max=120),
+    stop=stop_after_attempt(8),
     reraise=True,
     before_sleep=lambda rs: _log.warning("Retrying after %s: attempt %d", rs.outcome.exception(), rs.attempt_number),
 )
-def generate(prompt: str) -> str:
+def generate(prompt: str, response_mime_type: str | None = None) -> str:
     """Generates content using the Vertex AI client with retry logic."""
     global _client
     if _client is None:
@@ -62,6 +62,7 @@ def generate(prompt: str) -> str:
         seed=config.SEED,
         candidate_count=config.CANDIDATE_COUNT,
         max_output_tokens=config.MAX_OUTPUT_TOKENS,
+        response_mime_type=response_mime_type,
     )
 
     text = ""

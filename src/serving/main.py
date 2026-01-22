@@ -1,7 +1,7 @@
 # serving/main.py
 import functions_framework
 import logging
-from core.pipelines import (
+from .core.pipelines import (
     page_generator,
     price_chart_generator,
     data_bundler,
@@ -17,9 +17,16 @@ from core.pipelines import (
     sync_options_candidates_to_firestore,
     sync_performance_tracker_to_firestore,
     sync_spy_to_firestore,
+    social_media_poster,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+@functions_framework.http
+def run_social_media_poster(request):
+    """Runs the social media poster pipeline."""
+    social_media_poster.run_pipeline()
+    return "Social media poster pipeline finished.", 200
 
 @functions_framework.http
 def run_performance_tracker_updater(request):

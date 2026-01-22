@@ -148,7 +148,7 @@ Indicators: {recent_techs}
 
     try:
         # Use default model (Gemini 2.0 Flash)
-        analysis_json = vertex_ai.generate(prompt)
+        analysis_json = vertex_ai.generate(prompt, response_mime_type="application/json")
         
         # Clean markdown if present
         analysis_json = analysis_json.replace("```json", "").replace("```", "").strip()

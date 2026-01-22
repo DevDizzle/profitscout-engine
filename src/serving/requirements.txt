@@ -1,4 +1,3 @@
-# serving/requirements.txt
 functions-framework
 google-cloud-storage
 google-cloud-bigquery
@@ -13,3 +12,4 @@ db-dtypes
 requests
 matplotlib
 mplfinance
+tweepy

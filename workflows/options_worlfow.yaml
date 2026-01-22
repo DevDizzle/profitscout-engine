@@ -10,6 +10,7 @@ main:
           - options_analyzer_name: "options-analyzer"
           - data_bundler_name: "data-bundler"
           - winners_dashboard_generator_name: "run-winners-dashboard-generator"
+          - social_media_poster_name: "social-media-poster"
           # Existing sync functions
           - sync_to_firestore_name: "sync-to-firestore"
           - sync_options_to_firestore_name: "run-sync-options-to-firestore"
@@ -229,6 +230,23 @@ main:
                           initial_delay: 2
                           max_delay: 60
                           multiplier: 2
+
+    # Step 4: Run Social Media Poster
+    - call_social_media_poster:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + social_media_poster_name}
+            auth: { type: OIDC }
+            timeout: 900
+          result: social_media_poster_result
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 2
+            max_delay: 60
+            multiplier: 2
 
     - log_finish:
         call: sys.log
