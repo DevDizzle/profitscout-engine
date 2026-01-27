@@ -16,7 +16,8 @@ def _init_client() -> genai.Client | None:
     """Initializes the Vertex AI GenAI client."""
     try:
         project = config.PROJECT_ID
-        location = getattr(config, "LOCATION", "global")
+        # Force global for google.genai + Vertex routing (required for preview models)
+        location = "global"
         _log.info("Initializing Vertex GenAI client (project=%s, location=%s)…", project, location)
         client = genai.Client(vertexai=True, project=project, location=location, http_options=types.HttpOptions(api_version="v1beta1"))
         _log.info("Vertex GenAI client initialized successfully.")
@@ -44,7 +45,7 @@ def _get_client() -> genai.Client:
     reraise=True,
     before_sleep=lambda rs: _log.warning("Retrying stream after %s: attempt %d", rs.outcome.exception(), rs.attempt_number),
 )
-def generate(prompt: str) -> str:
+def generate(prompt: str, response_mime_type: str | None = None) -> str:
     """Generates content using the Vertex AI client with retry logic (streaming)."""
     client = _get_client()
 
@@ -52,6 +53,7 @@ def generate(prompt: str) -> str:
     cfg = types.GenerateContentConfig(
         temperature=config.TEMPERATURE, top_p=config.TOP_P, top_k=config.TOP_K,
         seed=config.SEED, candidate_count=config.CANDIDATE_COUNT, max_output_tokens=config.MAX_OUTPUT_TOKENS,
+        response_mime_type=response_mime_type,
     )
     text = ""
     for chunk in client.models.generate_content_stream(model=config.MODEL_NAME, contents=prompt, config=cfg):
