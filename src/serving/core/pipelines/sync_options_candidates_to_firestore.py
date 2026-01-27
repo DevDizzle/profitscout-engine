@@ -62,6 +62,10 @@ def _load_bq_df(bq: bigquery.Client) -> pd.DataFrame:
             if "datetime" in dtype_str or "dbdate" in dtype_str or "timestamp" in dtype_str:
                 df[col] = df[col].astype(str)
 
+        # Standardize 'strike_price' -> 'strike'
+        if 'strike_price' in df.columns:
+            df = df.rename(columns={'strike_price': 'strike'})
+
         df = df.replace({pd.NA: np.nan})
         df = df.where(pd.notna(df), None)
     return df

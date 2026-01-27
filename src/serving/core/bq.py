@@ -196,7 +196,7 @@ def fetch_options_market_structure(ticker: str) -> dict:
                 ) ORDER BY volume DESC LIMIT 5
             ) as top_active_contracts
         FROM LatestChain
-        WHERE dte BETWEEN 14 AND 60
+        -- Removed DTE filter to show TRUE market activity (including 0DTE/Weeklies)
     )
     SELECT
         s.*,

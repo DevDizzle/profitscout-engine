@@ -71,6 +71,16 @@ def delete_blob(bucket_name: str, blob_name: str):
         logging.error(f"Failed to delete blob {blob_name}: {e}")
         raise
 
+def blob_exists(bucket_name: str, blob_name: str) -> bool:
+    """Checks if a blob exists in the bucket."""
+    try:
+        bucket = _client().bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        return blob.exists(retry=_RETRY_POLICY)
+    except Exception as e:
+        logging.error(f"Failed to check existence of blob {blob_name}: {e}")
+        return False
+
 def get_tickers() -> list[str]:
     """Loads the official ticker list from the GCS bucket."""
     try:

@@ -35,6 +35,7 @@ from .core.pipelines import (
     statement_loader,
     technicals_collector,
     transcript_collector,
+    history_archiver, # Added import
 )
 
 # --- Global Initialization ---
@@ -87,7 +88,7 @@ if os.environ.get("ENV") != "test":
 # Initialize API clients with keys from Secret Manager or environment.
 fmp_api_key = _get_secret_or_env(config.FMP_API_KEY_SECRET)
 sec_api_key = _get_secret_or_env(config.SEC_API_KEY_SECRET)
-polygon_api_key = _get_secret_or_env(config.POLYGON_API_KEY)
+polygon_api_key = _get_secret_or_env(config.POLYGON_API_KEY_SECRET)
 
 fmp_client = FMPClient(api_key=fmp_api_key) if fmp_api_key else None
 sec_api_client = SecApiClient(api_key=sec_api_key) if sec_api_key else None
@@ -321,7 +322,7 @@ def fetch_options_chain(request: Request):
     try:
         _bq_client = bq_client or bigquery.Client(project=config.PROJECT_ID)
         _polygon_client = polygon_client or PolygonClient(
-            api_key=_get_secret_or_env(config.POLYGON_API_KEY)
+            api_key=_get_secret_or_env(config.POLYGON_API_KEY_SECRET)
         )
 
         if not all([_bq_client, _polygon_client]):
@@ -330,6 +331,11 @@ def fetch_options_chain(request: Request):
         options_chain_fetcher.run_pipeline(
             polygon_client=_polygon_client, bq_client=_bq_client
         )
+        
+        # --- Archiver Step (Sidecar) ---
+        # Persist today's snapshot to the history table for RL training.
+        history_archiver.run_pipeline(bq_client=_bq_client)
+        
         return "Options chain fetch started.", 202
     except ValueError as e:
         logging.error(f"Failed to initialize PolygonClient: {e}")

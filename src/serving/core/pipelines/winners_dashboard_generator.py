@@ -96,10 +96,7 @@ def _get_strong_options_setups() -> pd.DataFrame:
                 -- Rank contracts by score within each ticker
                 ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY options_score DESC) as rn
             FROM `{SIGNALS_TABLE_ID}`
-            WHERE (
-                setup_quality_signal = 'Strong' -- Accepts Tier 1, 2, AND 3 (ML Sniper)
-                OR (setup_quality_signal = 'Fair' AND summary LIKE '%ML SNIPER ALERT%') -- Accepts Tier 3 (ML Sniper) only
-            )
+            WHERE setup_quality_signal = 'Strong' -- STRICT MODE: No ML Sniper relaxation
               AND run_date = (SELECT MAX(run_date) FROM `{SIGNALS_TABLE_ID}`)
         )
         SELECT 
@@ -172,7 +169,8 @@ def run_pipeline():
         "last_close", "thirty_day_change_pct", "industry", "run_date", "weighted_score",
         # Contract Fields
         "contract_symbol", "option_type", "strike_price", "expiration_date",
-        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score"
+        "setup_quality_signal", "volatility_comparison_signal", "summary", "options_score",
+        "dashboard_json"
     ]
     empty_df = pd.DataFrame(columns=final_columns)
 
@@ -223,11 +221,34 @@ def run_pipeline():
     # Iterate over rows and fetch the improved headline if available
     
     updated_summaries = []
+    dashboard_jsons = []
     for _, row in final_df.iterrows():
         ticker = row['ticker']
-        run_date_str = str(row['run_date']) # Ensure string format
+        
+        # Ensure YYYY-MM-DD format for dashboard link construction
+        run_date_val = row['run_date']
+        if hasattr(run_date_val, 'strftime'):
+            run_date_str = run_date_val.strftime('%Y-%m-%d')
+        else:
+            run_date_str = str(run_date_val).split(' ')[0] # Fallback for string "YYYY-MM-DD HH:MM:SS"
+
         current_summary = row.get('summary', '')
         
+        # Construct dashboard_json URI
+        # Matches: dashboards/{ticker}_dashboard_{run_date}.json
+        blob_name = f"dashboards/{ticker}_dashboard_{run_date_str}.json"
+        
+        # Verify existence (Robustness)
+        if gcs.blob_exists(config.GCS_BUCKET_NAME, blob_name):
+            dashboard_uri = f"gs://{config.GCS_BUCKET_NAME}/{blob_name}"
+        else:
+            logging.warning(f"[{ticker}] Dashboard file not found at {blob_name}")
+            dashboard_uri = None
+            
+        dashboard_jsons.append(dashboard_uri)
+
+        # For page headline, we might still need the original format if it differs, but likely it's the same.
+        # Assuming page_generator uses same date format.
         headline = _get_page_headline(ticker, run_date_str)
         if headline:
             updated_summaries.append(headline)
@@ -235,6 +256,7 @@ def run_pipeline():
             updated_summaries.append(current_summary)
             
     final_df['summary'] = updated_summaries
+    final_df['dashboard_json'] = dashboard_jsons
     # -------------------------------------------------------
     
     # Fill missing cols with defaults to satisfy Firestore schema
@@ -254,6 +276,10 @@ def run_pipeline():
         if col in defaults:
             final_df[col] = final_df[col].fillna(defaults[col])
             
+    # CRITICAL: Normalize option_type for frontend (must be lowercase 'call'/'put')
+    if 'option_type' in final_df.columns:
+        final_df['option_type'] = final_df['option_type'].astype(str).str.lower()
+
     final_df = final_df[final_columns]
 
     logging.info(f"Generated {len(final_df)} winning rows. Loading to BigQuery...")

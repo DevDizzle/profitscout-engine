@@ -125,6 +125,11 @@ Treat the record with date `{date_str}` as **CURRENT**. The other records are hi
 2.  **Cash Flow Analysis**: Check `operatingCashFlow` and `freeCashFlow`. Is the company actually generating cash from operations, or is it burning cash?
 3.  **Balance Sheet Analysis**: Compare `totalDebt` to `cashAndEquivalents`. Is leverage increasing to dangerous levels?
 
+### Formatting Rules
+- **ALWAYS** abbreviate large numbers using "B" for Billions and "M" for Millions.
+- Examples: Write `$1.5B` instead of `$1,500,000,000`. Write `$200M` instead of `$200,000,000`.
+- Use 1-2 decimal places where appropriate (e.g., `$1.25B`).
+
 ### Scoring Guide
 - **0.0 - 0.3 (Bearish):** Cash burn, declining revenue, rising debt, or negative margins.
 - **0.4 - 0.6 (Neutral):** Stable but stagnant, or mixed signals (e.g., profitable but declining revenue).
@@ -133,7 +138,7 @@ Treat the record with date `{date_str}` as **CURRENT**. The other records are hi
 ### Output — return exactly this JSON
 {{
   "score": <float between 0.0 and 1.0>,
-  "analysis": "<One dense paragraph (150-250 words). Synthesize the findings from the three tasks above. You MUST cite specific numbers (e.g., 'Revenue grew to $X...', 'FCF turned negative at -$Y...') to support your verdict.>"
+  "analysis": "<One dense paragraph (150-250 words). Synthesize the findings from the three tasks above. You MUST cite specific numbers using the 'B' and 'M' abbreviations (e.g., 'Revenue grew to $8.4B...', 'FCF turned negative at -$50M...') to support your verdict.>"
 }}
 """.format(
         date_str=date_str,

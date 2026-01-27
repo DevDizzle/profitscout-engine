@@ -9,8 +9,9 @@ from src.ingestion import main
 @patch("src.ingestion.main.bigquery.Client")
 @patch("src.ingestion.main.PolygonClient")
 @patch("src.ingestion.main.options_chain_fetcher")
+@patch("src.ingestion.main.history_archiver")
 def test_fetch_options_chain_success(
-    mock_options_chain_fetcher, mock_polygon_client, mock_bigquery_client, mock_environ
+    mock_history_archiver, mock_options_chain_fetcher, mock_polygon_client, mock_bigquery_client, mock_environ
 ):
     """
     Tests the successful execution of the fetch_options_chain function.
@@ -23,6 +24,7 @@ def test_fetch_options_chain_success(
     assert status_code == 202
     assert result == "Options chain fetch started."
     mock_options_chain_fetcher.run_pipeline.assert_called_once()
+    mock_history_archiver.run_pipeline.assert_called_once()
 
 
 @patch("src.ingestion.main.bigquery.Client")

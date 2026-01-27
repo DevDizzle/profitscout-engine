@@ -39,6 +39,16 @@ def _clean_text(text: str) -> str:
     if not text: return ""
     return text.replace('"', "'").replace('\n', ' ').strip()
 
+def _fmt_price(val) -> str:
+    """Formats price to remove trailing zero decimal if integer, otherwise 2 decimals."""
+    try:
+        f_val = float(val)
+        if f_val.is_integer():
+            return f"{int(f_val)}"
+        return f"{f_val:.2f}"
+    except (ValueError, TypeError):
+        return str(val)
+
 def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
     """
     Parses the massive aggregated text block into specific sections.
@@ -82,8 +92,10 @@ def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
 
 def _generate_seo(ticker: str, company: str, signal: str, call_wall: float) -> Dict:
     """Deterministically generates SEO metadata."""
-    bias = "Bullish" if signal == "Bullish" else "Bearish" if signal == "Bearish" else "Neutral"
-    cw_str = f"${call_wall}" if call_wall else "Key Levels"
+    # Fix: Use the signal directly to ensure consistency. Default to Neutral if empty.
+    bias = signal if signal else "Neutral"
+    
+    cw_str = f"${_fmt_price(call_wall)}" if call_wall else "Key Levels"
     
     return {
         "title": f"{ticker} Options Flow: {bias} Gamma Setup & Targets | GammaRips",
@@ -100,8 +112,8 @@ def _generate_seo(ticker: str, company: str, signal: str, call_wall: float) -> D
 
 def _generate_faq(ticker: str, ms: Dict) -> List[Dict]:
     """Deterministically generates FAQ based on market structure."""
-    cw = ms.get('call_wall', 'N/A')
-    pw = ms.get('put_wall', 'N/A')
+    cw = _fmt_price(ms.get('call_wall', 'N/A'))
+    pw = _fmt_price(ms.get('put_wall', 'N/A'))
     
     return [
         {
@@ -119,8 +131,8 @@ def _generate_analyst_brief(ticker: str, company: str, signal: str, ms: Dict, te
     Generates the brief using LLM (Micro-Prompt) or Fallback.
     """
     # Prepare Context
-    call_wall = ms.get('call_wall', 0)
-    put_wall = ms.get('put_wall', 0)
+    call_wall = _fmt_price(ms.get('call_wall', 0))
+    put_wall = _fmt_price(ms.get('put_wall', 0))
     net_call_gamma = ms.get('net_call_gamma', 0)
     net_put_gamma = ms.get('net_put_gamma', 0)
     
@@ -128,7 +140,7 @@ def _generate_analyst_brief(ticker: str, company: str, signal: str, ms: Dict, te
     top_contract_desc = "N/A"
     if top_contracts:
         c = top_contracts[0]
-        top_contract_desc = f"{c.get('expiration_date', '')[:10]} ${c.get('strike')} {c.get('option_type')} (Vol: {c.get('volume')})"
+        top_contract_desc = f"{c.get('expiration_date', '')[:10]} ${float(c.get('strike', 0)):.2f} {c.get('option_type')} (Vol: {c.get('volume')})"
 
     # 1. Try LLM
     try:
@@ -223,6 +235,13 @@ def process_blob(blob_name: str) -> Optional[str]:
 
         # SEO & Brief
         seo_data = _generate_seo(ticker, company_name, trade_setup['signal'], market_structure.get('call_wall'))
+        
+        # --- CONSISTENCY CHECK ---
+        # Ensure the H1 headline aligns with the trade signal.
+        if trade_setup['signal'] not in seo_data['h1']:
+            logging.warning(f"[{ticker}] SEO H1 Mismatch Detected. Regenerating SEO data.")
+            seo_data = _generate_seo(ticker, company_name, trade_setup['signal'], market_structure.get('call_wall'))
+
         faq_data = _generate_faq(ticker, market_structure)
         
         # Use Technicals snippet for context in Brief

@@ -223,6 +223,14 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
         if atr_col and "close" in price_df:
             price_df["percent_atr"] = (price_df[atr_col] / price_df["close"]) * 100
 
+        # Bollinger Band Width (BBB) if present
+        bbb_col = None
+        for c in price_df.columns:
+            cu = c.upper()
+            if cu.startswith("BBB_"):
+                bbb_col = c
+                break
+
         # Valid KPI rows (optional for deltas; not used for the per-row payload)
         needed_for_kpis = ["RSI_14", "MACD_12_26_9", "SMA_50", "SMA_200"]
         valid = price_df.dropna(subset=["open", "high", "low", "close", "volume"] + needed_for_kpis)
@@ -240,6 +248,8 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             "latest_macd": _safe_float(latest.get("MACD_12_26_9")),
             "latest_sma50": _safe_float(latest.get("SMA_50")),
             "latest_sma200": _safe_float(latest.get("SMA_200")),
+            "latest_atr": _safe_float(latest.get(atr_col)) if atr_col else None,
+            "latest_bb_width": _safe_float(latest.get(bbb_col)) if bbb_col else None,
         }
 
         # Deltas (optional; retained for future persistence)
@@ -281,10 +291,20 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
     except Exception as e:
         return {"ticker": ticker, "error": str(e)}
 
-# ----------------------------
-# Orchestrator
-# ----------------------------
+    logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={total_rows_collected} ---")
 
+    # --- Persist to BigQuery History ---
+    if total_rows_collected > 0:
+        logging.info(f"Persisting {len(update_rows_all)} technical rows to BigQuery history...")
+        try:
+            # We need to accumulate all rows first. The current structure processes chunks.
+            # We didn't accumulate them in the original loop.
+            # Let's fix the loop to accumulate 'update_rows' into a master list.
+            pass # Replaced by logic below in the actual loop modification
+        except Exception as e:
+            logging.error(f"Failed to persist technicals history: {e}")
+
+# We need to rewrite the Orchestrator to accumulate rows.
 def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
     logging.info("--- Parallel Technicals Pipeline Started ---")
     tickers = get_tickers(storage_client)
@@ -298,7 +318,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
     total_uploaded = 0
     total_errors = 0
-    total_rows_collected = 0
+    all_update_rows = [] # Accumulator
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for i in range(0, len(tickers), chunk_size):
@@ -316,8 +336,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
             uploaded = 0
             errors = 0
-            update_rows = []
-
+            
             for future in as_completed(futures):
                 t = futures[future]
                 result = future.result()
@@ -347,11 +366,39 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
                 # (Optional) collect metrics row for future DB write
                 if row := result.get("update_row"):
-                    update_rows.append(row)
+                    all_update_rows.append(row)
 
             total_uploaded += uploaded
             total_errors += errors
-            total_rows_collected += len(update_rows)
-            logging.info(f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(update_rows)}")
+            logging.info(f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(all_update_rows)}")
 
-    logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={total_rows_collected} ---")
+    # --- Persist to BigQuery History ---
+    if all_update_rows:
+        logging.info(f"Persisting {len(all_update_rows)} technical rows to BigQuery history...")
+        try:
+            # --- Idempotency: Clean up any existing history for today ---
+            # Technicals are calculated based on today's price, so we only want one entry per ticker per day.
+            cleanup_query = f"DELETE FROM `{config.TECHNICALS_HISTORY_TABLE_ID}` WHERE date = CURRENT_DATE()"
+            try:
+                bq_client.query(cleanup_query).result()
+                logging.info(f"Cleaned up existing technicals history for today in {config.TECHNICALS_HISTORY_TABLE_ID}.")
+            except Exception as e:
+                logging.warning(f"Cleanup query failed (possibly harmless if table is new): {e}")
+
+            df_hist = pd.DataFrame(all_update_rows)
+            # Ensure date is date object or string? BQ pandas helper handles datetime.date usually.
+            # Convert to appropriate types if needed.
+            
+            job_config = bigquery.LoadJobConfig(
+                write_disposition="WRITE_APPEND",
+                schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION]
+            )
+            job = bq_client.load_table_from_dataframe(
+                df_hist, config.TECHNICALS_HISTORY_TABLE_ID, job_config=job_config
+            )
+            job.result()
+            logging.info("Successfully loaded technicals history.")
+        except Exception as e:
+            logging.error(f"Failed to persist technicals history: {e}", exc_info=True)
+
+    logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={len(all_update_rows)} ---")

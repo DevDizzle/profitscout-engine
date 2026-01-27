@@ -14,7 +14,7 @@ def run_pipeline():
     
     # 1. Initialize clients
     bq_client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    db = firestore.Client(project=config.SOURCE_PROJECT_ID)
+    db = firestore.Client(project=config.DESTINATION_PROJECT_ID)
     x_client = XClient()
     
     if not x_client.client:
@@ -30,7 +30,7 @@ def run_pipeline():
     query = f"""
         SELECT ticker, weighted_score, setup_quality_signal 
         FROM `{table_id}`
-        WHERE fetch_date = CURRENT_DATE()
+        WHERE run_date = CAST(CURRENT_DATE() AS STRING)
         ORDER BY weighted_score DESC
         LIMIT 10
     """
