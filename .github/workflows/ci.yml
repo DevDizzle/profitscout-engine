@@ -22,12 +22,12 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install black ruff ty pytest pytest-cov
+        pip install ruff ty pytest pytest-cov
         pip install -r requirements.txt
 
-    - name: Format check with Black
+    - name: Format check with Ruff
       run: |
-        black --check .
+        ruff format --check .
 
     - name: Lint with Ruff
       run: |

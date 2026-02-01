@@ -461,7 +461,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
             total_uploaded += uploaded
             total_errors += errors
             logging.info(
-                f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(all_update_rows)}"
+                f"Chunk {i // chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(all_update_rows)}"
             )
 
     # --- Persist to BigQuery History ---

@@ -86,7 +86,7 @@ def _format_news_items(items: list) -> str:
         text = item.get("text", "")[:400]
         url = item.get("url", "No URL")
         out_lines.append(
-            f"[{i+1}] HEADLINE: {title}\n    SUMMARY: {text}\n    SOURCE: {url}"
+            f"[{i + 1}] HEADLINE: {title}\n    SUMMARY: {text}\n    SOURCE: {url}"
         )
     return "\n\n".join(out_lines)
 

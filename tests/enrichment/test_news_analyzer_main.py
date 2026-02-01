@@ -5,7 +5,6 @@ from src.enrichment import main
 
 
 class TestNewsAnalyzerMain(unittest.TestCase):
-
     @patch("src.enrichment.core.pipelines.news_analyzer.run_pipeline")
     def test_run_news_analyzer_success(self, mock_run_pipeline):
         """

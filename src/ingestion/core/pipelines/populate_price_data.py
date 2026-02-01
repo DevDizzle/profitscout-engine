@@ -27,7 +27,7 @@ def run_pipeline(
     for i in range(0, len(all_tickers), config.BATCH_SIZE):
         batch_tickers = all_tickers[i : i + config.BATCH_SIZE]
         logging.info(
-            f"--- Processing Price Populator Batch {i//config.BATCH_SIZE + 1} ---"
+            f"--- Processing Price Populator Batch {i // config.BATCH_SIZE + 1} ---"
         )
 
         start_dates = bq.get_start_dates_for_populator(bq_client, batch_tickers)

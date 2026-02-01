@@ -70,7 +70,7 @@ def test_token_usage():
     print("Previous Approach: ~15,000+ Tokens")
     # ... (previous code) ...
 
-    print(f"Reduction: ~{((15000 - est_tokens)/15000)*100:.2f}%")
+    print(f"Reduction: ~{((15000 - est_tokens) / 15000) * 100:.2f}%")
 
     print("\n--- TESTING FULL JSON ASSEMBLY ---")
 

@@ -5,7 +5,6 @@ from src.serving.core.pipelines import social_media_poster
 
 
 class TestSocialMediaPoster(unittest.TestCase):
-
     @patch("src.serving.core.pipelines.social_media_poster.bigquery.Client")
     @patch("src.serving.core.pipelines.social_media_poster.firestore.Client")
     @patch("src.serving.core.pipelines.social_media_poster.XClient")

@@ -8,7 +8,6 @@ from src.ingestion.core.pipelines import refresh_stock_metadata
 
 
 class TestRefreshStockMetadata(unittest.TestCase):
-
     def setUp(self):
         self.mock_bq_client = MagicMock()
         self.mock_fmp_client = MagicMock()

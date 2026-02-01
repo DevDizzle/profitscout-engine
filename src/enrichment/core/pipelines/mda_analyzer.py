@@ -78,9 +78,7 @@ Summarize and analyze the most critical information, citing specific figures:
 
 Provided MD&A text:
 {{mda_content}}
-""".replace(
-        "{{mda_content}}", mda_content
-    )
+""".replace("{{mda_content}}", mda_content)
 
     analysis_json = vertex_ai.generate(prompt)
     gcs.write_text(

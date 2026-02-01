@@ -63,9 +63,7 @@ Do not include financial figures, forward-looking statements, or opinions. Your 
 
 ### Provided Business Section:
 {{business_content}}
-""".replace(
-        "{business_content}", business_content
-    ).replace(
+""".replace("{business_content}", business_content).replace(
         "{example_output}", _EXAMPLE_OUTPUT
     )
 

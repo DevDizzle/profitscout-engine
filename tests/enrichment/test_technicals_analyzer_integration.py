@@ -7,14 +7,13 @@ from src.enrichment.core.pipelines import technicals_analyzer
 
 
 class TestTechnicalsAnalyzerIntegration(unittest.TestCase):
-
     def setUp(self):
         # Create >10 days of data to satisfy the new validation check
         self.sample_technicals = {"technicals": []}
         self.sample_prices = {"prices": []}
 
         for i in range(15):
-            date_str = f"2023-10-{10+i}"
+            date_str = f"2023-10-{10 + i}"
             self.sample_technicals["technicals"].append(
                 {"date": date_str, "RSI_14": 55.0 + i, "SMA_50": 150.0 + i}
             )

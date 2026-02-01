@@ -163,9 +163,9 @@ def _get_latest_daily_files_map() -> dict[str, dict[str, str]]:
 
         for ticker, names in ticker_files.items():
             latest_name = max(names)
-            latest_files[ticker][
-                key
-            ] = f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/{latest_name}"
+            latest_files[ticker][key] = (
+                f"gs://{config.DESTINATION_GCS_BUCKET_NAME}/{latest_name}"
+            )
 
     return latest_files
 

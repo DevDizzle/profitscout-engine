@@ -227,7 +227,9 @@ def _fetch_and_calculate_kpis(
             signal = (
                 "strengthening"
                 if rsi_delta > 1
-                else "weakening" if rsi_delta < -1 else "stable"
+                else "weakening"
+                if rsi_delta < -1
+                else "stable"
             )
 
             final_json["kpis"]["rsiMomentum"] = {
