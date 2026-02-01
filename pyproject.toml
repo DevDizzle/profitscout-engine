@@ -40,7 +40,6 @@ known-first-party = ["src"]
 "src/**/main.py" = ["ARG001"]  # Cloud Functions require `request` param
 "src/**/__init__.py" = ["F401"]  # Namespace imports for convenience
 "src/enrichment/core/options_analysis_helper.py" = ["B023"]  # Lambda evaluated immediately in loop
-"src/ingestion/core/pipelines/technicals_collector.py" = ["F821"]  # TODO: Dead code from incomplete refactor
 "src/ingestion/core/clients/polygon_client.py" = ["ARG002"]  # Stub method signatures
 "src/ingestion/core/pipelines/transcript_collector.py" = ["ARG001"]  # Future use param
 "src/serving/core/bq.py" = ["ARG001"]  # Future use params

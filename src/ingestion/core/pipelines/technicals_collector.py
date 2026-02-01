@@ -368,25 +368,7 @@ def _calculate_technicals_for_ticker(
     except Exception as e:
         return {"ticker": ticker, "error": str(e)}
 
-    logging.info(
-        f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={total_rows_collected} ---"
-    )
 
-    # --- Persist to BigQuery History ---
-    if total_rows_collected > 0:
-        logging.info(
-            f"Persisting {len(update_rows_all)} technical rows to BigQuery history..."
-        )
-        try:
-            # We need to accumulate all rows first. The current structure processes chunks.
-            # We didn't accumulate them in the original loop.
-            # Let's fix the loop to accumulate 'update_rows' into a master list.
-            pass  # Replaced by logic below in the actual loop modification
-        except Exception as e:
-            logging.error(f"Failed to persist technicals history: {e}")
-
-
-# We need to rewrite the Orchestrator to accumulate rows.
 def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
     logging.info("--- Parallel Technicals Pipeline Started ---")
     tickers = get_tickers(storage_client)
