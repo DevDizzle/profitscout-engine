@@ -1,6 +1,5 @@
 # tests/enrichment/test_options_enrichment.py
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.enrichment import main
 

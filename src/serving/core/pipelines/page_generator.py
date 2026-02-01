@@ -1,18 +1,43 @@
 # serving/core/pipelines/page_generator.py
-import logging
 import json
-import re
+import logging
 import os
+import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.cloud import bigquery
-from typing import Dict, Optional, List
 
-from .. import config, gcs
-from .. import bq
+from .. import bq, config, gcs
 from ..clients import vertex_ai
 
 INPUT_PREFIX = config.RECOMMENDATION_PREFIX
 OUTPUT_PREFIX = config.PAGE_JSON_PREFIX
+
+
+# --- RATE LIMITER (Throttled Concurrency) ---
+class RateLimiter:
+    """
+    Thread-safe rate limiter to ensure we don't exceed Vertex AI quotas.
+    Target: ~20 RPS (Safe under 60 RPS limit).
+    """
+
+    def __init__(self, interval=0.05):
+        self.interval = interval
+        self.last_call = 0
+        self.lock = threading.Lock()
+
+    def wait(self):
+        with self.lock:
+            now = time.time()
+            elapsed = now - self.last_call
+            wait_time = self.interval - elapsed
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self.last_call = time.time()
+
+
+# Initialize global limiter
+_limiter = RateLimiter(interval=0.05)
 
 # --- MICRO-PROMPT for Analyst Brief ---
 # We only ask the LLM for the text content, not the JSON structure.
@@ -35,9 +60,12 @@ You are a Senior Derivatives Analyst. Write a concise, 2-paragraph market update
 Return ONLY the HTML string. No Markdown blocks.
 """
 
+
 def _clean_text(text: str) -> str:
-    if not text: return ""
-    return text.replace('"', "'").replace('\n', ' ').strip()
+    if not text:
+        return ""
+    return text.replace('"', "'").replace("\n", " ").strip()
+
 
 def _fmt_price(val) -> str:
     """Formats price to remove trailing zero decimal if integer, otherwise 2 decimals."""
@@ -49,13 +77,14 @@ def _fmt_price(val) -> str:
     except (ValueError, TypeError):
         return str(val)
 
-def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
+
+def _split_aggregated_text(aggregated_text: str) -> dict[str, str]:
     """
     Parses the massive aggregated text block into specific sections.
     Maps common headers to the keys required by the frontend.
     """
     section_map = {}
-    
+
     # Mapping table: 'Header Keyword' -> 'Output Key'
     # The pipeline usually produces headers like "## News Analysis", "## Technicals Analysis"
     key_mapping = {
@@ -63,40 +92,43 @@ def _split_aggregated_text(aggregated_text: str) -> Dict[str, str]:
         "technicals": "technicals",
         "md&a": "md&a",
         "earnings transcript": "transcript",
-        "transcript": "transcript", 
+        "transcript": "transcript",
         "financials": "financials",
-        "fundamentals": "fundamentals"
+        "fundamentals": "fundamentals",
     }
 
     if aggregated_text:
-        sections = re.split(r'\n\n---\n\n', aggregated_text.strip())
+        sections = re.split(r"\n\n---\n\n", aggregated_text.strip())
         for section in sections:
             # Match "## HEADER Analysis" or just "## HEADER"
-            match = re.match(r'## (.*?)(?: Analysis)?\n\n(.*)', section, re.DOTALL | re.IGNORECASE)
+            match = re.match(
+                r"## (.*?)(?: Analysis)?\n\n(.*)", section, re.DOTALL | re.IGNORECASE
+            )
             if match:
                 raw_header = match.group(1).lower().strip()
                 content = match.group(2).strip()
-                
+
                 # Find the best matching key
                 for k, v in key_mapping.items():
                     if k in raw_header:
                         section_map[v] = content
                         break
-    
+
     # Fill missing keys with empty strings to prevent frontend errors
     for v in key_mapping.values():
         if v not in section_map:
             section_map[v] = ""
-            
+
     return section_map
 
-def _generate_seo(ticker: str, company: str, signal: str, call_wall: float) -> Dict:
+
+def _generate_seo(ticker: str, company: str, signal: str, call_wall: float) -> dict:
     """Deterministically generates SEO metadata."""
     # Fix: Use the signal directly to ensure consistency. Default to Neutral if empty.
     bias = signal if signal else "Neutral"
-    
+
     cw_str = f"${_fmt_price(call_wall)}" if call_wall else "Key Levels"
-    
+
     return {
         "title": f"{ticker} Options Flow: {bias} Gamma Setup & Targets | GammaRips",
         "metaDescription": f"{company} ({ticker}) displays a {bias.lower()} gamma setup. Analysts project a test of the {cw_str} Call Wall. See the full options analysis.",
@@ -105,38 +137,49 @@ def _generate_seo(ticker: str, company: str, signal: str, call_wall: float) -> D
             f"{ticker} gamma squeeze",
             f"{company} stock forecast",
             f"{ticker} earnings analysis",
-            "institutional order flow"
+            "institutional order flow",
         ],
-        "h1": f"{ticker} Targets {cw_str}: {bias} Momentum Signal"
+        "h1": f"{ticker} Targets {cw_str}: {bias} Momentum Signal",
     }
 
-def _generate_faq(ticker: str, ms: Dict) -> List[Dict]:
+
+def _generate_faq(ticker: str, ms: dict) -> list[dict]:
     """Deterministically generates FAQ based on market structure."""
-    cw = _fmt_price(ms.get('call_wall', 'N/A'))
-    pw = _fmt_price(ms.get('put_wall', 'N/A'))
-    
+    cw = _fmt_price(ms.get("call_wall", "N/A"))
+    pw = _fmt_price(ms.get("put_wall", "N/A"))
+
     return [
         {
             "question": f"Is {ticker} seeing unusual call volume?",
-            "answer": f"We are tracking significant activity in the options chain. The Call Wall is currently at ${cw}, which often acts as a magnet or resistance level."
+            "answer": f"We are tracking significant activity in the options chain. The Call Wall is currently at ${cw}, which often acts as a magnet or resistance level.",
         },
         {
             "question": f"What are the key support and resistance levels for {ticker}?",
-            "answer": f"Based on current dealer positioning, the primary resistance (Call Wall) is at ${cw}, while strong support (Put Wall) is found at ${pw}."
-        }
+            "answer": f"Based on current dealer positioning, the primary resistance (Call Wall) is at ${cw}, while strong support (Put Wall) is found at ${pw}.",
+        },
     ]
 
-def _generate_analyst_brief(ticker: str, company: str, signal: str, ms: Dict, tech_snippet: str) -> Dict:
+
+def _generate_analyst_brief(
+    ticker: str, company: str, signal: str, ms: dict, tech_snippet: str
+) -> dict:
     """
     Generates the brief using LLM (Micro-Prompt) or Fallback.
     """
     # Prepare Context
-    call_wall = _fmt_price(ms.get('call_wall', 0))
-    put_wall = _fmt_price(ms.get('put_wall', 0))
-    net_call_gamma = ms.get('net_call_gamma', 0)
-    net_put_gamma = ms.get('net_put_gamma', 0)
-    
-    top_contracts = ms.get('top_active_contracts', [])
+    call_wall = _fmt_price(ms.get("call_wall", 0))
+    put_wall = _fmt_price(ms.get("put_wall", 0))
+
+    # Robustly handle Gamma values (can be None from BQ)
+    net_call_gamma = ms.get("net_call_gamma")
+    if net_call_gamma is None:
+        net_call_gamma = 0.0
+
+    net_put_gamma = ms.get("net_put_gamma")
+    if net_put_gamma is None:
+        net_put_gamma = 0.0
+
+    top_contracts = ms.get("top_active_contracts", [])
     top_contract_desc = "N/A"
     if top_contracts:
         c = top_contracts[0]
@@ -153,28 +196,32 @@ def _generate_analyst_brief(ticker: str, company: str, signal: str, ms: Dict, te
             ticker=ticker,
             company_name=company,
             signal=signal,
-            technicals_snippet=tech_snippet[:500], # Keep it short
+            technicals_snippet=tech_snippet[:500],  # Keep it short
             call_wall=call_wall,
             put_wall=put_wall,
             net_call_gamma=net_call_gamma,
             net_put_gamma=net_put_gamma,
-            top_contract_desc=top_contract_desc
+            top_contract_desc=top_contract_desc,
         )
-        
+
+        # --- RATE LIMITER: Enforce 1 call every 1.2s across threads ---
+        _limiter.wait()
+
         # Use flash model for speed and low cost
+        # FAIL FAST: Timeout handled by client init
         content = vertex_ai.generate(prompt)
-        
+
         # Simple cleanup if the model returns markdown code blocks despite instructions
         content = content.replace("```html", "").replace("```", "").strip()
-        
+
         return {
             "headline": f"{signal} Setup: Eyes on ${call_wall} Call Wall",
-            "content": content
+            "content": content,
         }
-        
+
     except Exception as e:
         logging.warning(f"[{ticker}] LLM Brief Gen failed ({e}). Using fallback.")
-        
+
     # 2. Fallback Template
     fallback_content = (
         f"<p><strong>{ticker}</strong> is showing a <strong>{signal}</strong> setup. "
@@ -182,76 +229,104 @@ def _generate_analyst_brief(ticker: str, company: str, signal: str, ms: Dict, te
         f"Support is firm at the <strong>${put_wall} Put Wall</strong>. "
         f"Net Call Gamma is {net_call_gamma:.2f}, suggesting positive dealer hedging flows may support price action.</p>"
     )
-    
+
     return {
         "headline": f"Market Update: {ticker} Testing Key Levels",
-        "content": fallback_content
+        "content": fallback_content,
     }
 
-def process_blob(blob_name: str) -> Optional[str]:
-    # 1. Parse Filename
-    file_name = os.path.basename(blob_name)
-    match = re.match(r'([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.json', file_name)
-    if not match: return None
-    ticker_filename, date_filename = match.groups()
 
+def process_blob(blob_name: str) -> str | None:
+    # WRAP ENTIRE LOGIC IN TRY/EXCEPT
     try:
+        # 1. Parse Filename
+        file_name = os.path.basename(blob_name)
+        match = re.match(
+            r"([A-Z\.]+)_recommendation_(\d{4}-\d{2}-\d{2})\.json", file_name
+        )
+        if not match:
+            return None
+        ticker_filename, date_filename = match.groups()
+
         # 2. Read Recommendation (GCS)
         rec_json_str = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
-        if not rec_json_str: return None
+        if not rec_json_str:
+            return None
         try:
             rec_data = json.loads(rec_json_str)
-        except json.JSONDecodeError: return None
+        except json.JSONDecodeError:
+            return None
 
         # Resolve Ticker/Date
         ticker = rec_data.get("ticker", ticker_filename)
         run_date = rec_data.get("run_date", date_filename)
-        
+
+        # 6. Final JSON Construction (Path needed early for check)
+        output_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date}.json"
+
         # 3. Fetch Options Market Structure (BQ) - CRITICAL
         # We fail if this is missing because the product IS options analysis.
         market_structure = bq.fetch_options_market_structure(ticker)
         if not market_structure:
-            logging.warning(f"[{ticker}] No Options Market Structure found. Skipping page gen.")
+            logging.warning(
+                f"[{ticker}] No Options Market Structure found. Skipping page gen."
+            )
             return None
 
         # 4. Fetch Analysis Scores (BQ) - OPTIONAL/ENRICHMENT
         # We do NOT fail if this is missing. We just use empty defaults.
         bq_data = bq.fetch_analysis_scores(ticker, run_date)
-        
+
         # 5. Assembly Phase
         company_name = bq_data.get("company_name", ticker)
         weighted_score = bq_data.get("weighted_score", 50.0)
-        
+
         # If aggregated_text is missing, this returns a dict with empty strings for all keys
         full_analysis_map = _split_aggregated_text(bq_data.get("aggregated_text", ""))
-        
+
         # Trade Setup (from Recommendation)
         trade_setup = {
             "signal": rec_data.get("outlook_signal", "Neutral"),
             "confidence": rec_data.get("confidence", "Medium"),
             "strategy": rec_data.get("strategy", "Observation"),
-            "catalyst": rec_data.get("primary_driver", "Market Structure")
+            "catalyst": rec_data.get("primary_driver", "Market Structure"),
         }
 
         # SEO & Brief
-        seo_data = _generate_seo(ticker, company_name, trade_setup['signal'], market_structure.get('call_wall'))
-        
+        seo_data = _generate_seo(
+            ticker,
+            company_name,
+            trade_setup["signal"],
+            market_structure.get("call_wall"),
+        )
+
         # --- CONSISTENCY CHECK ---
         # Ensure the H1 headline aligns with the trade signal.
-        if trade_setup['signal'] not in seo_data['h1']:
-            logging.warning(f"[{ticker}] SEO H1 Mismatch Detected. Regenerating SEO data.")
-            seo_data = _generate_seo(ticker, company_name, trade_setup['signal'], market_structure.get('call_wall'))
+        if trade_setup["signal"] not in seo_data["h1"]:
+            logging.warning(
+                f"[{ticker}] SEO H1 Mismatch Detected. Regenerating SEO data."
+            )
+            seo_data = _generate_seo(
+                ticker,
+                company_name,
+                trade_setup["signal"],
+                market_structure.get("call_wall"),
+            )
 
         faq_data = _generate_faq(ticker, market_structure)
-        
+
         # Use Technicals snippet for context in Brief
         tech_snippet = full_analysis_map.get("technicals", "")
         if not tech_snippet:
-             # Try to provide at least price context if technicals text is missing
-             last_price = market_structure.get("top_active_contracts", [{}])[0].get("last_price", "N/A")
-             tech_snippet = f"Stock is trading near options activity levels."
+            # Try to provide at least price context if technicals text is missing
+            market_structure.get("top_active_contracts", [{}])[0].get(
+                "last_price", "N/A"
+            )
+            tech_snippet = "Stock is trading near options activity levels."
 
-        analyst_brief = _generate_analyst_brief(ticker, company_name, trade_setup['signal'], market_structure, tech_snippet)
+        analyst_brief = _generate_analyst_brief(
+            ticker, company_name, trade_setup["signal"], market_structure, tech_snippet
+        )
 
         # 6. Final JSON Construction
         final_json = {
@@ -263,36 +338,81 @@ def process_blob(blob_name: str) -> Optional[str]:
             "seo": seo_data,
             "analystBrief": analyst_brief,
             "tradeSetup": trade_setup,
-            "faq": faq_data
+            "faq": faq_data,
         }
 
         # 7. Write Output
-        output_path = f"{OUTPUT_PREFIX}{ticker}_page_{run_date}.json"
-        gcs.write_text(config.GCS_BUCKET_NAME, output_path, json.dumps(final_json, indent=2), "application/json")
-        
+        # output_path defined above
+        gcs.write_text(
+            config.GCS_BUCKET_NAME,
+            output_path,
+            json.dumps(final_json, indent=2),
+            "application/json",
+        )
+
         logging.info(f"[{ticker}] Page Gen Success: {output_path}")
         return output_path
-    
+
     except Exception as e:
-        logging.error(f"[{ticker}] Page Gen Failed: {e}", exc_info=True)
+        logging.error(
+            f"[{os.path.basename(blob_name)}] Page Gen Failed: {e}", exc_info=True
+        )
         return None
 
+
 def run_pipeline():
-    logging.info("--- Starting Optimized Page Generator ---")
-    work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-    
+    logging.info("--- Starting Optimized Page Generator (Parallel + Throttled) ---")
+
+    # 1. DELETE ALL FILES UP FRONT (Ensure 1 file per ticker, fresh run)
+    try:
+        logging.info(f"Deleting all files in output prefix: {OUTPUT_PREFIX}")
+        # Using simple iteration/deletion since serving GCS lib is simpler
+        # or use the new delete_all_in_prefix we added
+        gcs.delete_all_in_prefix(config.GCS_BUCKET_NAME, OUTPUT_PREFIX)
+    except Exception as e:
+        logging.error(f"Failed to clean up output prefix: {e}")
+
+    # 2. List Inputs (Materialize List to Fail Fast)
+    logging.info("Listing inputs...")
+    try:
+        work_items = list(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX))
+    except Exception as e:
+        logging.error(f"Failed to list blobs: {e}")
+        return
+
     if not work_items:
         logging.info("No work items found.")
         return
 
+    total_files = len(work_items)
+    logging.info(
+        f"Processing {total_files} pages with {config.MAX_WORKERS_RECOMMENDER} workers..."
+    )
+
+    # 3. Process with ThreadPool (Manual management to skip "wait=True")
     processed_count = 0
     # Use ThreadPool with higher concurrency now that BQ client is Singleton
     max_workers = config.MAX_WORKERS_RECOMMENDER
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_blob, item) for item in work_items}
-        for future in as_completed(futures):
-            if future.result():
-                processed_count += 1
 
-    logging.info(f"--- Page Gen Finished. Created {processed_count} pages. ---")
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = {executor.submit(process_blob, item): item for item in work_items}
+        for i, future in enumerate(as_completed(futures)):
+            try:
+                if future.result():
+                    processed_count += 1
+            except Exception as e:
+                logging.error(f"Thread failed: {e}")
+
+            # Progress Logging
+            if (i + 1) % 50 == 0:
+                logging.info(f"Progress: {i + 1}/{total_files} pages processed...")
+    finally:
+        # CRITICAL: Do not wait for zombie threads (e.g. stuck socket close)
+        # Force shutdown so the Cloud Function returns '200 OK' immediately.
+        logging.info("Forcing executor shutdown (wait=False)...")
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    logging.info(
+        f"--- Page Gen Finished. Created {processed_count}/{total_files} pages. ---"
+    )

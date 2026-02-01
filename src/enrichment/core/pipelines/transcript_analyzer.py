@@ -1,20 +1,23 @@
 # enrichment/core/pipelines/transcript_analyzer.py
+import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from .. import config, gcs
-from ..clients import vertex_ai
 import os
 import re
-import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-INPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["input"] 
+from .. import config, gcs
+from ..clients import vertex_ai
+
+INPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["transcript_analyzer"]["output"]
+
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return (match.group(1), match.group(2)) if match else (None, None)
+
 
 def read_transcript_content(raw_json: str) -> str | None:
     """Extracts the 'content' from the raw transcript JSON."""
@@ -27,6 +30,7 @@ def read_transcript_content(raw_json: str) -> str | None:
     except (json.JSONDecodeError, TypeError, IndexError):
         return None
 
+
 def process_blob(blob_name: str):
     """
     Processes a single raw transcript file from GCS.
@@ -37,18 +41,20 @@ def process_blob(blob_name: str):
 
     output_blob_name = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
     logging.info(f"[{ticker}] Generating transcript analysis for {date_str}")
-    
+
     # 1. Read Raw Content
     raw_json_content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
     if not raw_json_content:
-        logging.error(f"[{ticker}] Could not read raw transcript content from {blob_name}")
+        logging.error(
+            f"[{ticker}] Could not read raw transcript content from {blob_name}"
+        )
         return None
-        
+
     transcript_content = read_transcript_content(raw_json_content)
     if not transcript_content:
         logging.error(f"[{ticker}] Could not extract 'content' from {blob_name}")
         return None
-    
+
     # 2. Analyze with Vertex AI
     prompt = r"""
 You are a sharp financial analyst evaluating an earnings call transcript to find signals that may influence the stock over the next 1–3 months.
@@ -88,50 +94,58 @@ Provided Transcript:
 
     try:
         analysis_json = vertex_ai.generate(prompt)
-        
+
         # Simple validation
         if "{" not in analysis_json:
             raise ValueError("Model output not JSON")
 
-        gcs.write_text(config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json")
-        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, output_blob_name)
-        
+        gcs.write_text(
+            config.GCS_BUCKET_NAME, output_blob_name, analysis_json, "application/json"
+        )
+        gcs.cleanup_old_files(
+            config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, output_blob_name
+        )
+
         return output_blob_name
 
     except Exception as e:
         logging.error(f"[{ticker}] Transcript analysis failed: {e}")
         return None
 
+
 def run_pipeline():
     """
     Finds and processes new transcript files that have not yet been analyzed.
     """
     logging.info("--- Starting Direct Transcript Analysis Pipeline ---")
-    
+
     # 1. List all available raw transcripts
     all_inputs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-    
+
     # 2. List all existing analyses
     all_analyses = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX))
-    
+
     # 3. Determine work items (Input exists but Output doesn't)
     work_items = [
-        blob for blob in all_inputs 
+        blob
+        for blob in all_inputs
         if f"{OUTPUT_PREFIX}{os.path.basename(blob)}" not in all_analyses
     ]
-            
+
     if not work_items:
         logging.info("All transcripts are already analyzed.")
         return
 
     logging.info(f"Found {len(work_items)} new transcripts to analyze.")
-    
+
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = {executor.submit(process_blob, blob): blob for blob in work_items}
-        
+
         for future in as_completed(futures):
             if future.result():
                 processed_count += 1
-        
-    logging.info(f"--- Transcript Analysis Pipeline Finished. Processed {processed_count} new files. ---")
+
+    logging.info(
+        f"--- Transcript Analysis Pipeline Finished. Processed {processed_count} new files. ---"
+    )

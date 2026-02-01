@@ -17,8 +17,8 @@ OUTPUT_TABLE_ID = (
 # --- Heuristics ---
 IV_CHEAP_RATIO = 0.85
 IV_EXPENSIVE_RATIO = 1.50
-NEGATIVE_GEX_THRESHOLD = -1000000 
-POSITIVE_GEX_THRESHOLD = 1000000  
+NEGATIVE_GEX_THRESHOLD = -1000000
+POSITIVE_GEX_THRESHOLD = 1000000
 
 
 def _load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
@@ -46,7 +46,9 @@ def _load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
     try:
         job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
         job.result()
-        logging.info("Loaded %s rows into BigQuery table: %s", job.output_rows, table_id)
+        logging.info(
+            "Loaded %s rows into BigQuery table: %s", job.output_rows, table_id
+        )
     except Exception as e:
         logging.error("Failed to load DataFrame to %s: %s", table_id, e, exc_info=True)
         raise
@@ -67,7 +69,9 @@ def _spread_pct(bid: float, ask: float, mid: float | None) -> float | None:
     return None
 
 
-def _dte(expiration_date: str | pd.Timestamp, fetch_date: str | pd.Timestamp) -> int | None:
+def _dte(
+    expiration_date: str | pd.Timestamp, fetch_date: str | pd.Timestamp
+) -> int | None:
     if pd.isna(expiration_date) or pd.isna(fetch_date):
         return None
     e = pd.to_datetime(expiration_date).date()
@@ -98,9 +102,16 @@ def _breakeven_distance_pct(
         return (spot - breakeven) / spot * 100.0
 
 
-def _expected_move_pct(implied_volatility: float, dte: int, haircut: float = 0.75) -> float | None:
+def _expected_move_pct(
+    implied_volatility: float, dte: int, haircut: float = 0.75
+) -> float | None:
     # UPDATED: Haircut reset to 0.75 (Was 1.0) for conservative projections.
-    if pd.isna(implied_volatility) or implied_volatility <= 0 or pd.isna(dte) or dte <= 0:
+    if (
+        pd.isna(implied_volatility)
+        or implied_volatility <= 0
+        or pd.isna(dte)
+        or dte <= 0
+    ):
         return None
     return implied_volatility * (dte / 365.0) ** 0.5 * haircut * 100.0
 
@@ -113,7 +124,7 @@ def _price_bucketed_spread_ok(mid: float | None, spread_pct: float | None) -> bo
         return spread_pct <= 25  # Was 10 (Too strict)
     if mid < 1.50:
         return spread_pct <= 20  # Was 12
-    return spread_pct <= 15      # Standard
+    return spread_pct <= 15  # Standard
 
 
 def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
@@ -131,13 +142,13 @@ def _get_volatility_signal(contract_iv: float, hv_30: float) -> str:
 def _get_signal_from_percentile(percentile: float) -> str:
     if pd.isna(percentile):
         return "Neutral / Mixed"
-    if percentile >= 0.80: # Updated to 80th percentile
+    if percentile >= 0.80:  # Updated to 80th percentile
         return "Strongly Bullish"
     elif percentile >= 0.65:
         return "Moderately Bullish"
     elif percentile >= 0.35:
         return "Neutral / Mixed"
-    elif percentile >= 0.20: # Updated to 20th percentile
+    elif percentile >= 0.20:  # Updated to 20th percentile
         return "Moderately Bearish"
     else:
         return "Strongly Bearish"
@@ -175,7 +186,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
             SELECT
                 ticker,
                 score_percentile,
-                news_score, 
+                news_score,
                 ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY run_date DESC) AS rn
             FROM `{project}.{dataset}.analysis_scores`
             WHERE score_percentile IS NOT NULL
@@ -198,7 +209,7 @@ def _fetch_candidates_all() -> pd.DataFrame:
         s.news_score
     FROM candidates c
     JOIN latest_analysis a ON c.ticker = a.ticker
-    LEFT JOIN latest_scores s ON c.ticker = s.ticker 
+    LEFT JOIN latest_scores s ON c.ticker = s.ticker
     ORDER BY c.ticker, c.options_score DESC
     """
 
@@ -243,70 +254,79 @@ def _process_contract(row: pd.Series) -> dict | None:
     contract_iv = row.get("implied_volatility")
     hv_30 = row.get("hv_30")
     exp_move = _expected_move_pct(contract_iv, dte)
-    
+
     total_gex = row.get("total_gex", 0)
     is_uoa = row.get("is_uoa", False)
-    
+
     # Market Structure (Walls & Flow)
     call_wall = row.get("call_wall")
-    put_wall = row.get("put_wall")
-    pc_ratio = row.get("market_pc_ratio") or row.get("pc_ratio") # Prefer analysis, fallback to candidate
+    row.get("put_wall")
+    pc_ratio = row.get("market_pc_ratio") or row.get(
+        "pc_ratio"
+    )  # Prefer analysis, fallback to candidate
     strike = row.get("strike", 0)
-    
+
     # [NEW] Strategy Tag - Standard or Conviction only
     strategy = "STANDARD"
     is_conviction = False
-    
+
     # Fallback identification
     score_pct = row.get("score_percentile", 0.5)
     news_score = row.get("news_score", 0.0)
-    if pd.isna(news_score): news_score = 0.0
-    if pd.isna(score_pct): score_pct = 0.5
-    
+    if pd.isna(news_score):
+        news_score = 0.0
+    if pd.isna(score_pct):
+        score_pct = 0.5
+
     # Promote to Conviction if strong sentiment aligns
-    if (score_pct >= 0.80 or score_pct <= 0.20 or news_score >= 0.90):
+    if score_pct >= 0.80 or score_pct <= 0.20 or news_score >= 0.90:
         is_conviction = True
         strategy = "CONVICTION"
 
-    direction_bull = row.get("outlook_signal") in ("Strongly Bullish", "Moderately Bullish")
-    direction_bear = row.get("outlook_signal") in ("Strongly Bearish", "Moderately Bearish")
+    direction_bull = row.get("outlook_signal") in (
+        "Strongly Bullish",
+        "Moderately Bullish",
+    )
+    direction_bear = row.get("outlook_signal") in (
+        "Strongly Bearish",
+        "Moderately Bearish",
+    )
     is_call = str(row.get("option_type")).lower() == "call"
     is_put = str(row.get("option_type")).lower() == "put"
-    
+
     # STRICT ALIGNMENT REQUIRED
     aligned = (direction_bull and is_call) or (direction_bear and is_put)
 
     vol_cmp_signal = _get_volatility_signal(contract_iv, hv_30)
-    
+
     # --- Market Structure Checks ---
     structure_warning = []
-    
+
     # 1. Wall Check (Don't buy calls ABOVE the Call Wall unless it's a breakout)
     if is_call and call_wall and strike > call_wall:
-         structure_warning.append("Strike > Call Wall (Resistance)")
-    
+        structure_warning.append("Strike > Call Wall (Resistance)")
+
     # 2. Sentiment Check
     if is_call and pc_ratio and pc_ratio > 2.0:
         structure_warning.append("Bearish Flow (High P/C Ratio)")
-    
+
     # --- Dynamic Risk Management (Forgiveness Logic) ---
-    if is_conviction:
-         vol_ok = True 
-    else:
-        vol_ok = vol_cmp_signal in ("Cheap", "Fairly Priced")
+    vol_ok = True if is_conviction else vol_cmp_signal in ("Cheap", "Fairly Priced")
 
     if is_conviction:
-         spread_ok = (spread is not None and spread <= 20)
+        spread_ok = spread is not None and spread <= 20
     else:
         spread_ok = _price_bucketed_spread_ok(mid_px, spread)
 
     if is_conviction:
-        be_ok = (be_pct is not None and exp_move is not None and be_pct <= (exp_move * 1.2))
+        be_ok = (
+            be_pct is not None and exp_move is not None and be_pct <= (exp_move * 1.2)
+        )
     else:
-        be_ok = (be_pct is not None and exp_move is not None and be_pct <= exp_move)
+        be_ok = be_pct is not None and exp_move is not None and be_pct <= exp_move
 
     red_flags = 0
-    if not aligned: # Strict alignment failure
+    if not aligned:  # Strict alignment failure
         red_flags += 1
     if not vol_ok:
         red_flags += 1
@@ -316,10 +336,13 @@ def _process_contract(row: pd.Series) -> dict | None:
         red_flags += 1
     if len(structure_warning) > 0:
         red_flags += 1
-    
-    if not is_conviction:
-        if row.get("theta") is not None and row.get("theta") < -0.05 and (dte is not None and dte <= 7):
-            red_flags += 1
+
+    if not is_conviction and (
+        row.get("theta") is not None
+        and row.get("theta") < -0.05
+        and (dte is not None and dte <= 7)
+    ):
+        red_flags += 1
 
     # --- Scoring Logic ---
     quality = "Fair"
@@ -327,7 +350,9 @@ def _process_contract(row: pd.Series) -> dict | None:
 
     if is_conviction and aligned and red_flags == 0:
         quality = "Strong"
-        summary_parts.append("CONVICTION PLAY: Strong fundamental tailwinds align with trend.")
+        summary_parts.append(
+            "CONVICTION PLAY: Strong fundamental tailwinds align with trend."
+        )
 
     elif red_flags == 0 and aligned and vol_ok and spread_ok and be_ok:
         quality = "Strong"
@@ -343,7 +368,8 @@ def _process_contract(row: pd.Series) -> dict | None:
 
     if is_uoa:
         summary_parts.append("Unusual Options Activity (Vol > OI).")
-        if quality == "Weak": quality = "Fair" # Bump slightly but keep cautious
+        if quality == "Weak":
+            quality = "Fair"  # Bump slightly but keep cautious
 
     if total_gex and total_gex < NEGATIVE_GEX_THRESHOLD:
         summary_parts.append("Negative Gamma Regime (Volatile).")
@@ -364,15 +390,21 @@ def _process_contract(row: pd.Series) -> dict | None:
             "setup_quality_signal": quality,
             "summary": summary,
             "contract_symbol": csym,
-            "option_type": str(row.get("option_type")).lower()
-            if row.get("option_type") is not None
-            else None,
+            "option_type": (
+                str(row.get("option_type")).lower()
+                if row.get("option_type") is not None
+                else None
+            ),
             "options_score": row.get("options_score"),
-            "strategy": strategy 
+            "strategy": strategy,
         }
     except Exception as e:
         logging.error(
-            "[%s] Contract %s deterministic scoring failed: %s", ticker, csym, e, exc_info=True
+            "[%s] Contract %s deterministic scoring failed: %s",
+            ticker,
+            csym,
+            e,
+            exc_info=True,
         )
         return None
 
@@ -381,7 +413,9 @@ def run_pipeline():
     """
     Runs the contract-level deterministic decisioning pipeline and loads results to BigQuery.
     """
-    logging.info("--- Starting Options Analysis Signal Generation (UOA + GEX + ML Sniper) ---")
+    logging.info(
+        "--- Starting Options Analysis Signal Generation (UOA + GEX + ML Sniper) ---"
+    )
     df = _fetch_candidates_all()
     if df.empty:
         logging.warning("No candidate contracts found. Exiting.")

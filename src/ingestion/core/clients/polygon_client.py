@@ -1,8 +1,9 @@
 import logging
 import time
+from datetime import date, timedelta
+
 import requests
 from requests.adapters import HTTPAdapter
-from datetime import date, timedelta, timezone, datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
@@ -273,7 +274,9 @@ class PolygonClient:
         parts = [p for p in parts if p]
         return ",".join(parts) if parts else None
 
-    def _page_through(self, start_url: str, start_params: dict, paginate: bool) -> list[dict]:
+    def _page_through(
+        self, start_url: str, start_params: dict, paginate: bool
+    ) -> list[dict]:
         local_url, local_params = start_url, dict(start_params)
         acc: list[dict] = []
         while True:
@@ -294,8 +297,8 @@ class PolygonClient:
         to_date: str | None = None,
         limit_per_page: int = 1000,
         paginate: bool = True,
-        topics_str: str | None = None,   # ignored for v2
-        channels_str: str | None = None, # ignored for v2
+        topics_str: str | None = None,  # ignored for v2
+        channels_str: str | None = None,  # ignored for v2
     ) -> list[dict]:
         """
         Fetch news via Polygon News v2 (/v2/reference/news).
@@ -337,13 +340,44 @@ class PolygonClient:
         }
 
         macro_keywords = (
-            "cpi","pce","ppi","inflation","deflation","disinflation","core inflation",
-            "fomc","federal reserve","powell","rate hike","rate cut","interest rate",
-            "dot plot","fed minutes","qe","qt",
-            "jobs report","nonfarm payroll","nfp","unemployment","jolts",
-            "gdp","recession","soft landing","ism","pmi",
-            "treasury yield","bond market","curve","inversion",
-            "ecb","boj","boe","pboc","geopolitics","tariff","sanction"
+            "cpi",
+            "pce",
+            "ppi",
+            "inflation",
+            "deflation",
+            "disinflation",
+            "core inflation",
+            "fomc",
+            "federal reserve",
+            "powell",
+            "rate hike",
+            "rate cut",
+            "interest rate",
+            "dot plot",
+            "fed minutes",
+            "qe",
+            "qt",
+            "jobs report",
+            "nonfarm payroll",
+            "nfp",
+            "unemployment",
+            "jolts",
+            "gdp",
+            "recession",
+            "soft landing",
+            "ism",
+            "pmi",
+            "treasury yield",
+            "bond market",
+            "curve",
+            "inversion",
+            "ecb",
+            "boj",
+            "boe",
+            "pboc",
+            "geopolitics",
+            "tariff",
+            "sanction",
         )
 
         def _is_macro_v2(a: dict) -> bool:
@@ -362,7 +396,7 @@ class PolygonClient:
         out, seen = [], set()
         while True:
             j = self._get(url, params=params)
-            for a in (j.get("results") or []):
+            for a in j.get("results") or []:
                 key = a.get("id") or a.get("article_url")
                 if key in seen:
                     continue

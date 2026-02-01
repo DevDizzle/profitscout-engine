@@ -1,8 +1,10 @@
 import logging
-import pandas as pd
-from google.cloud import firestore, bigquery
-from .. import config
+
 import numpy as np
+import pandas as pd
+from google.cloud import bigquery, firestore
+
+from .. import config
 
 # --- Configuration ---
 BATCH_SIZE = 500
@@ -24,6 +26,7 @@ def _iter_batches(iterable, n):
     if batch:
         yield batch
 
+
 def _commit_ops(db, ops):
     """Commits a list of Firestore operations in batches."""
     batch = db.batch()
@@ -41,6 +44,7 @@ def _commit_ops(db, ops):
     if count:
         batch.commit()
 
+
 def _delete_collection_in_batches(collection_ref):
     """Wipes all documents from a Firestore collection."""
     logging.info(f"Wiping Firestore collection: '{collection_ref.id}'...")
@@ -55,6 +59,7 @@ def _delete_collection_in_batches(collection_ref):
         logging.info(f"Deleted {deleted_count} total docs...")
     logging.info(f"Wipe complete for collection '{collection_ref.id}'.")
 
+
 def _load_bq_df(bq: bigquery.Client, query: str) -> pd.DataFrame:
     """Loads data from a BigQuery query into a pandas DataFrame and cleans it."""
     df = bq.query(query).to_dataframe()
@@ -64,10 +69,11 @@ def _load_bq_df(bq: bigquery.Client, query: str) -> pd.DataFrame:
             dtype_str = str(df[col].dtype)
             if "datetime" in dtype_str or "dbdate" in dtype_str or "date" in dtype_str:
                 df[col] = df[col].astype(str)
-        
+
         # Replace pandas/numpy nulls with None for Firestore
         df = df.replace({pd.NA: np.nan}).where(pd.notna(df), None)
     return df
+
 
 def run_pipeline(full_reset: bool = True):
     """
@@ -76,9 +82,9 @@ def run_pipeline(full_reset: bool = True):
     """
     db = firestore.Client(project=config.DESTINATION_PROJECT_ID)
     bq = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    
+
     collection_ref = db.collection(FIRESTORE_COLLECTION_NAME)
-    logging.info(f"--- Winners Dashboard Sync Pipeline ---")
+    logging.info("--- Winners Dashboard Sync Pipeline ---")
     logging.info(f"Target collection: {collection_ref.id}")
     logging.info(f"Source table: {SOURCE_TABLE_ID}")
 
@@ -106,10 +112,12 @@ def run_pipeline(full_reset: bool = True):
         key = str(row[PRIMARY_KEY_FIELD])
         doc_ref = collection_ref.document(key)
         upsert_ops.append({"type": "set", "ref": doc_ref, "data": row.to_dict()})
-    
-    logging.info(f"Populating '{collection_ref.id}' with {len(upsert_ops)} documents...")
+
+    logging.info(
+        f"Populating '{collection_ref.id}' with {len(upsert_ops)} documents..."
+    )
     for chunk in _iter_batches(upsert_ops, BATCH_SIZE):
         _commit_ops(db, chunk)
-    
+
     logging.info(f"✅ Sync complete for '{collection_ref.id}'.")
     logging.info("--- Winners Dashboard Sync Pipeline Finished ---")

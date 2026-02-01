@@ -1,6 +1,5 @@
 # tests/ingestion/test_options_ingestion.py
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.ingestion import main
 
@@ -11,7 +10,11 @@ from src.ingestion import main
 @patch("src.ingestion.main.options_chain_fetcher")
 @patch("src.ingestion.main.history_archiver")
 def test_fetch_options_chain_success(
-    mock_history_archiver, mock_options_chain_fetcher, mock_polygon_client, mock_bigquery_client, mock_environ
+    mock_history_archiver,
+    mock_options_chain_fetcher,
+    mock_polygon_client,
+    mock_bigquery_client,
+    mock_environ,
 ):
     """
     Tests the successful execution of the fetch_options_chain function.

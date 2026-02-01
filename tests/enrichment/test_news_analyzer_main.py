@@ -1,10 +1,10 @@
-
 import unittest
 from unittest.mock import MagicMock, patch
+
 from src.enrichment import main
 
+
 class TestNewsAnalyzerMain(unittest.TestCase):
-    
     @patch("src.enrichment.core.pipelines.news_analyzer.run_pipeline")
     def test_run_news_analyzer_success(self, mock_run_pipeline):
         """
@@ -17,5 +17,6 @@ class TestNewsAnalyzerMain(unittest.TestCase):
         self.assertEqual(response, "News analyzer pipeline finished.")
         mock_run_pipeline.assert_called_once()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

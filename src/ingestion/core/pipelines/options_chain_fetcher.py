@@ -1,9 +1,10 @@
 # ingestion/core/pipelines/options_chain_fetcher.py
 import logging
 import time
-import pandas as pd
-from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+
+import pandas as pd
 from google.cloud import bigquery, storage
 
 from .. import config

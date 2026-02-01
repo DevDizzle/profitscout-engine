@@ -1,6 +1,6 @@
 # ingestion/core/config.py
-import os
 import datetime
+import os
 
 # --- Global Project ---
 PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
@@ -58,7 +58,7 @@ SECTION_MAP = {
     "20-F": {"business": "item4"},
     "40-F": {"business": "1"},
     "10-Q": {"mda": "part1item2", "risk": "part2item1a"},
-    "10-QT": {"mda": "part1item2", "risk": "part2item1a"}
+    "10-QT": {"mda": "part1item2", "risk": "part2item1a"},
 }
 
 # --- Transcript Collector ---
@@ -79,13 +79,15 @@ INDICATORS = {
     "roc_20": {"kind": "roc", "params": {"length": 20}},
     "bollinger_bands": {"kind": "bbands", "params": {"length": 20, "std": 2}},
     "atr": {"kind": "atr", "params": {"length": 14}},
-    "obv": {"kind": "obv", "params": {}}
+    "obv": {"kind": "obv", "params": {}},
 }
 
 # --- Populate Price Data ---
 DEFAULT_START_DATE = datetime.date(2020, 1, 1)
 SPY_DEFAULT_START_DATE = datetime.date(2025, 10, 21)
-SPY_PRICE_FIRESTORE_COLLECTION = os.getenv("SPY_PRICE_FIRESTORE_COLLECTION", "spy_price_history")
+SPY_PRICE_FIRESTORE_COLLECTION = os.getenv(
+    "SPY_PRICE_FIRESTORE_COLLECTION", "spy_price_history"
+)
 DESTINATION_PROJECT_ID = os.getenv("DESTINATION_PROJECT_ID", "profitscout-fida8")
 
 # --- Job Parameters (Workers / Batching) ---
@@ -97,9 +99,9 @@ MAX_WORKERS_TIERING = {
     "sec_filing_extractor": 4,
     "statement_loader": 5,
     "technicals_collector": 8,
-    "transcript_collector": 6
+    "transcript_collector": 6,
 }
-BATCH_SIZE = 100 # Used by populate_price_data and technicals_collector
+BATCH_SIZE = 100  # Used by populate_price_data and technicals_collector
 
 # --- Vertex AI Gen AI ---
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
@@ -115,8 +117,12 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "512"))
 OPTIONS_CHAIN_TABLE = "options_chain"
 OPTIONS_CHAIN_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{OPTIONS_CHAIN_TABLE}"
 OPTIONS_CHAIN_HISTORY_TABLE = "options_chain_history"
-OPTIONS_CHAIN_HISTORY_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{OPTIONS_CHAIN_HISTORY_TABLE}"
+OPTIONS_CHAIN_HISTORY_TABLE_ID = (
+    f"{PROJECT_ID}.{BIGQUERY_DATASET}.{OPTIONS_CHAIN_HISTORY_TABLE}"
+)
 
 # --- Technicals History ---
 TECHNICALS_HISTORY_TABLE = "technicals_history"
-TECHNICALS_HISTORY_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.{TECHNICALS_HISTORY_TABLE}"
+TECHNICALS_HISTORY_TABLE_ID = (
+    f"{PROJECT_ID}.{BIGQUERY_DATASET}.{TECHNICALS_HISTORY_TABLE}"
+)
