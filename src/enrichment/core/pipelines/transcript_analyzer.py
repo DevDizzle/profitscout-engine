@@ -90,9 +90,7 @@ Use **only** the full transcript provided. Your analysis **must** be grounded in
 
 Provided Transcript:
 {{transcript_content}}
-""".replace(
-        "{{transcript_content}}", transcript_content
-    )
+""".replace("{{transcript_content}}", transcript_content)
 
     try:
         analysis_json = vertex_ai.generate(prompt)
