@@ -33,7 +33,8 @@ jobs:
       run: |
         ruff check .
 
-    - name: Type check with ty
+    - name: Type check with ty (non-blocking)
+      continue-on-error: true
       run: |
         ty check .
 

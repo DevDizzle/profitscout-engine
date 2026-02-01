@@ -46,5 +46,5 @@ known-first-party = ["src"]
 "src/serving/core/pipelines/sync_calendar_to_firestore.py" = ["ARG001"]  # Future use param
 "src/enrichment/core/pipelines/score_aggregator.py" = ["SIM113"]  # as_completed doesn't work with enumerate
 
-[tool.ty]
+[tool.ty.environment]
 python-version = "3.12"
