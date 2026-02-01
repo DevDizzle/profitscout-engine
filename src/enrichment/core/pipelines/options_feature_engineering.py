@@ -1,11 +1,11 @@
 # enrichment/core/pipelines/options_feature_engineering.py
 import logging
-import pandas as pd
-import numpy as np
-from datetime import date
-from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
+import pandas as pd
 from google.cloud import bigquery
+
 from .. import config
 from .. import options_analysis_helper as helper
 
@@ -73,7 +73,7 @@ def _fetch_all_data(
 
 def _process_ticker(
     ticker: str, chain_df: pd.DataFrame, price_history_df: pd.DataFrame
-) -> Optional[dict]:
+) -> dict | None:
     """
     Worker function to process data for one ticker.
     Now calculates Total Net Gamma Exposure (GEX) and Market Structure.
@@ -90,7 +90,7 @@ def _process_ticker(
 
         iv_avg, iv_signal = None, None
         market_structure = {}
-        
+
         if not chain_df.empty:
             uprice = (
                 chain_df["underlying_price"].dropna().iloc[0]
@@ -98,7 +98,7 @@ def _process_ticker(
                 and not chain_df["underlying_price"].dropna().empty
                 else latest_price_row["close"]
             )
-            
+
             # Calculate IV features
             iv_avg = helper.compute_iv_avg_atm(chain_df, uprice, as_of_date)
             hv_30_for_signal = helper.compute_hv30(
@@ -106,7 +106,7 @@ def _process_ticker(
             )
             if iv_avg is not None and hv_30_for_signal is not None:
                 iv_signal = "high" if iv_avg > (hv_30_for_signal + 0.10) else "low"
-                
+
             # Calculate Market Structure (Walls, GEX, Max Pain)
             market_structure = helper.compute_market_structure(chain_df, uprice)
 
@@ -184,7 +184,9 @@ def _truncate_and_load_results(bq_client: bigquery.Client, df: pd.DataFrame):
 
     try:
         # Use load_table_from_dataframe which handles NaN/None/Types natively
-        job = bq_client.load_table_from_dataframe(df_clean, table_id, job_config=job_config)
+        job = bq_client.load_table_from_dataframe(
+            df_clean, table_id, job_config=job_config
+        )
         job.result()
         logging.info(
             f"Successfully truncated and loaded {job.output_rows} rows into {table_id}"
@@ -210,9 +212,7 @@ def run_pipeline():
 
     all_chains_df, all_prices_df = _fetch_all_data(tickers, bq_client)
 
-    chains_by_ticker = {
-        ticker: group for ticker, group in all_chains_df.groupby("ticker")
-    }
+    chains_by_ticker = dict(all_chains_df.groupby("ticker"))
     prices_by_ticker = {
         ticker: group.sort_values("date")
         for ticker, group in all_prices_df.groupby("ticker")
@@ -239,7 +239,7 @@ def run_pipeline():
         return
 
     results_df = pd.DataFrame(results)
-    
+
     _truncate_and_load_results(bq_client, results_df)
 
     logging.info("--- Options Feature Engineering Pipeline Finished ---")

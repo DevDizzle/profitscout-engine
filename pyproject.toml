@@ -1,0 +1,64 @@
+[project]
+name = "profitscout-engine"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+exclude = '''
+/(
+    \.git
+    | \.venv
+    | __pycache__
+    | build
+    | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument
+    "B905",   # zip without strict
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ARG001"]  # Unused args common in test fixtures
+"src/**/main.py" = ["ARG001"]  # Cloud Functions require `request` param
+"src/**/__init__.py" = ["F401"]  # Namespace imports for convenience
+"src/enrichment/core/options_analysis_helper.py" = ["B023"]  # Lambda evaluated immediately in loop
+"src/ingestion/core/pipelines/technicals_collector.py" = ["F821"]  # TODO: Dead code from incomplete refactor
+"src/ingestion/core/clients/polygon_client.py" = ["ARG002"]  # Stub method signatures
+"src/ingestion/core/pipelines/transcript_collector.py" = ["ARG001"]  # Future use param
+"src/serving/core/bq.py" = ["ARG001"]  # Future use params
+"src/serving/core/pipelines/sync_calendar_to_firestore.py" = ["ARG001"]  # Future use param
+"src/enrichment/core/pipelines/score_aggregator.py" = ["SIM113"]  # as_completed doesn't work with enumerate
+
+[tool.ty]
+python-version = "3.12"

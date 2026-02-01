@@ -1,22 +1,25 @@
 # src/enrichment/core/pipelines/options_candidate_selector.py
 import logging
+
 from google.cloud import bigquery
+
 from .. import config
 
 PROJECT = config.PROJECT_ID
 DATASET = config.BIGQUERY_DATASET
 
-CHAIN_TABLE  = f"{PROJECT}.{DATASET}.options_chain"
-CAND_TABLE   = f"{PROJECT}.{DATASET}.options_candidates"
-PRICE_TABLE  = f"{PROJECT}.{DATASET}.price_data"
+CHAIN_TABLE = f"{PROJECT}.{DATASET}.options_chain"
+CAND_TABLE = f"{PROJECT}.{DATASET}.options_candidates"
+PRICE_TABLE = f"{PROJECT}.{DATASET}.price_data"
 SCORES_TABLE = config.SCORES_TABLE_ID
+
 
 def _create_candidates_table(bq: bigquery.Client):
     """
     Selects option contracts using a Pure Fundamental Approach:
     1. FUNDAMENTAL CONVICTION (Tier 1): High LLM Score -> Safe Options.
     """
-    
+
     logging.info(f"Dropping {CAND_TABLE} to ensure clean schema creation...")
     try:
         bq.query(f"DROP TABLE IF EXISTS `{CAND_TABLE}`").result()
@@ -24,7 +27,7 @@ def _create_candidates_table(bq: bigquery.Client):
         logging.warning(f"Error dropping table (proceeding anyway): {e}")
 
     logging.info(f"Creating {CAND_TABLE} with TIER 1 (Standard/Conviction) Logic...")
-    
+
     q = f"""
     CREATE OR REPLACE TABLE `{CAND_TABLE}`
     PARTITION BY DATE(selection_run_ts)
@@ -58,9 +61,9 @@ def _create_candidates_table(bq: bigquery.Client):
       JOIN latest_chain_per_ticker l USING (ticker, fetch_date)
     ),
     sentiment AS (
-      SELECT 
+      SELECT
         ticker,
-        SAFE_DIVIDE(SUM(CASE WHEN LOWER(option_type)='put' THEN volume ELSE 0 END), 
+        SAFE_DIVIDE(SUM(CASE WHEN LOWER(option_type)='put' THEN volume ELSE 0 END),
                     NULLIF(SUM(CASE WHEN LOWER(option_type)='call' THEN volume ELSE 0 END), 0)) as pc_ratio
       FROM chain_scoped
       GROUP BY ticker
@@ -97,24 +100,24 @@ def _create_candidates_table(bq: bigquery.Client):
           WHEN e.option_type_lc = 'call' THEN 'BUY'
           ELSE 'SELL'
         END AS signal,
-        CASE 
-          WHEN e.vol_nz > e.oi_nz AND e.vol_nz > 500 THEN TRUE 
-          ELSE FALSE 
+        CASE
+          WHEN e.vol_nz > e.oi_nz AND e.vol_nz > 500 THEN TRUE
+          ELSE FALSE
         END AS is_uoa,
-        
+
         -- Default to False for consistency
         FALSE AS is_ml_pick
-        
+
       FROM enriched e
       LEFT JOIN latest_scores s ON e.ticker = s.ticker
-      WHERE 
-        e.spread_pct IS NOT NULL 
-        
+      WHERE
+        e.spread_pct IS NOT NULL
+
         -- [SWING TRADER BASELINE STANDARDS]
         AND e.dte BETWEEN 14 AND 60         -- 14-60 Days: Time for trade to materialize
         AND e.spread_pct <= 0.20            -- Max 20% Spread: No liquidity traps
         AND (e.vol_nz >= 250 OR e.oi_nz >= 500) -- High Liquidity Only
-        
+
         AND (
             -- ==================================================
             -- TIER 1: RIP HUNTERS (Strong Fundamental Conviction)
@@ -133,17 +136,17 @@ def _create_candidates_table(bq: bigquery.Client):
         -- Scoring: Pure Fundamental/Greeks
         (
            (COALESCE(gamma, 0) * 20.0) +
-           
-           (LEAST(SAFE_DIVIDE(vol_nz, 1000), 5.0) * 0.4) + 
-           
-           (CASE WHEN spread_pct <= 0.25 THEN (1.0 - (spread_pct * 4.0)) ELSE 0 END) + 
-           
-           (CASE 
-               WHEN (option_type_lc = 'call' AND mny_call BETWEEN 0.95 AND 1.05) THEN 0.5 
-               WHEN (option_type_lc = 'put' AND mny_put BETWEEN 0.95 AND 1.05) THEN 0.5 
-               ELSE 0 
+
+           (LEAST(SAFE_DIVIDE(vol_nz, 1000), 5.0) * 0.4) +
+
+           (CASE WHEN spread_pct <= 0.25 THEN (1.0 - (spread_pct * 4.0)) ELSE 0 END) +
+
+           (CASE
+               WHEN (option_type_lc = 'call' AND mny_call BETWEEN 0.95 AND 1.05) THEN 0.5
+               WHEN (option_type_lc = 'put' AND mny_put BETWEEN 0.95 AND 1.05) THEN 0.5
+               ELSE 0
             END) +
-            
+
            (CASE WHEN is_uoa THEN 0.2 ELSE 0 END)
         ) as options_score
       FROM filtered f

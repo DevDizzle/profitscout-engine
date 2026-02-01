@@ -2,19 +2,22 @@
 import logging
 import re
 from urllib.parse import urlparse
-import pandas as pd
-from google.cloud import firestore, bigquery, storage
-from .. import config
+
 import numpy as np
+import pandas as pd
+from google.cloud import bigquery, firestore, storage
+
+from .. import config
 
 # --------- Tunables ----------
 BATCH_SIZE = 500
-PRIMARY_KEY_FIELD = "ticker"           # Firestore doc id
+PRIMARY_KEY_FIELD = "ticker"  # Firestore doc id
 URI_FIELDS = ["uri", "image_uri", "pdf_uri"]  # Columns to validate (if using GCS)
-VALIDATE_GCS_LINKS = False             # Set True to check GCS object existence
+VALIDATE_GCS_LINKS = False  # Set True to check GCS object existence
 # ------------------------------
 
 _GCS_URI_RE = re.compile(r"^gs://([^/]+)/(.+)$")
+
 
 def _iter_batches(iterable, n):
     batch = []
@@ -26,6 +29,7 @@ def _iter_batches(iterable, n):
     if batch:
         yield batch
 
+
 def _is_gcs_uri(s: str) -> bool:
     if not s or not isinstance(s, str):
         return False
@@ -33,9 +37,12 @@ def _is_gcs_uri(s: str) -> bool:
         return True
     try:
         u = urlparse(s)
-        return ("storage.googleapis.com" in (u.netloc or "")) and len(u.path.split("/")) >= 3
+        return ("storage.googleapis.com" in (u.netloc or "")) and len(
+            u.path.split("/")
+        ) >= 3
     except Exception:
         return False
+
 
 def _gcs_blob_from_any(storage_client: storage.Client, uri: str):
     if uri.startswith("gs://"):
@@ -52,6 +59,7 @@ def _gcs_blob_from_any(storage_client: storage.Client, uri: str):
         blob_name = "/".join(parts[1:])
     bucket = storage_client.bucket(bucket_name)
     return bucket_name, blob_name, bucket.blob(blob_name)
+
 
 def _validate_gcs_links(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not VALIDATE_GCS_LINKS:
@@ -85,6 +93,7 @@ def _validate_gcs_links(df: pd.DataFrame) -> pd.DataFrame:
     df["is_available"] = df.apply(row_available, axis=1)
     return df
 
+
 def _commit_ops(db, ops):
     batch = db.batch()
     count = 0
@@ -101,6 +110,7 @@ def _commit_ops(db, ops):
     if count:
         batch.commit()
 
+
 def _delete_collection_in_batches(collection_ref):
     logging.info(f"Wiping Firestore collection: '{collection_ref.id}'...")
     while True:
@@ -112,6 +122,7 @@ def _delete_collection_in_batches(collection_ref):
         logging.info(f"Deleted {len(ops)} docs...")
     logging.info("Wipe complete.")
 
+
 def _load_bq_df(bq):
     query = f"""
       SELECT *
@@ -122,13 +133,18 @@ def _load_bq_df(bq):
     if not df.empty:
         for col in df.columns:
             dtype_str = str(df[col].dtype)
-            if dtype_str.startswith("datetime64") or "datetimetz" in dtype_str or dtype_str == "dbdate":
+            if (
+                dtype_str.startswith("datetime64")
+                or "datetimetz" in dtype_str
+                or dtype_str == "dbdate"
+            ):
                 df[col] = df[col].astype(str)
-        
+
         df = df.replace({pd.NA: np.nan})
         df = df.where(pd.notna(df), None)
 
     return df
+
 
 def run_pipeline(full_reset: bool = False):
     """
@@ -155,7 +171,9 @@ def run_pipeline(full_reset: bool = False):
     if full_reset:
         _delete_collection_in_batches(collection_ref)
         if df.empty:
-            logging.info("BigQuery returned 0 rows after reset. Collection remains empty.")
+            logging.info(
+                "BigQuery returned 0 rows after reset. Collection remains empty."
+            )
             return
 
         if PRIMARY_KEY_FIELD not in df.columns:
@@ -177,7 +195,9 @@ def run_pipeline(full_reset: bool = False):
 
     # Incremental mode
     if df.empty:
-        logging.info("No rows in BigQuery; skipping upserts, only pruning stale documents...")
+        logging.info(
+            "No rows in BigQuery; skipping upserts, only pruning stale documents..."
+        )
         current_keys = set()
     else:
         if PRIMARY_KEY_FIELD not in df.columns:
@@ -191,7 +211,7 @@ def run_pipeline(full_reset: bool = False):
         logging.info(f"Upserting {len(upsert_ops)} documents...")
         for chunk in _iter_batches(upsert_ops, BATCH_SIZE):
             _commit_ops(db, chunk)
-        current_keys = set(str(x) for x in df[PRIMARY_KEY_FIELD].tolist())
+        current_keys = {str(x) for x in df[PRIMARY_KEY_FIELD].tolist()}
 
     logging.info("Scanning Firestore for stale docs...")
     existing_keys = [doc.id for doc in collection_ref.stream()]
@@ -199,10 +219,14 @@ def run_pipeline(full_reset: bool = False):
 
     if to_delete:
         logging.info(f"Deleting {len(to_delete)} stale documents...")
-        delete_ops = [{"type": "delete", "ref": collection_ref.document(k)} for k in to_delete]
+        delete_ops = [
+            {"type": "delete", "ref": collection_ref.document(k)} for k in to_delete
+        ]
         for chunk in _iter_batches(delete_ops, BATCH_SIZE):
             _commit_ops(db, chunk)
     else:
         logging.info("No stale documents to delete.")
 
-    logging.info(f"✅ Incremental sync complete. Upserted {len(current_keys)}; removed {len(to_delete)}.")
+    logging.info(
+        f"✅ Incremental sync complete. Upserted {len(current_keys)}; removed {len(to_delete)}."
+    )

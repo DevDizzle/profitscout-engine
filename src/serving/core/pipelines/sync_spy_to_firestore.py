@@ -1,11 +1,13 @@
 # serving/core/pipelines/sync_spy_to_firestore.py
-import logging
-import pandas as pd
-from google.cloud import firestore, bigquery
-from .. import config
 import datetime
+import logging
+
+from google.cloud import bigquery, firestore
+
+from .. import config
 
 BATCH_SIZE = 500
+
 
 def _iter_batches(iterable, n):
     """Yield successive n-sized chunks from iterable."""
@@ -18,12 +20,14 @@ def _iter_batches(iterable, n):
     if batch:
         yield batch
 
+
 def _commit_ops(db, ops):
     """Commit a batch of write operations."""
     batch = db.batch()
     for op in ops:
         batch.set(op["ref"], op["data"])
     batch.commit()
+
 
 def _delete_collection(db, collection_ref):
     """Wipes the collection to ensure a clean sync."""
@@ -37,14 +41,15 @@ def _delete_collection(db, collection_ref):
             batch.delete(doc.reference)
         batch.commit()
 
+
 def run_pipeline():
     """Syncs SPY price history from BigQuery to Firestore."""
     logging.info("--- Starting SPY Price Firestore Sync ---")
-    
+
     # Initialize clients for the serving layer
     db = firestore.Client(project=config.DESTINATION_PROJECT_ID)
     bq = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    
+
     collection_ref = db.collection(config.SPY_PRICE_FIRESTORE_COLLECTION)
 
     # 1. Load from BigQuery
@@ -52,7 +57,10 @@ def run_pipeline():
     try:
         df = bq.query(query).to_dataframe()
     except Exception as e:
-        logging.critical(f"Failed to query SPY prices from {config.SPY_PRICE_TABLE_ID}: {e}", exc_info=True)
+        logging.critical(
+            f"Failed to query SPY prices from {config.SPY_PRICE_TABLE_ID}: {e}",
+            exc_info=True,
+        )
         raise
 
     if df.empty:
@@ -64,10 +72,10 @@ def run_pipeline():
         df["date"] = df["date"].apply(
             lambda d: d.isoformat() if isinstance(d, datetime.date) else str(d)
         )
-    
+
     # 3. Wipe the collection for a clean slate
     _delete_collection(db, collection_ref)
-    
+
     # 4. Prepare Batch Writes
     ops = []
     for _, row in df.iterrows():
@@ -77,8 +85,10 @@ def run_pipeline():
         doc_ref = collection_ref.document(doc_id)
         ops.append({"ref": doc_ref, "data": doc_data})
 
-    logging.info(f"Upserting {len(ops)} documents to '{config.SPY_PRICE_FIRESTORE_COLLECTION}'...")
-    
+    logging.info(
+        f"Upserting {len(ops)} documents to '{config.SPY_PRICE_FIRESTORE_COLLECTION}'..."
+    )
+
     count = 0
     for batch in _iter_batches(ops, BATCH_SIZE):
         _commit_ops(db, batch)

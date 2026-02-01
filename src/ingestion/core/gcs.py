@@ -2,10 +2,12 @@
 """
 Shared helper functions for reading and writing blobs in GCS for all Ingestion services.
 """
-from typing import Dict, List, Optional
-import logging
-from google.cloud import storage
+
 import json
+import logging
+
+from google.cloud import storage
+
 from . import config
 
 logger = logging.getLogger(__name__)
@@ -22,11 +24,15 @@ def get_tickers(storage_client: storage.Client) -> list[str]:
         bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
         blob = bucket.blob(config.TICKER_LIST_PATH)
         if not blob.exists():
-            logger.error(f"Ticker file not found in GCS: gs://{config.GCS_BUCKET_NAME}/{config.TICKER_LIST_PATH}")
+            logger.error(
+                f"Ticker file not found in GCS: gs://{config.GCS_BUCKET_NAME}/{config.TICKER_LIST_PATH}"
+            )
             return []
-        
+
         content = blob.download_as_text(encoding="utf-8")
-        tickers = [line.strip().upper() for line in content.splitlines() if line.strip()]
+        tickers = [
+            line.strip().upper() for line in content.splitlines() if line.strip()
+        ]
         logger.info(f"Successfully loaded {len(tickers)} tickers from GCS.")
         return tickers
     except Exception as e:
@@ -52,14 +58,15 @@ def upload_json_to_gcs(storage_client: storage.Client, data: dict, blob_path: st
     blob.upload_from_string(json.dumps(data, indent=2), content_type="application/json")
 
 
-def cleanup_old_files(storage_client: storage.Client, folder: str, ticker: str, keep_filename: str) -> None:
+def cleanup_old_files(
+    storage_client: storage.Client, folder: str, ticker: str, keep_filename: str
+) -> None:
     """Deletes all files for a ticker in a folder except for the one to keep."""
     bucket = storage_client.bucket(config.GCS_BUCKET_NAME)
     prefix = f"{folder}{ticker}_"
 
     blobs_to_delete = [
-        blob for blob in bucket.list_blobs(prefix=prefix)
-        if blob.name != keep_filename
+        blob for blob in bucket.list_blobs(prefix=prefix) if blob.name != keep_filename
     ]
 
     for blob in blobs_to_delete:
@@ -70,7 +77,7 @@ def cleanup_old_files(storage_client: storage.Client, folder: str, ticker: str, 
             logger.error(f"Failed to delete blob {blob.name}: {e}")
 
 
-def read_blob(bucket_name: str, blob_name: str) -> Optional[str]:
+def read_blob(bucket_name: str, blob_name: str) -> str | None:
     """Reads a blob from GCS and returns its content as a string."""
     try:
         client = storage.Client()
@@ -92,8 +99,8 @@ def list_existing_transcripts(storage_client: storage.Client) -> set:
     for blob in blobs:
         try:
             # Assumes filename format is TICKER_YYYY-MM-DD.json
-            file_name = blob.name.split('/')[-1]
-            ticker, date_str = file_name.replace('.json', '').split('_')
+            file_name = blob.name.split("/")[-1]
+            ticker, date_str = file_name.replace(".json", "").split("_")
             existing_set.add((ticker, date_str))
         except Exception:
             continue

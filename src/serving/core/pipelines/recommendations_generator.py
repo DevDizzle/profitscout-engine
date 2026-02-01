@@ -1,13 +1,18 @@
 # serving/core/pipelines/recommendations_generator.py
-import logging
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.cloud import bigquery
-from .. import config, gcs
-from datetime import date
 import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 
-def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[str, str]:
+import pandas as pd
+from google.cloud import bigquery
+
+from .. import config, gcs
+
+
+def _get_signal_and_context(
+    score: float, momentum_pct: float | None
+) -> tuple[str, str]:
     """
     Determines the 5-tier outlook signal based on the ABSOLUTE WEIGHTED SCORE.
     """
@@ -35,7 +40,7 @@ def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[s
             context = "with confirming negative momentum."
         elif is_bearish_outlook and momentum_pct > 0:
             context = "but facing a short-term counter-rally."
-    
+
     if outlook == "Neutral / Mixed":
         if score > 0.50:
             outlook += " with a bullish tilt"
@@ -46,6 +51,7 @@ def _get_signal_and_context(score: float, momentum_pct: float | None) -> tuple[s
 
     return outlook, context
 
+
 def _get_daily_work_list() -> list[dict]:
     """Builds the work list from GCS and enriches from BigQuery."""
     logging.info("Fetching work list from GCS and enriching from BigQuery...")
@@ -53,9 +59,9 @@ def _get_daily_work_list() -> list[dict]:
     if not tickers:
         logging.critical("Ticker list from GCS is empty. No work to do.")
         return []
-        
+
     client = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    
+
     query = f"""
         WITH GCS_Tickers AS (
             SELECT ticker FROM UNNEST(@tickers) AS ticker
@@ -107,7 +113,7 @@ def _get_daily_work_list() -> list[dict]:
         LEFT JOIN LatestScores s ON g.ticker = s.ticker
         LEFT JOIN LatestMomentum m ON g.ticker = m.ticker
     """
-    
+
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ArrayQueryParameter("tickers", "STRING", tickers),
@@ -117,7 +123,9 @@ def _get_daily_work_list() -> list[dict]:
     try:
         df = client.query(query, job_config=job_config).to_dataframe()
         # Only process if we have the aggregated text analysis
-        df.dropna(subset=["company_name", "weighted_score", "aggregated_text"], inplace=True)
+        df.dropna(
+            subset=["company_name", "weighted_score", "aggregated_text"], inplace=True
+        )
         if df.empty:
             logging.warning("No tickers with sufficient data found after enriching.")
             return []
@@ -126,6 +134,7 @@ def _get_daily_work_list() -> list[dict]:
     except Exception as e:
         logging.critical(f"Failed to build work list: {e}", exc_info=True)
         return []
+
 
 def _delete_old_recommendation_files(ticker: str):
     """Deletes old recommendation files."""
@@ -137,56 +146,68 @@ def _delete_old_recommendation_files(ticker: str):
         except Exception as e:
             logging.error(f"[{ticker}] Failed to delete old file {blob_name}: {e}")
 
+
 def _process_ticker(ticker_data: dict):
     """Generates the recommendation metadata (JSON only)."""
     ticker = ticker_data["ticker"]
     today_str = date.today().strftime("%Y-%m-%d")
-    
-    base_blob_path = f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}"
+
+    base_blob_path = (
+        f"{config.RECOMMENDATION_PREFIX}{ticker}_recommendation_{today_str}"
+    )
     json_blob_path = f"{base_blob_path}.json"
-    
+
     try:
         momentum_pct = ticker_data.get("close_30d_delta_pct")
-        if pd.isna(momentum_pct): momentum_pct = None
+        if pd.isna(momentum_pct):
+            momentum_pct = None
 
         score = ticker_data.get("weighted_score")
-        if pd.isna(score): score = 0.5
+        if pd.isna(score):
+            score = 0.5
 
         outlook_signal, momentum_context = _get_signal_and_context(score, momentum_pct)
-        
+
         metadata = {
             "ticker": ticker,
             "run_date": today_str,
             "outlook_signal": outlook_signal,
             "momentum_context": momentum_context,
             "weighted_score": ticker_data["weighted_score"],
-            "score_percentile": ticker_data.get("score_percentile", 0.5), 
+            "score_percentile": ticker_data.get("score_percentile", 0.5),
         }
-        
+
         _delete_old_recommendation_files(ticker)
-        gcs.write_text(config.GCS_BUCKET_NAME, json_blob_path, json.dumps(metadata, indent=2), "application/json")
-        
+        gcs.write_text(
+            config.GCS_BUCKET_NAME,
+            json_blob_path,
+            json.dumps(metadata, indent=2),
+            "application/json",
+        )
+
         return json_blob_path
-        
+
     except Exception as e:
         logging.error(f"[{ticker}] Processing failed: {e}", exc_info=True)
         return None
 
+
 def run_pipeline():
     logging.info("--- Starting Recommendation Metadata Pipeline (No LLM) ---")
-    
+
     work_list = _get_daily_work_list()
     if not work_list:
         return
-    
+
     processed_count = 0
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS_RECOMMENDER) as executor:
         future_to_ticker = {
-            executor.submit(_process_ticker, item): item["ticker"]
-            for item in work_list
+            executor.submit(_process_ticker, item): item["ticker"] for item in work_list
         }
         for future in as_completed(future_to_ticker):
             if future.result():
                 processed_count += 1
-                
-    logging.info(f"--- Recommendation Metadata Pipeline Finished. Processed {processed_count}/{len(work_list)} tickers. ---")
+
+    logging.info(
+        f"--- Recommendation Metadata Pipeline Finished. Processed {processed_count}/{len(work_list)} tickers. ---"
+    )

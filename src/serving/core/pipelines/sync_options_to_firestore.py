@@ -1,16 +1,21 @@
 # serving/core/pipelines/sync_options_to_firestore.py
 import logging
-import pandas as pd
-from google.cloud import firestore, bigquery
-from .. import config
+
 import numpy as np
+import pandas as pd
+from google.cloud import bigquery, firestore
+
+from .. import config
 
 # --- Configuration Updated ---
 BATCH_SIZE = 500
 # POINT TO THE NEW SIGNALS TABLE
-SIGNALS_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
+SIGNALS_TABLE_ID = (
+    f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_analysis_signals"
+)
 # RENAME THE COLLECTION FOR CLARITY
 FIRESTORE_COLLECTION_NAME = "options_signals"
+
 
 def _iter_batches(iterable, n):
     """Yield successive n-sized chunks from iterable."""
@@ -22,6 +27,7 @@ def _iter_batches(iterable, n):
             batch = []
     if batch:
         yield batch
+
 
 def _commit_ops(db, ops):
     """Commits a list of Firestore operations in batches."""
@@ -40,6 +46,7 @@ def _commit_ops(db, ops):
     if count:
         batch.commit()
 
+
 def _delete_collection_in_batches(collection_ref):
     """Wipes all documents from a Firestore collection."""
     logging.info(f"Wiping Firestore collection: '{collection_ref.id}'...")
@@ -54,6 +61,7 @@ def _delete_collection_in_batches(collection_ref):
         logging.info(f"Deleted {deleted_count} docs...")
     logging.info(f"Wipe complete for collection '{collection_ref.id}'.")
 
+
 def _load_bq_df(bq: bigquery.Client, query: str) -> pd.DataFrame:
     """Loads data from a BigQuery query into a pandas DataFrame and cleans it."""
     df = bq.query(query).to_dataframe()
@@ -63,10 +71,11 @@ def _load_bq_df(bq: bigquery.Client, query: str) -> pd.DataFrame:
             dtype_str = str(df[col].dtype)
             if "datetime" in dtype_str or "dbdate" in dtype_str:
                 df[col] = df[col].astype(str)
-        
+
         df = df.replace({pd.NA: np.nan})
         df = df.where(pd.notna(df), None)
     return df
+
 
 def run_pipeline(full_reset: bool = False):
     """
@@ -75,9 +84,9 @@ def run_pipeline(full_reset: bool = False):
     """
     db = firestore.Client(project=config.DESTINATION_PROJECT_ID)
     bq = bigquery.Client(project=config.SOURCE_PROJECT_ID)
-    
+
     collection_ref = db.collection(FIRESTORE_COLLECTION_NAME)
-    logging.info(f"--- Options Signals Firestore Sync Pipeline ---")
+    logging.info("--- Options Signals Firestore Sync Pipeline ---")
     logging.info(f"Target collection: {collection_ref.id}")
     logging.info(f"Full reset? {'YES' if full_reset else 'NO'}")
 
@@ -86,7 +95,7 @@ def run_pipeline(full_reset: bool = False):
         # The query now explicitly casts the date fields to STRING to avoid conversion issues.
         signals_query = f"""
             WITH LatestMetadata AS (
-                SELECT 
+                SELECT
                     ticker,
                     company_name,
                     ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY quarter_end_date DESC) as rn
@@ -110,40 +119,50 @@ def run_pipeline(full_reset: bool = False):
         """
         signals_df = _load_bq_df(bq, signals_query)
     except Exception as e:
-        logging.critical(f"Failed to query options signals from BigQuery: {e}", exc_info=True)
+        logging.critical(
+            f"Failed to query options signals from BigQuery: {e}", exc_info=True
+        )
         raise
 
     if full_reset:
         _delete_collection_in_batches(collection_ref)
 
     if signals_df.empty:
-        logging.warning("No options signals found in BigQuery. Collection will be empty or unchanged.")
+        logging.warning(
+            "No options signals found in BigQuery. Collection will be empty or unchanged."
+        )
         return
 
     upsert_ops = []
     # NEW LOGIC: Group by ticker and then create separate lists for calls and puts
     for ticker, group in signals_df.groupby("ticker"):
         doc_ref = collection_ref.document(ticker)
-        
+
         # Separate calls and puts
-        calls = group[group["option_type"] == "call"].to_dict('records')
-        puts = group[group["option_type"] == "put"].to_dict('records')
-        
+        calls = group[group["option_type"] == "call"].to_dict("records")
+        puts = group[group["option_type"] == "put"].to_dict("records")
+
         # Find the most recent company_name, handling potential nulls
-        company_name = group["company_name"].dropna().iloc[0] if not group["company_name"].dropna().empty else ticker
+        company_name = (
+            group["company_name"].dropna().iloc[0]
+            if not group["company_name"].dropna().empty
+            else ticker
+        )
 
         data = {
             "ticker": ticker,
             "company_name": company_name,
             "calls": calls,
-            "puts": puts
+            "puts": puts,
         }
         upsert_ops.append({"type": "set", "ref": doc_ref, "data": data})
-    
-    logging.info(f"Upserting {len(upsert_ops)} ticker documents to '{collection_ref.id}'...")
+
+    logging.info(
+        f"Upserting {len(upsert_ops)} ticker documents to '{collection_ref.id}'..."
+    )
     for chunk in _iter_batches(upsert_ops, BATCH_SIZE):
         _commit_ops(db, chunk)
-    
+
     # Prune any tickers that no longer have signals
     current_tickers = set(signals_df["ticker"].unique())
     existing_tickers_docs = list(collection_ref.stream())
@@ -151,10 +170,14 @@ def run_pipeline(full_reset: bool = False):
     to_delete = [k for k in existing_tickers if k not in current_tickers]
 
     if to_delete:
-        logging.info(f"Deleting {len(to_delete)} stale ticker documents from '{collection_ref.id}'...")
-        delete_ops = [{"type": "delete", "ref": collection_ref.document(k)} for k in to_delete]
+        logging.info(
+            f"Deleting {len(to_delete)} stale ticker documents from '{collection_ref.id}'..."
+        )
+        delete_ops = [
+            {"type": "delete", "ref": collection_ref.document(k)} for k in to_delete
+        ]
         for chunk in _iter_batches(delete_ops, BATCH_SIZE):
             _commit_ops(db, chunk)
-            
+
     logging.info(f"Sync complete for '{collection_ref.id}'.")
     logging.info("--- Options Signals Firestore Sync Pipeline Finished ---")

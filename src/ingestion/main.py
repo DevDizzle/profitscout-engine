@@ -16,7 +16,7 @@ import os
 
 import functions_framework
 from flask import Request
-from google.cloud import bigquery, pubsub_v1, storage, firestore
+from google.cloud import bigquery, firestore, pubsub_v1, storage
 
 from .core import config
 from .core.clients.fmp_client import FMPClient
@@ -25,17 +25,17 @@ from .core.clients.sec_api_client import SecApiClient
 from .core.pipelines import (
     calendar_events,
     fundamentals,
+    history_archiver,  # Added import
     news_fetcher,
     options_chain_fetcher,
     populate_price_data,
     price_updater,
     refresh_stock_metadata,
-    spy_price_sync,
     sec_filing_extractor,
+    spy_price_sync,
     statement_loader,
     technicals_collector,
     transcript_collector,
-    history_archiver, # Added import
 )
 
 # --- Global Initialization ---
@@ -65,9 +65,9 @@ def _get_secret_or_env(name: str) -> str | None:
     if val:
         return val
     try:
-        with open(f"/secrets/{name}", "r") as f:
+        with open(f"/secrets/{name}") as f:
             return f.read().strip()
-    except (FileNotFoundError, IOError):
+    except (OSError, FileNotFoundError):
         logging.warning(f"Secret file not found for {name}.")
         return None
 
@@ -206,12 +206,13 @@ def sync_spy_price_history(request: Request):
     if not all([bq_client, fmp_client]):
         logging.error("SPY price sync clients not initialized.")
         return "Server config error: SPY price sync clients not initialized.", 500
-    
+
     spy_price_sync.run_pipeline(
         bq_client=bq_client,
         fmp_client=fmp_client,
     )
     return "SPY price sync pipeline started.", 202
+
 
 @functions_framework.http
 def refresh_technicals(request: Request):
@@ -262,7 +263,7 @@ def refresh_transcripts(request: Request):  # Change signature to accept 'reques
     if not all([storage_client, fmp_client]):
         logging.error("Transcript clients not initialized.")
         return "Server config error: transcript clients not initialized.", 500
-    
+
     # Run the pipeline
     transcript_collector.run_pipeline(fmp_client, bq_client, storage_client)
     return "Transcript collection pipeline started.", 202
@@ -331,11 +332,11 @@ def fetch_options_chain(request: Request):
         options_chain_fetcher.run_pipeline(
             polygon_client=_polygon_client, bq_client=_bq_client
         )
-        
+
         # --- Archiver Step (Sidecar) ---
         # Persist today's snapshot to the history table for RL training.
         history_archiver.run_pipeline(bq_client=_bq_client)
-        
+
         return "Options chain fetch started.", 202
     except ValueError as e:
         logging.error(f"Failed to initialize PolygonClient: {e}")

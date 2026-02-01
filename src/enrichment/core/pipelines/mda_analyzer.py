@@ -1,21 +1,24 @@
 # enrichment/core/pipelines/mda_analyzer.py
+import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from .. import config, gcs
-from ..clients import vertex_ai
 import os
 import re
-import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .. import config, gcs
+from ..clients import vertex_ai
 
 # CORRECTED: The input is now pointed to its own configuration, not the old summarizer's.
 INPUT_PREFIX = config.PREFIXES["mda_analyzer"]["input"]
 OUTPUT_PREFIX = config.PREFIXES["mda_analyzer"]["output"]
+
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return (match.group(1), match.group(2)) if match else (None, None)
+
 
 def read_mda_data(raw_json: str):
     """Extracts the 'mda' content from the input JSON."""
@@ -24,15 +27,16 @@ def read_mda_data(raw_json: str):
     except (json.JSONDecodeError, TypeError):
         return None
 
+
 def process_blob(blob_name: str):
     """Processes one raw MD&A file to generate a final analysis."""
     ticker, date_str = parse_filename(blob_name)
     if not ticker or not date_str:
         return None
-    
+
     analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_{date_str}.json"
     logging.info(f"[{ticker}] Generating direct MD&A analysis for {date_str}")
-    
+
     raw_json_content = gcs.read_blob(config.GCS_BUCKET_NAME, blob_name)
     if not raw_json_content:
         return None
@@ -41,7 +45,7 @@ def process_blob(blob_name: str):
     if not mda_content:
         logging.error(f"[{ticker}] No 'mda' key found in {blob_name}")
         return None
-    
+
     prompt = r"""You are a sharp financial analyst evaluating a company’s Management’s Discussion & Analysis (MD&A) to find signals that may influence the stock over the next 1-3 months.
 Use **only** the provided MD&A text. Your analysis **must** be grounded in the data.
 
@@ -74,23 +78,31 @@ Summarize and analyze the most critical information, citing specific figures:
 
 Provided MD&A text:
 {{mda_content}}
-""".replace("{{mda_content}}", mda_content)
+""".replace(
+        "{{mda_content}}", mda_content
+    )
 
     analysis_json = vertex_ai.generate(prompt)
-    gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
-    gcs.cleanup_old_files(config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, analysis_blob_path)
+    gcs.write_text(
+        config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json"
+    )
+    gcs.cleanup_old_files(
+        config.GCS_BUCKET_NAME, OUTPUT_PREFIX, ticker, analysis_blob_path
+    )
     return analysis_blob_path
+
 
 def run_pipeline():
     logging.info("--- Starting Direct MD&A Analysis Pipeline ---")
     all_inputs = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
     all_analyses = set(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=OUTPUT_PREFIX))
-    
+
     work_items = [
-        s for s in all_inputs 
-        if not f"{OUTPUT_PREFIX}{os.path.basename(s)}" in all_analyses
+        s
+        for s in all_inputs
+        if f"{OUTPUT_PREFIX}{os.path.basename(s)}" not in all_analyses
     ]
-            
+
     if not work_items:
         logging.info("All MD&A analyses are up-to-date.")
         return
@@ -99,4 +111,6 @@ def run_pipeline():
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
         futures = [executor.submit(process_blob, item) for item in work_items]
         count = sum(1 for future in as_completed(futures) if future.result())
-    logging.info(f"--- MD&A Analysis Pipeline Finished. Processed {count} new files. ---")
+    logging.info(
+        f"--- MD&A Analysis Pipeline Finished. Processed {count} new files. ---"
+    )

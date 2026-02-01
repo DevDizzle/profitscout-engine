@@ -1,12 +1,14 @@
 # serving/core/bq.py
+import json
 import logging
+import time
+
 import pandas as pd
 from google.cloud import bigquery
-import time
-import json
 
 # --- Singleton Client ---
 _BQ_CLIENT = None
+
 
 def _get_client() -> bigquery.Client:
     """Returns a shared BigQuery client instance (Singleton)."""
@@ -15,16 +17,23 @@ def _get_client() -> bigquery.Client:
         # Initialize with project from config if needed, or let env vars handle it
         # Importing config here to avoid circular imports at module level
         from . import config
+
         _BQ_CLIENT = bigquery.Client(project=config.SOURCE_PROJECT_ID)
     return _BQ_CLIENT
 
-def load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str, write_disposition: str = "WRITE_TRUNCATE"):
+
+def load_df_to_bq(
+    df: pd.DataFrame,
+    table_id: str,
+    project_id: str,
+    write_disposition: str = "WRITE_TRUNCATE",
+):
     """
     Loads a pandas DataFrame into a BigQuery table.
     If the DataFrame is empty and the write disposition is TRUNCATE, it will wipe the table.
     """
     client = _get_client()
-    
+
     # If the dataframe is empty but the goal is to truncate,
     # execute a direct TRUNCATE statement and exit.
     if df.empty and write_disposition == "WRITE_TRUNCATE":
@@ -38,7 +47,9 @@ def load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str, write_dispos
         return
 
     if df.empty:
-        logging.warning("DataFrame is empty and write disposition is not TRUNCATE. Skipping BigQuery load.")
+        logging.warning(
+            "DataFrame is empty and write disposition is not TRUNCATE. Skipping BigQuery load."
+        )
         return
 
     job_config = bigquery.LoadJobConfig(
@@ -48,14 +59,17 @@ def load_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str, write_dispos
         job_config.schema_update_options = [
             bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
         ]
-    
+
     try:
         job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
         job.result()
-        logging.info(f"Loaded {job.output_rows} rows into BigQuery table: {table_id} using {write_disposition}")
+        logging.info(
+            f"Loaded {job.output_rows} rows into BigQuery table: {table_id} using {write_disposition}"
+        )
     except Exception as e:
         logging.error(f"Failed to load DataFrame to {table_id}: {e}", exc_info=True)
         raise
+
 
 def upsert_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
     """
@@ -66,24 +80,31 @@ def upsert_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
         return
 
     client = _get_client()
-    
-    dataset_id = table_id.split('.')[-2]
-    final_table_name = table_id.split('.')[-1]
-    
+
+    dataset_id = table_id.split(".")[-2]
+    final_table_name = table_id.split(".")[-1]
+
     temp_table_name = f"{final_table_name}_temp_{int(time.time())}"
     temp_table_id = f"{project_id}.{dataset_id}.{temp_table_name}"
 
     job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
     try:
-        load_job = client.load_table_from_dataframe(df, temp_table_id, job_config=job_config)
+        load_job = client.load_table_from_dataframe(
+            df, temp_table_id, job_config=job_config
+        )
         load_job.result()
     except Exception as e:
-        logging.error(f"Failed to load DataFrame to temp table {temp_table_id}: {e}", exc_info=True)
+        logging.error(
+            f"Failed to load DataFrame to temp table {temp_table_id}: {e}",
+            exc_info=True,
+        )
         raise
 
     cols_to_insert = ", ".join([f"`{col}`" for col in df.columns])
-    cols_to_update = ", ".join([f"T.`{col}` = S.`{col}`" for col in df.columns if col != 'ticker'])
-    
+    cols_to_update = ", ".join(
+        [f"T.`{col}` = S.`{col}`" for col in df.columns if col != "ticker"]
+    )
+
     merge_sql = f"""
     MERGE `{table_id}` T
     USING `{temp_table_id}` S ON T.ticker = S.ticker
@@ -97,12 +118,15 @@ def upsert_df_to_bq(df: pd.DataFrame, table_id: str, project_id: str):
         logging.info(f"Executing MERGE to upsert data into {table_id}...")
         merge_job = client.query(merge_sql)
         merge_job.result()
-        logging.info(f"MERGE complete. {merge_job.num_dml_affected_rows} rows affected in {table_id}.")
+        logging.info(
+            f"MERGE complete. {merge_job.num_dml_affected_rows} rows affected in {table_id}."
+        )
     except Exception as e:
         logging.error(f"Failed to execute MERGE on {table_id}: {e}", exc_info=True)
         raise
     finally:
         client.delete_table(temp_table_id, not_found_ok=True)
+
 
 def fetch_analysis_scores(ticker: str, run_date: str) -> dict:
     """
@@ -110,8 +134,9 @@ def fetch_analysis_scores(ticker: str, run_date: str) -> dict:
     Returns an empty dict if no data is found, preventing pipeline crashes.
     """
     from . import config
+
     client = _get_client()
-    
+
     query = f"""
         SELECT
             t1.aggregated_text,
@@ -120,9 +145,9 @@ def fetch_analysis_scores(ticker: str, run_date: str) -> dict:
         FROM `{config.SCORES_TABLE_ID}` AS t1
         LEFT JOIN `{config.BUNDLER_STOCK_METADATA_TABLE_ID}` AS t2
             ON t1.ticker = t2.ticker
-        WHERE t1.ticker = @ticker 
+        WHERE t1.ticker = @ticker
         -- Relaxed date constraint: look for data generated on run_date OR recently
-        -- AND t1.run_date = @run_date 
+        -- AND t1.run_date = @run_date
         ORDER BY t1.run_date DESC
         LIMIT 1
     """
@@ -132,15 +157,16 @@ def fetch_analysis_scores(ticker: str, run_date: str) -> dict:
             # bigquery.ScalarQueryParameter("run_date", "DATE", run_date),
         ]
     )
-    
+
     try:
         job = client.query(query, job_config=job_config)
-        job.result(timeout=15) # Fast timeout
+        job.result(timeout=15)  # Fast timeout
         df = job.to_dataframe()
-        return df.to_dict('records')[0] if not df.empty else {}
+        return df.to_dict("records")[0] if not df.empty else {}
     except Exception as e:
         logging.warning(f"[{ticker}] Analysis Scores fetch failed/empty: {e}")
         return {}
+
 
 def fetch_options_market_structure(ticker: str) -> dict:
     """
@@ -148,17 +174,18 @@ def fetch_options_market_structure(ticker: str) -> dict:
     Returns a dictionary suitable for LLM context or Dashboard widgets.
     """
     from . import config  # lazy import to avoid circular dependency
+
     client = _get_client()
-    
+
     query = f"""
     WITH LatestChain AS (
-        SELECT 
+        SELECT
             *
         FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}`
         WHERE ticker = @ticker
           AND fetch_date = (
-              SELECT MAX(fetch_date) 
-              FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}` 
+              SELECT MAX(fetch_date)
+              FROM `{config.SOURCE_OPTIONS_CHAIN_TABLE_ID}`
               WHERE ticker = @ticker
           )
     ),
@@ -183,14 +210,14 @@ def fetch_options_market_structure(ticker: str) -> dict:
             (SELECT strike FROM LatestChain ORDER BY implied_volatility DESC LIMIT 1) as max_iv_strike
     ),
     TopFlows AS (
-        SELECT 
+        SELECT
             ARRAY_AGG(
                 STRUCT(
-                    option_type, 
-                    strike, 
-                    expiration_date, 
-                    volume, 
-                    open_interest, 
+                    option_type,
+                    strike,
+                    expiration_date,
+                    volume,
+                    open_interest,
                     implied_volatility,
                     last_price
                 ) ORDER BY volume DESC LIMIT 5
@@ -204,28 +231,28 @@ def fetch_options_market_structure(ticker: str) -> dict:
         f.top_active_contracts
     FROM SentimentStats s, Walls w, TopFlows f
     """
-    
+
     job_config = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("ticker", "STRING", ticker)]
     )
-    
+
     try:
         job = client.query(query, job_config=job_config)
         # Add timeout to fail fast if BQ is unresponsive
-        job.result(timeout=15) 
+        job.result(timeout=15)
         df = job.to_dataframe()
         if df.empty:
             return {}
-            
+
         # Convert to a clean dict using pandas built-in JSON serialization
         # This handles numpy types (int64, float64, ndarray) automatically.
-        data = json.loads(df.to_json(orient='records', date_format='iso'))[0]
-        
+        data = json.loads(df.to_json(orient="records", date_format="iso"))[0]
+
         # Calculate a derived "Sentiment Label" for the LLM
-        call_vol = data.get('total_call_vol', 0) or 0
-        put_vol = data.get('total_put_vol', 0) or 0
-        data['put_call_vol_ratio'] = round(put_vol / call_vol, 2) if call_vol > 0 else 0
-        
+        call_vol = data.get("total_call_vol", 0) or 0
+        put_vol = data.get("total_put_vol", 0) or 0
+        data["put_call_vol_ratio"] = round(put_vol / call_vol, 2) if call_vol > 0 else 0
+
         return data
     except Exception as e:
         logging.error(f"[{ticker}] Failed to fetch options market structure: {e}")
