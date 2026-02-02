@@ -20,3 +20,4 @@ sec-api
 tenacity>=8.2.0
 db-dtypes
 beautifulsoup4
+tweepy

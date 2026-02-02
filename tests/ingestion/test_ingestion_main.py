@@ -88,16 +88,17 @@ class TestIngestionMain(unittest.TestCase):
             self.main.bq_client = MagicMock()
             self.main.firestore_client = self.mock_firestore_client
             self.main.fmp_client = self.mock_fmp_client
-    
+
             mock_request = MagicMock()
             response, status_code = self.main.sync_spy_price_history(mock_request)
-    
+
             self.assertEqual(status_code, 202)
             self.assertEqual(response, "SPY price sync pipeline started.")
             mock_run_pipeline.assert_called_once_with(
                 bq_client=self.main.bq_client,
                 fmp_client=self.main.fmp_client,
             )
+
 
 if __name__ == "__main__":
     unittest.main()

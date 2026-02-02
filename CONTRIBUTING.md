@@ -1,4 +1,4 @@
-# Contributing to GammaRips Engine
+# Contributing to ProfitScout Engine
 
 We welcome contributions! Please follow these guidelines to ensure code quality and consistency.
 
@@ -7,7 +7,7 @@ We welcome contributions! Please follow these guidelines to ensure code quality 
 1.  **Clone the repository:**
     ```bash
     git clone <repository-url>
-    cd gammarips-engine
+    cd profitscout-engine
     ```
 
 2.  **Create a virtual environment:**

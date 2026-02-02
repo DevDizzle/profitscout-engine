@@ -1,6 +1,5 @@
 # tests/serving/test_serving.py
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.serving import main
 

@@ -1,14 +1,19 @@
 # serving/core/pipelines/sync_options_candidates_to_firestore.py
 import logging
-import pandas as pd
-from google.cloud import firestore, bigquery
-from .. import config
+
 import numpy as np
+import pandas as pd
+from google.cloud import bigquery, firestore
+
+from .. import config
 
 # --- Configuration ---
 BATCH_SIZE = 500
-CANDIDATES_TABLE_ID = f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_candidates"
+CANDIDATES_TABLE_ID = (
+    f"{config.SOURCE_PROJECT_ID}.{config.BIGQUERY_DATASET}.options_candidates"
+)
 FIRESTORE_COLLECTION_NAME = "options_candidates"
+
 
 def _iter_batches(iterable, n):
     """Yield successive n-sized chunks from iterable."""
@@ -21,7 +26,10 @@ def _iter_batches(iterable, n):
     if batch:
         yield batch
 
-def _delete_collection_in_batches(db: firestore.Client, collection_ref: firestore.CollectionReference):
+
+def _delete_collection_in_batches(
+    db: firestore.Client, collection_ref: firestore.CollectionReference
+):
     """Wipes all documents from a Firestore collection in batches."""
     logging.info(f"Wiping Firestore collection: '{collection_ref.id}'...")
     deleted_count = 0
@@ -39,12 +47,15 @@ def _delete_collection_in_batches(db: firestore.Client, collection_ref: firestor
         logging.info(f"Deleted {deleted_count} docs...")
     logging.info(f"Wipe complete for collection '{collection_ref.id}'.")
 
+
 def _load_bq_df(bq: bigquery.Client) -> pd.DataFrame:
     """
     Loads the latest batch of options candidates and prepares them for Firestore.
     """
-    logging.info(f"Querying BigQuery table for the latest batch of candidates: {CANDIDATES_TABLE_ID}")
-    
+    logging.info(
+        f"Querying BigQuery table for the latest batch of candidates: {CANDIDATES_TABLE_ID}"
+    )
+
     # --- THIS IS THE NEW, MORE ROBUST QUERY ---
     # It finds the most recent timestamp in the table and fetches all records
     # matching that timestamp.
@@ -59,16 +70,21 @@ def _load_bq_df(bq: bigquery.Client) -> pd.DataFrame:
         # Convert date/time columns to string for Firestore compatibility.
         for col in df.columns:
             dtype_str = str(df[col].dtype)
-            if "datetime" in dtype_str or "dbdate" in dtype_str or "timestamp" in dtype_str:
+            if (
+                "datetime" in dtype_str
+                or "dbdate" in dtype_str
+                or "timestamp" in dtype_str
+            ):
                 df[col] = df[col].astype(str)
 
         # Standardize 'strike_price' -> 'strike'
-        if 'strike_price' in df.columns:
-            df = df.rename(columns={'strike_price': 'strike'})
+        if "strike_price" in df.columns:
+            df = df.rename(columns={"strike_price": "strike"})
 
         df = df.replace({pd.NA: np.nan})
         df = df.where(pd.notna(df), None)
     return df
+
 
 def run_pipeline():
     """
@@ -90,15 +106,21 @@ def run_pipeline():
     try:
         candidates_df = _load_bq_df(bq)
     except Exception as e:
-        logging.critical(f"Failed to query candidates table from BigQuery: {e}", exc_info=True)
+        logging.critical(
+            f"Failed to query candidates table from BigQuery: {e}", exc_info=True
+        )
         raise
 
     if candidates_df.empty:
-        logging.warning("No options candidates found in BigQuery. Firestore collection will be empty.")
+        logging.warning(
+            "No options candidates found in BigQuery. Firestore collection will be empty."
+        )
         logging.info("--- Options Candidates Firestore Sync Pipeline Finished ---")
         return
 
-    logging.info(f"Upserting {len(candidates_df)} documents to '{collection_ref.id}'...")
+    logging.info(
+        f"Upserting {len(candidates_df)} documents to '{collection_ref.id}'..."
+    )
 
     total_written = 0
     for batch_rows in _iter_batches(candidates_df.iterrows(), BATCH_SIZE):

@@ -53,7 +53,9 @@ def get_tickers_from_gcs(bucket_name: str, blob_path: str) -> list[str]:
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_path)
         if not blob.exists():
-            logging.error(f"Ticker file not found in GCS: gs://{bucket_name}/{blob_path}")
+            logging.error(
+                f"Ticker file not found in GCS: gs://{bucket_name}/{blob_path}"
+            )
             return []
 
         content = blob.download_as_text(encoding="utf-8")
@@ -89,9 +91,7 @@ def upload_to_gcs(
         blob.upload_from_filename(source_file_path)
         return f"gs://{bucket_name}/{destination_blob_name}"
     except Exception as e:
-        logging.error(
-            f"Failed to upload {source_file_path} to GCS: {e}", exc_info=True
-        )
+        logging.error(f"Failed to upload {source_file_path} to GCS: {e}", exc_info=True)
         return None
 
 
@@ -107,7 +107,9 @@ def fetch_and_upload_logos(tickers: list[str]) -> dict[str, str]:
     """
     num_batches = ceil(len(tickers) / BATCH_SIZE)
     uri_map = {}
-    logging.info(f"Starting to process {len(tickers)} tickers in {num_batches} batches.")
+    logging.info(
+        f"Starting to process {len(tickers)} tickers in {num_batches} batches."
+    )
 
     for i in range(num_batches):
         batch_start = i * BATCH_SIZE
@@ -182,9 +184,7 @@ def main():
         output_filename = "ticker_uris.json"
         with open(output_filename, "w") as f:
             json.dump(uri_map, f, indent=4)
-        logging.info(
-            f"Saved URI map for {len(uri_map)} tickers to {output_filename}."
-        )
+        logging.info(f"Saved URI map for {len(uri_map)} tickers to {output_filename}.")
 
     logging.info("--- Image fetching process complete! ---")
 

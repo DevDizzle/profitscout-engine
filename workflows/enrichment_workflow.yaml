@@ -21,14 +21,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + financials_analyzer_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_fundamentals_analyzer:
         try:
@@ -36,14 +29,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fundamentals_analyzer_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_technicals_analyzer:
         try:
@@ -51,14 +37,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + technicals_analyzer_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_mda_analyzer:
         try:
@@ -66,14 +45,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + mda_analyzer_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_transcript_analyzer:
         try:
@@ -81,14 +53,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + transcript_analyzer_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_macro_thesis_generator:
         try:
@@ -96,14 +61,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + macro_thesis_generator_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_news_analyzer:
         try:
@@ -111,14 +69,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}'
             auth: { type: OIDC }
-            timeout: 1200
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_business_summarizer:
         try:
@@ -126,14 +77,7 @@ main:
           args:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + business_summarizer_name}'
             auth: { type: OIDC }
-            timeout: 900
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+            timeout: 1800
 
     - call_price_chart_generator:
         try:
@@ -142,15 +86,8 @@ main:
             url: '${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + price_chart_generator_name}'
             auth:
               type: OIDC
-            timeout: 900
+            timeout: 1800
           result: price_chart_result
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
 
     - trigger_serving_workflow:
         call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.create

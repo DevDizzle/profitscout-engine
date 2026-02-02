@@ -1,21 +1,24 @@
 # enrichment/core/pipelines/fundamentals_analyzer.py
+import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from .. import config, gcs
-from ..clients import vertex_ai
 import os
 import re
-import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .. import config, gcs
+from ..clients import vertex_ai
 
 METRICS_INPUT_PREFIX = config.PREFIXES["fundamentals_analyzer"]["input_metrics"]
 RATIOS_INPUT_PREFIX = config.PREFIXES["fundamentals_analyzer"]["input_ratios"]
 FUNDAMENTALS_OUTPUT_PREFIX = config.PREFIXES["fundamentals_analyzer"]["output"]
+
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_2025-06-30.json'."""
     pattern = re.compile(r"([A-Z.]+)_(\d{4}-\d{2}-\d{2})\.json$")
     match = pattern.search(os.path.basename(blob_name))
     return (match.group(1), match.group(2)) if match else (None, None)
+
 
 def _filter_recent_data(json_content: str, periods: int = 5) -> list:
     """
@@ -33,6 +36,7 @@ def _filter_recent_data(json_content: str, periods: int = 5) -> list:
     except json.JSONDecodeError:
         return []
 
+
 def process_fundamental_files(ticker: str, date_str: str):
     """
     Processes a pair of key metrics and ratios files for a single ticker and date.
@@ -47,7 +51,9 @@ def process_fundamental_files(ticker: str, date_str: str):
     ratios_raw = gcs.read_blob(config.GCS_BUCKET_NAME, ratios_blob_path)
 
     if not metrics_raw or not ratios_raw:
-        logging.error(f"[{ticker}] Missing metrics or ratios data for {date_str}. Skipping.")
+        logging.error(
+            f"[{ticker}] Missing metrics or ratios data for {date_str}. Skipping."
+        )
         return None
 
     # --- FILTERING: Keep only the last 5 quarters to reduce noise ---
@@ -60,7 +66,7 @@ def process_fundamental_files(ticker: str, date_str: str):
         return None
 
     # --- UPDATED PROMPT: Directs the AI to use both datasets effectively ---
-    prompt = r"""
+    prompt = rf"""
 You are a sharp equity analyst. Evaluate the company’s Key Metrics and Financial Ratios to assess its investment attractiveness for the next 6-12 months.
 
 ### ANALYSIS DATE: {date_str}
@@ -68,10 +74,10 @@ Treat the data record with date `{date_str}` as the **CURRENT** period. The othe
 
 ### Data Provided
 - **Key Metrics (Last 5 Quarters):** Use this for **Valuation** (PE, EV/EBITDA) and **Per-Share Growth** (Revenue/FCF per share).
-{recent_metrics}
+{json.dumps(recent_metrics)}
 
 - **Financial Ratios (Last 5 Quarters):** Use this for **Efficiency** (Margins, ROE) and **Liquidity** (Current Ratio).
-{recent_ratios}
+{json.dumps(recent_ratios)}
 
 ### Core Tasks
 1.  **Growth & Valuation**: Are `revenuePerShare` and `freeCashFlowPerShare` growing? Is the valuation (`peRatio`, `priceToSalesRatio`) expanding or contracting?
@@ -89,38 +95,51 @@ Treat the data record with date `{date_str}` as the **CURRENT** period. The othe
   "score": <float between 0.0 and 1.0>,
   "analysis": "<One dense paragraph (150-250 words). Start by stating the clear fundamental trend (e.g. 'Profitability is accelerating while valuation remains attractive...'). Cite specific *current* values vs *historical* values to prove your thesis. Conclude with a verdict on the stock's fundamental setup.>"
 }}
-""".format(
-        date_str=date_str,
-        recent_metrics=json.dumps(recent_metrics),
-        recent_ratios=json.dumps(recent_ratios)
-    )
+"""
 
     try:
         analysis_json = vertex_ai.generate(prompt)
-        
+
         if "{" not in analysis_json:
             raise ValueError("Model output not JSON")
 
-        gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
-        gcs.cleanup_old_files(config.GCS_BUCKET_NAME, FUNDAMENTALS_OUTPUT_PREFIX, ticker, analysis_blob_path)
+        gcs.write_text(
+            config.GCS_BUCKET_NAME,
+            analysis_blob_path,
+            analysis_json,
+            "application/json",
+        )
+        gcs.cleanup_old_files(
+            config.GCS_BUCKET_NAME,
+            FUNDAMENTALS_OUTPUT_PREFIX,
+            ticker,
+            analysis_blob_path,
+        )
         return analysis_blob_path
 
     except Exception as e:
         logging.error(f"[{ticker}] Fundamentals analysis failed: {e}")
         return None
 
+
 def run_pipeline():
     """
     Finds and processes pairs of key metrics and ratios files.
-    Implements timestamp-based caching: Only re-runs analysis if the input data 
+    Implements timestamp-based caching: Only re-runs analysis if the input data
     (metrics) is newer than the existing analysis output.
     """
     logging.info("--- Starting Combined Fundamentals Analysis Pipeline ---")
 
     # Fetch all files with metadata (updated timestamps)
-    all_metrics_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=METRICS_INPUT_PREFIX)
-    all_ratios_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=RATIOS_INPUT_PREFIX)
-    all_analysis_blobs = gcs.list_blobs_with_properties(config.GCS_BUCKET_NAME, prefix=FUNDAMENTALS_OUTPUT_PREFIX)
+    all_metrics_blobs = gcs.list_blobs_with_properties(
+        config.GCS_BUCKET_NAME, prefix=METRICS_INPUT_PREFIX
+    )
+    all_ratios_blobs = gcs.list_blobs_with_properties(
+        config.GCS_BUCKET_NAME, prefix=RATIOS_INPUT_PREFIX
+    )
+    all_analysis_blobs = gcs.list_blobs_with_properties(
+        config.GCS_BUCKET_NAME, prefix=FUNDAMENTALS_OUTPUT_PREFIX
+    )
 
     # Map filenames to timestamps for easier lookup
     metrics_map = {os.path.basename(k): v for k, v in all_metrics_blobs.items()}
@@ -134,7 +153,7 @@ def run_pipeline():
         # We need both metrics and ratios to proceed
         if file_name not in ratios_map:
             continue
-            
+
         ticker, date_str = parse_filename(file_name)
         if not ticker or not date_str:
             continue
@@ -142,25 +161,36 @@ def run_pipeline():
         # Check if we already have an analysis for this file
         if file_name in analysis_map:
             analysis_timestamp = analysis_map[file_name]
-            
+
             # CACHE LOGIC: If Analysis is NEWER than Metrics, we can skip.
             # (Assuming Ratios update roughly at same time as Metrics, checking one is usually enough)
             if analysis_timestamp > metrics_timestamp:
                 skipped_count += 1
                 continue
             else:
-                logging.info(f"[{ticker}] Data updated (Metrics: {metrics_timestamp} > Analysis: {analysis_timestamp}). Re-running.")
-        
+                logging.info(
+                    f"[{ticker}] Data updated (Metrics: {metrics_timestamp} > Analysis: {analysis_timestamp}). Re-running."
+                )
+
         work_items.append((ticker, date_str))
 
     if not work_items:
-        logging.info(f"All fundamental analyses are up-to-date. (Skipped {skipped_count})")
+        logging.info(
+            f"All fundamental analyses are up-to-date. (Skipped {skipped_count})"
+        )
         return
 
-    logging.info(f"Found {len(work_items)} sets of fundamentals to analyze (Skipped {skipped_count} up-to-date).")
+    logging.info(
+        f"Found {len(work_items)} sets of fundamentals to analyze (Skipped {skipped_count} up-to-date)."
+    )
 
     with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-        futures = [executor.submit(process_fundamental_files, ticker, date_str) for ticker, date_str in work_items]
+        futures = [
+            executor.submit(process_fundamental_files, ticker, date_str)
+            for ticker, date_str in work_items
+        ]
         count = sum(1 for future in as_completed(futures) if future.result())
 
-    logging.info(f"--- Fundamentals Analysis Pipeline Finished. Processed {count} new files. ---")
+    logging.info(
+        f"--- Fundamentals Analysis Pipeline Finished. Processed {count} new files. ---"
+    )

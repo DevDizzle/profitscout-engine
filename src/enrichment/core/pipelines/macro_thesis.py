@@ -57,9 +57,7 @@ def _generate_worldview() -> dict:
         response_text, _ = vertex_ai.generate_with_tools(
             prompt=WORLDVIEW_PROMPT,
             model_name=getattr(config, "MACRO_THESIS_MODEL_NAME", config.MODEL_NAME),
-            temperature=getattr(
-                config, "MACRO_THESIS_TEMPERATURE", config.TEMPERATURE
-            ),
+            temperature=getattr(config, "MACRO_THESIS_TEMPERATURE", config.TEMPERATURE),
         )
 
         if not response_text:
@@ -67,7 +65,9 @@ def _generate_worldview() -> dict:
 
         worldview = response_text.strip()
         if not worldview:
-            _LOG.error("Worldview text was empty after stripping; using hardcoded fallback.")
+            _LOG.error(
+                "Worldview text was empty after stripping; using hardcoded fallback."
+            )
             worldview = fallback_worldview
 
     except Exception as exc:

@@ -8,15 +8,18 @@ include tickers from the master `tickerlist.txt` and filters economic events
 to a curated list of significant US indicators. The collected events are then
 upserted into a BigQuery table, creating a forward-looking calendar.
 """
-import logging
+
 import datetime
 import hashlib
-from typing import List, Dict, Optional
-from google.cloud import bigquery, storage
-from ..clients.fmp_client import FMPClient
-from .. import config, gcs
+import logging
 
-def _table_schema() -> List[bigquery.SchemaField]:
+from google.cloud import bigquery, storage
+
+from .. import config, gcs
+from ..clients.fmp_client import FMPClient
+
+
+def _table_schema() -> list[bigquery.SchemaField]:
     """Defines the BigQuery schema for the calendar events table."""
     return [
         bigquery.SchemaField("event_id", "STRING", mode="REQUIRED"),
@@ -29,42 +32,52 @@ def _table_schema() -> List[bigquery.SchemaField]:
         bigquery.SchemaField("last_seen", "TIMESTAMP", mode="REQUIRED"),
     ]
 
+
 def _ensure_table(client: bigquery.Client):
     """Creates the calendar events BigQuery table if it does not already exist."""
     table = bigquery.Table(config.CALENDAR_EVENTS_TABLE_ID, schema=_table_schema())
     client.create_table(table, exists_ok=True)
 
-def _stable_id(*parts: Optional[str]) -> str:
+
+def _stable_id(*parts: str | None) -> str:
     """Creates a stable, deterministic hash ID for an event."""
     joined = "|".join(str(p or "") for p in parts)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
-def _truncate_and_load_rows(client: bigquery.Client, rows: List[Dict]):
+
+def _truncate_and_load_rows(client: bigquery.Client, rows: list[dict]):
     """
     Truncates the target table and loads a fresh set of event rows.
     """
     if not rows:
-        logging.warning("No calendar event rows to load. The table will be truncated and left empty.")
-    
+        logging.warning(
+            "No calendar event rows to load. The table will be truncated and left empty."
+        )
+
     job_config = bigquery.LoadJobConfig(
         schema=_table_schema(),
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
-    
+
     try:
         load_job = client.load_table_from_json(
-            rows,
-            config.CALENDAR_EVENTS_TABLE_ID,
-            job_config=job_config
+            rows, config.CALENDAR_EVENTS_TABLE_ID, job_config=job_config
         )
         load_job.result()  # Wait for the job to complete.
         # --- FIX: Corrected the typo in the config variable name ---
-        logging.info(f"Successfully truncated and loaded {load_job.output_rows} rows into {config.CALENDAR_EVENTS_TABLE_ID}.")
+        logging.info(
+            f"Successfully truncated and loaded {load_job.output_rows} rows into {config.CALENDAR_EVENTS_TABLE_ID}."
+        )
     except Exception as e:
-        logging.error(f"Failed to truncate and load calendar events: {e}", exc_info=True)
+        logging.error(
+            f"Failed to truncate and load calendar events: {e}", exc_info=True
+        )
         raise
 
-def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_client: storage.Client):
+
+def run_pipeline(
+    fmp_client: FMPClient, bq_client: bigquery.Client, storage_client: storage.Client
+):
     """
     Runs the full calendar events collection pipeline.
 
@@ -80,10 +93,12 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
 
     tickers_to_track = set(gcs.get_tickers(storage_client))
     if not tickers_to_track:
-        logging.warning("No tickers found in tickerlist.txt. Corporate events will be skipped.")
+        logging.warning(
+            "No tickers found in tickerlist.txt. Corporate events will be skipped."
+        )
 
-    events_dict: Dict[str, Dict] = {}
-    
+    events_dict: dict[str, dict] = {}
+
     event_sources = [
         ("earning_calendar", "Earnings"),
         ("stock_dividend_calendar", "Dividend"),
@@ -105,25 +120,31 @@ def run_pipeline(fmp_client: FMPClient, bq_client: bigquery.Client, storage_clie
             events = fmp_client.fetch_calendar(source_endpoint, today, end_date)
             for event in events:
                 ticker = event.get("symbol")
-                
-                if event_type != "Economic" and (not ticker or ticker not in tickers_to_track):
+
+                if event_type != "Economic" and (
+                    not ticker or ticker not in tickers_to_track
+                ):
                     continue
 
                 if event_type == "Economic":
                     if event.get("country", "").upper() != "US":
                         continue
-                    
+
                     event_label = event.get("event", "").strip().lower()
-                    if not any(keyword in event_label for keyword in significant_events):
+                    if not any(
+                        keyword in event_label for keyword in significant_events
+                    ):
                         continue
-                
+
                 event_date_str = (event.get("date") or "").split(" ")[0]
                 if not event_date_str:
                     continue
 
                 event_name = event.get("event") or f"{ticker} {event_type}"
-                event_id = _stable_id(source_endpoint, event_type, ticker, event_name, event_date_str)
-                
+                event_id = _stable_id(
+                    source_endpoint, event_type, ticker, event_name, event_date_str
+                )
+
                 events_dict[event_id] = {
                     "event_id": event_id,
                     "entity": ticker if event_type != "Economic" else None,

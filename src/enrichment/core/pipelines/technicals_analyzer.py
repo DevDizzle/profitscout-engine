@@ -1,27 +1,59 @@
 # enrichment/core/pipelines/technicals_analyzer.py
 
+import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from .. import config, gcs
-from ..clients import vertex_ai
 import os
 import re
-import json
-from datetime import datetime
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .. import config, gcs
+from ..clients import vertex_ai
 
 INPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["input"]
 PRICE_INPUT_PREFIX = "prices/"
 OUTPUT_PREFIX = config.PREFIXES["technicals_analyzer"]["output"]
 
 # --- CONFIG: Reduce Noise for LLM ---
-HISTORY_WINDOW_DAYS = 30 
+HISTORY_WINDOW_DAYS = 30
 KEEP_INDICATORS = {
-    "date", 
-    "RSI_14", 
-    "MACD_12_26_9", "MACDh_12_26_9", # MACD Line and Histogram
-    "SMA_50", "SMA_200", "EMA_21", 
-    "OBV" # On-Balance Volume for confirming breakouts
+    "date",
+    "RSI_14",
+    "MACD_12_26_9",
+    "MACDh_12_26_9",  # MACD Line and Histogram
+    "SMA_50",
+    "SMA_200",
+    "EMA_21",
+    "OBV",  # On-Balance Volume for confirming breakouts
 }
+
+
+# --- RATE LIMITER (Throttled Concurrency) ---
+class RateLimiter:
+    """
+    Thread-safe rate limiter to ensure we don't exceed Vertex AI quotas.
+    Target: 50 RPM (1 request every ~1.2 seconds).
+    """
+
+    def __init__(self, interval=1.2):
+        self.interval = interval
+        self.last_call = 0
+        self.lock = threading.Lock()
+
+    def wait(self):
+        with self.lock:
+            now = time.time()
+            elapsed = now - self.last_call
+            wait_time = self.interval - elapsed
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self.last_call = time.time()
+
+
+# Initialize global limiter (Shared across threads)
+_limiter = RateLimiter(interval=1.2)
+
 
 def parse_filename(blob_name: str):
     """Parses filenames like 'AAL_technicals.json'."""
@@ -29,15 +61,17 @@ def parse_filename(blob_name: str):
     match = pattern.search(os.path.basename(blob_name))
     return match.group(1) if match else None
 
+
 def get_latest_data_point(data_list):
     """Safely retrieves the last item in a list."""
     if isinstance(data_list, list) and data_list:
         return data_list[-1]
     return {}
 
+
 def _filter_indicators(tech_list: list[dict]) -> list[dict]:
     """
-    Strips out noisy columns (e.g. BBL, ADX, STOCH) to focus the LLM 
+    Strips out noisy columns (e.g. BBL, ADX, STOCH) to focus the LLM
     on Price + Core Momentum/Trend.
     """
     clean_list = []
@@ -49,55 +83,65 @@ def _filter_indicators(tech_list: list[dict]) -> list[dict]:
         clean_list.append(clean_row)
     return clean_list
 
+
 def process_blob(technicals_blob_name: str):
     """Processes one daily technicals file to identify chart patterns and setups."""
-    ticker = parse_filename(technicals_blob_name)
-    if not ticker:
-        return None
-    
-    analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_technicals.json"
-    logging.info(f"[{ticker}] Generating pattern-based technical analysis")
-    
-    # 1. Read Technicals (Indicators)
-    technicals_content = gcs.read_blob(config.GCS_BUCKET_NAME, technicals_blob_name)
-    if not technicals_content:
-        return None
-    tech_json = json.loads(technicals_content)
-    technicals_list = tech_json.get("technicals", [])
-
-    # 2. Read Prices (OHLCV)
-    price_blob_name = f"{PRICE_INPUT_PREFIX}{ticker}_90_day_prices.json"
-    price_content = gcs.read_blob(config.GCS_BUCKET_NAME, price_blob_name)
-    if not price_content:
-        logging.warning(f"[{ticker}] No price history found.")
-        return None
-    price_json = json.loads(price_content)
-    price_list = price_json.get("prices", [])
-
-    # --- CRITICAL FIX: Synchronize Sort Order (Oldest -> Newest) ---
-    # FMP prices come Descending (Newest first). We MUST sort Ascending.
+    # WRAP ENTIRE LOGIC IN TRY/EXCEPT
     try:
-        price_list.sort(key=lambda x: x.get("date", ""))
-        technicals_list.sort(key=lambda x: x.get("date", ""))
-    except Exception as e:
-        logging.error(f"[{ticker}] Critical sorting error: {e}", exc_info=True)
-        return None
+        ticker = parse_filename(technicals_blob_name)
+        if not ticker:
+            return None
 
-    # 3. Extract the TRUE Latest Snapshot (Post-Sort)
-    latest_tech = get_latest_data_point(technicals_list)
-    latest_price = get_latest_data_point(price_list)
-    
-    current_date = latest_price.get("date", "Unknown")
-    
-    # 4. Prune Data: Last 30 Days + Filtered Indicators
-    # Reduces token count and forces model to look at short-term structure.
-    recent_prices = price_list[-HISTORY_WINDOW_DAYS:]
-    
-    raw_recent_techs = technicals_list[-HISTORY_WINDOW_DAYS:]
-    recent_techs = _filter_indicators(raw_recent_techs)
+        # Standard filename (No date in name, to preserve downstream compatibility)
+        analysis_blob_path = f"{OUTPUT_PREFIX}{ticker}_technicals.json"
 
-    # --- ENHANCED PROMPT: Explicit Current State Anchor ---
-    prompt = r"""
+        # 1. Read Technicals (Indicators)
+        technicals_content = gcs.read_blob(config.GCS_BUCKET_NAME, technicals_blob_name)
+        if not technicals_content:
+            return None
+        tech_json = json.loads(technicals_content)
+        technicals_list = tech_json.get("technicals", [])
+
+        # 2. Read Prices (OHLCV)
+        price_blob_name = f"{PRICE_INPUT_PREFIX}{ticker}_90_day_prices.json"
+        price_content = gcs.read_blob(config.GCS_BUCKET_NAME, price_blob_name)
+        if not price_content:
+            logging.warning(f"[{ticker}] No price history found.")
+            return None
+        price_json = json.loads(price_content)
+        price_list = price_json.get("prices", [])
+
+        # --- CRITICAL FIX: Synchronize Sort Order (Oldest -> Newest) ---
+        # FMP prices come Descending (Newest first). We MUST sort Ascending.
+        try:
+            price_list.sort(key=lambda x: x.get("date", ""))
+            technicals_list.sort(key=lambda x: x.get("date", ""))
+        except Exception as e:
+            logging.error(f"[{ticker}] Critical sorting error: {e}", exc_info=True)
+            return None
+
+        # 3. Extract the TRUE Latest Snapshot (Post-Sort)
+        latest_tech = get_latest_data_point(technicals_list)
+        latest_price = get_latest_data_point(price_list)
+
+        current_date = latest_price.get("date", "Unknown")
+
+        # 4. Prune Data: Last 30 Days + Filtered Indicators
+        # Reduces token count and forces model to look at short-term structure.
+        recent_prices = price_list[-HISTORY_WINDOW_DAYS:]
+
+        raw_recent_techs = technicals_list[-HISTORY_WINDOW_DAYS:]
+        recent_techs = _filter_indicators(raw_recent_techs)
+
+        # --- GUARD: Skip if insufficient data ---
+        if not recent_prices or len(recent_prices) < 10 or not recent_techs:
+            logging.warning(
+                f"[{ticker}] Insufficient data (Prices: {len(recent_prices)}, Techs: {len(recent_techs)}). Skipping."
+            )
+            return None
+
+        # --- ENHANCED PROMPT: Explicit Current State Anchor ---
+        prompt = r"""
 You are a master technical analyst. Analyze the provided data to identify the CURRENT trading setup for {ticker} as of {current_date}.
 
 ### DATA HIERARCHY (CRITICAL)
@@ -136,44 +180,115 @@ Return strictly valid JSON.
 Prices: {recent_prices}
 Indicators: {recent_techs}
 """.format(
-        ticker=ticker,
-        current_date=current_date,
-        window=HISTORY_WINDOW_DAYS,
-        latest_price=json.dumps(latest_price),
-        # Filter the latest snapshot too for consistency
-        latest_tech=json.dumps({k: v for k, v in latest_tech.items() if k in KEEP_INDICATORS}),
-        recent_prices=json.dumps(recent_prices),
-        recent_techs=json.dumps(recent_techs)
-    )
+            ticker=ticker,
+            current_date=current_date,
+            window=HISTORY_WINDOW_DAYS,
+            latest_price=json.dumps(latest_price),
+            # Filter the latest snapshot too for consistency
+            latest_tech=json.dumps(
+                {k: v for k, v in latest_tech.items() if k in KEEP_INDICATORS}
+            ),
+            recent_prices=json.dumps(recent_prices),
+            recent_techs=json.dumps(recent_techs),
+        )
 
-    try:
+        # --- RATE LIMITER: Enforce 1 call every 1.2s across all threads ---
+        _limiter.wait()
+
         # Use default model (Gemini 2.0 Flash)
-        analysis_json = vertex_ai.generate(prompt, response_mime_type="application/json")
-        
-        # Clean markdown if present
-        analysis_json = analysis_json.replace("```json", "").replace("```", "").strip()
-        
-        if "{" not in analysis_json:
-            raise ValueError("Model did not return JSON")
-            
-        gcs.write_text(config.GCS_BUCKET_NAME, analysis_blob_path, analysis_json, "application/json")
+        # Note: vertex_ai.generate might return text with markdown formatting
+        # FAIL FAST: Timeout handled by client init
+        response_text = vertex_ai.generate(
+            prompt, response_mime_type="application/json"
+        )
+
+        # Robust JSON Extraction
+        json_str = response_text.strip()
+
+        # 1. Try extracting from markdown code blocks
+        json_match = re.search(r"```json\s*(.*?)\s*```", response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+        else:
+            # 2. Try generic code block
+            code_match = re.search(r"```\s*(.*?)\s*```", response_text, re.DOTALL)
+            if code_match:
+                json_str = code_match.group(1)
+            else:
+                # 3. Fallback: Find outermost braces
+                start_idx = response_text.find("{")
+                end_idx = response_text.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    json_str = response_text[start_idx : end_idx + 1]
+
+        # Validate by parsing
+        json.loads(json_str)
+
+        gcs.write_text(
+            config.GCS_BUCKET_NAME, analysis_blob_path, json_str, "application/json"
+        )
         return analysis_blob_path
-        
+
+    except json.JSONDecodeError as je:
+        logging.error(f"[{ticker}] Invalid JSON from model: {je}")
+        return None
     except Exception as e:
         logging.error(f"[{ticker}] Failed to generate/save analysis: {e}")
         return None
 
+
 def run_pipeline():
-    logging.info("--- Starting Technicals Pattern Analysis Pipeline ---")
-    
-    work_items = gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX)
-            
+    logging.info(
+        "--- Starting Technicals Pattern Analysis Pipeline (Parallel + Throttled) ---"
+    )
+
+    # 1. DELETE ALL FILES UP FRONT (Ensure 1 file per ticker, fresh run)
+    try:
+        logging.info(f"Deleting all files in output prefix: {OUTPUT_PREFIX}")
+        gcs.delete_all_in_prefix(config.GCS_BUCKET_NAME, OUTPUT_PREFIX)
+    except Exception as e:
+        logging.error(f"Failed to clean up output prefix: {e}")
+        # Proceeding anyway as we will overwrite
+
+    # 2. Get List of Inputs (Materialize List to Fail Fast)
+    logging.info("Listing inputs...")
+    try:
+        work_items = list(gcs.list_blobs(config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX))
+    except Exception as e:
+        logging.error(f"Failed to list blobs: {e}")
+        return
+
     if not work_items:
         logging.info("No new technicals files to process.")
         return
 
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-        futures = [executor.submit(process_blob, item) for item in work_items]
-        count = sum(1 for future in as_completed(futures) if future.result())
-        
-    logging.info(f"--- Technicals Analysis Pipeline Finished. Processed {count} files. ---")
+    total_files = len(work_items)
+    logging.info(
+        f"Processing {total_files} technicals files with {config.MAX_WORKERS} workers..."
+    )
+
+    # 3. Process with ThreadPool (Manual management to skip "wait=True")
+    processed_count = 0
+    executor = ThreadPoolExecutor(max_workers=config.MAX_WORKERS)
+    try:
+        futures = {executor.submit(process_blob, item): item for item in work_items}
+
+        for i, future in enumerate(as_completed(futures)):
+            try:
+                if future.result():
+                    processed_count += 1
+            except Exception as e:
+                logging.error(f"Thread failed: {e}")
+
+            # Progress Logging
+            if (i + 1) % 50 == 0:
+                logging.info(f"Progress: {i + 1}/{total_files} files processed...")
+    finally:
+        # CRITICAL: Do not wait for zombie threads (e.g. stuck socket close)
+        # Force shutdown so the Cloud Function returns '200 OK' immediately.
+        logging.info("Forcing executor shutdown (wait=False)...")
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    logging.info(
+        f"--- Technicals Analysis Pipeline Finished. Processed {processed_count}/{total_files} files. ---"
+    )

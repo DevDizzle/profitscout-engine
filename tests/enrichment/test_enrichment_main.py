@@ -10,6 +10,7 @@ and return the expected responses.
 import unittest
 from unittest.mock import MagicMock, patch
 
+
 class TestEnrichmentMain(unittest.TestCase):
     """Test suite for enrichment function entry points."""
 
@@ -19,6 +20,7 @@ class TestEnrichmentMain(unittest.TestCase):
         Test the run_mda_analyzer endpoint for a successful invocation.
         """
         from src.enrichment import main
+
         mock_request = MagicMock()
 
         response, status_code = main.run_mda_analyzer(mock_request)
@@ -26,6 +28,7 @@ class TestEnrichmentMain(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(response, "MD&A analyzer pipeline finished.")
         mock_run_pipeline.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,14 +1,19 @@
 # ingestion/core/orchestrators/populate_price_data.py
-import logging
 import datetime
-import pandas as pd
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.cloud import storage, bigquery
-from .. import config, bq
-from ..gcs import get_tickers
-from ..clients.fmp_client import FMPClient
 
-def run_pipeline(bq_client: bigquery.Client, storage_client: storage.Client, fmp_client: FMPClient):
+import pandas as pd
+from google.cloud import bigquery, storage
+
+from .. import bq, config
+from ..clients.fmp_client import FMPClient
+from ..gcs import get_tickers
+
+
+def run_pipeline(
+    bq_client: bigquery.Client, storage_client: storage.Client, fmp_client: FMPClient
+):
     logging.info("=== Starting Price Population Pipeline ===")
     all_tickers = get_tickers(storage_client)
     if not all_tickers:
@@ -20,15 +25,22 @@ def run_pipeline(bq_client: bigquery.Client, storage_client: storage.Client, fmp
     max_workers = config.MAX_WORKERS_TIERING.get("populate_price_data")
 
     for i in range(0, len(all_tickers), config.BATCH_SIZE):
-        batch_tickers = all_tickers[i:i + config.BATCH_SIZE]
-        logging.info(f"--- Processing Price Populator Batch {i//config.BATCH_SIZE + 1} ---")
+        batch_tickers = all_tickers[i : i + config.BATCH_SIZE]
+        logging.info(
+            f"--- Processing Price Populator Batch {i // config.BATCH_SIZE + 1} ---"
+        )
 
         start_dates = bq.get_start_dates_for_populator(bq_client, batch_tickers)
         batch_dfs = []
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_ticker = {
-                executor.submit(fmp_client.fetch_prices_for_populator, t, start_dates.get(t, today), today): t
+                executor.submit(
+                    fmp_client.fetch_prices_for_populator,
+                    t,
+                    start_dates.get(t, today),
+                    today,
+                ): t
                 for t in batch_tickers
             }
             for future in as_completed(future_to_ticker):
@@ -44,4 +56,6 @@ def run_pipeline(bq_client: bigquery.Client, storage_client: storage.Client, fmp
         rows_loaded = bq.load_data_to_bigquery(bq_client, final_df)
         total_rows_loaded += rows_loaded
 
-    logging.info(f"=== Price Populator Pipeline complete. Total rows loaded: {total_rows_loaded} ===")
+    logging.info(
+        f"=== Price Populator Pipeline complete. Total rows loaded: {total_rows_loaded} ==="
+    )

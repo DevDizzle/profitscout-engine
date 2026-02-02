@@ -1,10 +1,12 @@
-from google.cloud import bigquery
-import sys
 import os
+import sys
+
+from google.cloud import bigquery
 
 # Add src to path to import config
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from src.ingestion.core import config
+
 
 def create_tables():
     client = bigquery.Client(project=config.PROJECT_ID)
@@ -31,15 +33,17 @@ def create_tables():
         bigquery.SchemaField("underlying_price", "FLOAT", mode="NULLABLE"),
         bigquery.SchemaField("fetch_date", "DATE", mode="REQUIRED"),
         bigquery.SchemaField("dte", "INTEGER", mode="NULLABLE"),
-        bigquery.SchemaField("snapshot_date", "DATE", mode="REQUIRED"), # Partitioning column
+        bigquery.SchemaField(
+            "snapshot_date", "DATE", mode="REQUIRED"
+        ),  # Partitioning column
     ]
     table = bigquery.Table(table_ref, schema=schema)
     table.time_partitioning = bigquery.TimePartitioning(
         type_=bigquery.TimePartitioningType.DAY,
-        field="snapshot_date", 
+        field="snapshot_date",
     )
     table.clustering_fields = ["ticker", "contract_symbol"]
-    
+
     try:
         client.create_table(table)
         print(f"Created table {table.full_table_id}")
@@ -50,7 +54,7 @@ def create_tables():
     table_ref_tech = dataset_ref.table(config.TECHNICALS_HISTORY_TABLE)
     schema_tech = [
         bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("date", "DATE", mode="REQUIRED"), # Partitioning column
+        bigquery.SchemaField("date", "DATE", mode="REQUIRED"),  # Partitioning column
         bigquery.SchemaField("latest_rsi", "FLOAT", mode="NULLABLE"),
         bigquery.SchemaField("latest_macd", "FLOAT", mode="NULLABLE"),
         bigquery.SchemaField("latest_sma50", "FLOAT", mode="NULLABLE"),
@@ -74,6 +78,7 @@ def create_tables():
         print(f"Created table {table_tech.full_table_id}")
     except Exception as e:
         print(f"Table {table_tech.full_table_id} already exists or error: {e}")
+
 
 if __name__ == "__main__":
     create_tables()

@@ -1,10 +1,10 @@
 # enrichment/core/options_analysis_helper.py
 from __future__ import annotations
+
 import datetime as dt
 import math
 import random
 import time
-from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -60,7 +60,7 @@ def ensure_staging_exists(bq: bigquery.Client) -> None:
     bq.query(ddl).result()
 
 
-def _safe_float(x) -> Optional[float]:
+def _safe_float(x) -> float | None:
     try:
         if x is None:
             return None
@@ -72,7 +72,7 @@ def _safe_float(x) -> Optional[float]:
         return None
 
 
-def _normalize_row(row: Dict) -> Dict:
+def _normalize_row(row: dict) -> dict:
     out = dict(row)
     if not out.get("ticker"):
         raise ValueError("Row missing 'ticker'")
@@ -87,8 +87,8 @@ def _normalize_row(row: Dict) -> Dict:
 
 
 def _fetch_ohlcv_for_keys(
-    bq: bigquery.Client, keys: List[Dict[str, str]]
-) -> Dict[tuple, Dict]:
+    bq: bigquery.Client, keys: list[dict[str, str]]
+) -> dict[tuple, dict]:
     if not keys:
         return {}
     tickers = list({k["ticker"] for k in keys})
@@ -110,7 +110,7 @@ def _fetch_ohlcv_for_keys(
     return {(r["ticker"], r["date_str"]): r for r in rows}
 
 
-def _merge_from_staging(bq: bigquery.Client, present_cols: List[str]) -> None:
+def _merge_from_staging(bq: bigquery.Client, present_cols: list[str]) -> None:
     non_keys = [c for c in present_cols if c not in ("ticker", "date")]
     if not non_keys:
         return
@@ -138,7 +138,7 @@ def _merge_from_staging(bq: bigquery.Client, present_cols: List[str]) -> None:
 
 
 def upsert_analysis_rows(
-    bq: bigquery.Client, rows: List[Dict], enrich_ohlcv: bool = True
+    bq: bigquery.Client, rows: list[dict], enrich_ohlcv: bool = True
 ) -> None:
     """Batch upsert using a permanent staging table (overwritten each run)."""
     if not rows:
@@ -170,8 +170,8 @@ def upsert_analysis_rows(
 
 
 def compute_iv_avg_atm(
-    full_chain_df: pd.DataFrame, underlying_price: Optional[float], as_of: dt.date
-) -> Optional[float]:
+    full_chain_df: pd.DataFrame, underlying_price: float | None, as_of: dt.date
+) -> float | None:
     if full_chain_df is None or full_chain_df.empty or not underlying_price:
         return None
     df = full_chain_df.copy()
@@ -192,54 +192,54 @@ def compute_iv_avg_atm(
 
 
 def compute_net_gex(
-    full_chain_df: pd.DataFrame, underlying_price: Optional[float]
-) -> Optional[float]:
+    full_chain_df: pd.DataFrame, underlying_price: float | None
+) -> float | None:
     """
     Compute Total Net Gamma Exposure (GEX) for the ticker.
     Formula: Sum(Gamma * OpenInterest * 100 * SpotPrice)
     - Calls are Positive GEX.
     - Puts are Negative GEX.
-    
+
     Interpretation:
     - High Positive GEX: Market makers hedge by selling rips/buying dips -> Low Volatility (Pinned).
     - High Negative GEX: Market makers hedge by selling dips/buying rips -> High Volatility (Accelerator).
     """
     if full_chain_df is None or full_chain_df.empty or not underlying_price:
         return None
-        
+
     try:
         df = full_chain_df.copy()
         # Ensure numeric types
         cols = ["gamma", "open_interest"]
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-            
+
         if "option_type" not in df.columns:
             return None
 
         # Calculate contract-level GEX: Gamma * OI * 100 * Spot
         # Multiplier 100 is standard for option contracts
         df["contract_gex"] = df["gamma"] * df["open_interest"] * 100 * underlying_price
-        
+
         # Apply signs: Call = +, Put = -
         # Assumes option_type is 'call' or 'put' (case insensitive)
         df["signed_gex"] = np.where(
-            df["option_type"].str.lower() == "put", 
-            -df["contract_gex"], 
-            df["contract_gex"]
+            df["option_type"].str.lower() == "put",
+            -df["contract_gex"],
+            df["contract_gex"],
         )
-        
+
         total_gex = df["signed_gex"].sum()
         return _safe_float(total_gex)
-        
+
     except Exception as e:
         print(f"Error computing GEX: {e}")
         return None
 
 
 def compute_market_structure(
-    full_chain_df: pd.DataFrame, underlying_price: Optional[float]
-) -> Dict[str, Optional[float]]:
+    full_chain_df: pd.DataFrame, underlying_price: float | None
+) -> dict[str, float | None]:
     """
     Computes key Market Structure metrics:
     - Walls (Call/Put OI Leaders)
@@ -255,7 +255,7 @@ def compute_market_structure(
         "put_call_oi_ratio": None,
         "net_call_gamma": None,
         "net_put_gamma": None,
-        "total_gex": None
+        "total_gex": None,
     }
 
     if full_chain_df is None or full_chain_df.empty or not underlying_price:
@@ -263,52 +263,64 @@ def compute_market_structure(
 
     try:
         df = full_chain_df.copy()
-        
+
         # Ensure numeric types
         cols = ["gamma", "open_interest", "volume", "strike", "last_price"]
         for c in cols:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-        
+
         # 1. P/C Ratios
         total_call_vol = df[df["option_type"].str.lower() == "call"]["volume"].sum()
         total_put_vol = df[df["option_type"].str.lower() == "put"]["volume"].sum()
-        total_call_oi = df[df["option_type"].str.lower() == "call"]["open_interest"].sum()
+        total_call_oi = df[df["option_type"].str.lower() == "call"][
+            "open_interest"
+        ].sum()
         total_put_oi = df[df["option_type"].str.lower() == "put"]["open_interest"].sum()
-        
+
         if total_call_vol > 0:
             out["put_call_vol_ratio"] = _safe_float(total_put_vol / total_call_vol)
         if total_call_oi > 0:
             out["put_call_oi_ratio"] = _safe_float(total_put_oi / total_call_oi)
-            
+
         # 2. Walls (Strike with Max OI)
         calls = df[df["option_type"].str.lower() == "call"]
         puts = df[df["option_type"].str.lower() == "put"]
-        
+
         if not calls.empty:
-            out["call_wall"] = _safe_float(calls.loc[calls["open_interest"].idxmax()]["strike"])
+            out["call_wall"] = _safe_float(
+                calls.loc[calls["open_interest"].idxmax()]["strike"]
+            )
         if not puts.empty:
-            out["put_wall"] = _safe_float(puts.loc[puts["open_interest"].idxmax()]["strike"])
-            
+            out["put_wall"] = _safe_float(
+                puts.loc[puts["open_interest"].idxmax()]["strike"]
+            )
+
         # 3. Gamma Exposure (GEX)
         # Gamma * OI * 100 * Spot
         # Call GEX is Positive, Put GEX is Negative
         if "gamma" in df.columns:
-            df["contract_gex"] = df["gamma"] * df["open_interest"] * 100 * underlying_price
-            
+            df["contract_gex"] = (
+                df["gamma"] * df["open_interest"] * 100 * underlying_price
+            )
+
             call_gex = df[df["option_type"].str.lower() == "call"]["contract_gex"].sum()
-            put_gex = df[df["option_type"].str.lower() == "put"]["contract_gex"].sum() # Positive magnitude
-            
+            put_gex = df[df["option_type"].str.lower() == "put"][
+                "contract_gex"
+            ].sum()  # Positive magnitude
+
             out["net_call_gamma"] = _safe_float(call_gex)
-            out["net_put_gamma"] = _safe_float(put_gex) # Stored as positive magnitude usually
+            out["net_put_gamma"] = _safe_float(
+                put_gex
+            )  # Stored as positive magnitude usually
             out["total_gex"] = _safe_float(call_gex - put_gex)
 
         # 4. Max Pain
         # The strike price where the total intrinsic value of all options (Calls + Puts) is minimized.
         strikes = df["strike"].unique()
-        min_pain = float('inf')
+        min_pain = float("inf")
         pain_strike = None
-        
+
         # Optimization: Only check strikes with significant OI to save time
         relevant_strikes = df[df["open_interest"] > 100]["strike"].unique()
         if len(relevant_strikes) == 0:
@@ -320,26 +332,30 @@ def compute_market_structure(
             # wait, if price settles at 'k':
             # Call Value = max(0, k - call_strike) * OI
             # Put Value = max(0, put_strike - k) * OI
-            
-            call_loss = calls.apply(lambda row: max(0, k - row['strike']) * row['open_interest'], axis=1).sum()
-            put_loss = puts.apply(lambda row: max(0, row['strike'] - k) * row['open_interest'], axis=1).sum()
-            
+
+            call_loss = calls.apply(
+                lambda row: max(0, k - row["strike"]) * row["open_interest"], axis=1
+            ).sum()
+            put_loss = puts.apply(
+                lambda row: max(0, row["strike"] - k) * row["open_interest"], axis=1
+            ).sum()
+
             total_loss = call_loss + put_loss
             if total_loss < min_pain:
                 min_pain = total_loss
                 pain_strike = k
-                
+
         out["max_pain"] = _safe_float(pain_strike)
 
     except Exception as e:
         print(f"Error computing Market Structure: {e}")
-        
+
     return out
 
 
 def compute_technicals_and_deltas(
     price_hist: pd.DataFrame,
-) -> Dict[str, Optional[float]]:
+) -> dict[str, float | None]:
     out_keys = [
         "latest_rsi",
         "latest_macd",
@@ -353,7 +369,7 @@ def compute_technicals_and_deltas(
         "macd_90d_delta",
     ]
     if price_hist is None or price_hist.empty:
-        return {k: None for k in out_keys}
+        return dict.fromkeys(out_keys)
 
     df = price_hist.copy()
     df[f"RSI_{RSI_LEN}"] = ta.rsi(close=df["close"], length=RSI_LEN)
@@ -365,7 +381,7 @@ def compute_technicals_and_deltas(
     df["SMA_200"] = ta.sma(close=df["close"], length=SMA200)
     valid = df.dropna(subset=["close", "RSI_14", "MACD_12_26_9", "SMA_50", "SMA_200"])
     if valid.empty:
-        return {k: None for k in out_keys}
+        return dict.fromkeys(out_keys)
 
     latest = valid.iloc[-1]
     out = {
@@ -403,7 +419,7 @@ def compute_hv30(
     ticker: str,
     as_of: dt.date,
     price_history_df: pd.DataFrame = None,
-) -> Optional[float]:
+) -> float | None:
     df_to_use = price_history_df
     if df_to_use is None:
         q = f"""

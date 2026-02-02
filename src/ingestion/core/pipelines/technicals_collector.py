@@ -15,6 +15,7 @@ from ..gcs import get_tickers, upload_json_to_gcs
 # Utilities & helpers
 # ----------------------------
 
+
 def _safe_float(x):
     try:
         if x is None:
@@ -26,12 +27,14 @@ def _safe_float(x):
     except Exception:
         return None
 
+
 def _to_iso_date(d):
     try:
         s = str(d)
         return s[:10]  # 'YYYY-MM-DD'
     except Exception:
         return None
+
 
 def _finite_float(x):
     try:
@@ -40,12 +43,14 @@ def _finite_float(x):
     except Exception:
         return None
 
+
 def _int_or_none(x):
     try:
         xi = int(x)
         return xi if xi >= 0 else None
     except Exception:
         return None
+
 
 def _ensure_core_kpis(price_df: pd.DataFrame) -> pd.DataFrame:
     if "close" not in price_df.columns:
@@ -78,7 +83,11 @@ def _ensure_core_kpis(price_df: pd.DataFrame) -> pd.DataFrame:
                 else:
                     for c in macd_df.columns:
                         cu = c.upper()
-                        if cu.startswith("MACD_") and not cu.startswith("MACDS_") and not cu.startswith("MACDH_"):
+                        if (
+                            cu.startswith("MACD_")
+                            and not cu.startswith("MACDS_")
+                            and not cu.startswith("MACDH_")
+                        ):
                             price_df["MACD_12_26_9"] = macd_df[c]
                             break
                     if "MACD_12_26_9" not in price_df.columns:
@@ -90,6 +99,7 @@ def _ensure_core_kpis(price_df: pd.DataFrame) -> pd.DataFrame:
             price_df["MACD_12_26_9"] = pd.NA
     return price_df
 
+
 # --- NEW: build a clean indicators-only 90d payload (no OHLCV, no ticker) ---
 def _build_technicals_payload(df: pd.DataFrame) -> list[dict]:
     """
@@ -100,21 +110,40 @@ def _build_technicals_payload(df: pd.DataFrame) -> list[dict]:
         return []
     # Preferred indicator columns (add/remove as needed)
     prefer_cols = [
-        "SMA_50", "SMA_200", "EMA_21",
-        "MACD_12_26_9", "MACDs_12_26_9", "MACDh_12_26_9",
-        "RSI_14", "ADX_14", "ADXR_14_2", "DMP_14", "DMN_14",
-        "STOCHk_14_3_3", "STOCHd_14_3_3",
+        "SMA_50",
+        "SMA_200",
+        "EMA_21",
+        "MACD_12_26_9",
+        "MACDs_12_26_9",
+        "MACDh_12_26_9",
+        "RSI_14",
+        "ADX_14",
+        "ADXR_14_2",
+        "DMP_14",
+        "DMN_14",
+        "STOCHk_14_3_3",
+        "STOCHd_14_3_3",
         "ROC_20",
-        "BBL_20_2.0_2.0", "BBM_20_2.0_2.0", "BBU_20_2.0_2.0",
-        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
-        "ATR", "OBV",
-        "52w_high", "52w_low", "percent_atr",
+        "BBL_20_2.0_2.0",
+        "BBM_20_2.0_2.0",
+        "BBU_20_2.0_2.0",
+        "BBB_20_2.0_2.0",
+        "BBP_20_2.0_2.0",
+        "ATR",
+        "OBV",
+        "52w_high",
+        "52w_low",
+        "percent_atr",
     ]
     # Normalize aliases if present
     alias_map = {
-        "ema_21": "EMA_21", "atr": "ATR", "obv": "OBV",
-        "rsi_14": "RSI_14", "sma_50": "SMA_50", "sma_200": "SMA_200",
-        "roc_20": "ROC_20"
+        "ema_21": "EMA_21",
+        "atr": "ATR",
+        "obv": "OBV",
+        "rsi_14": "RSI_14",
+        "sma_50": "SMA_50",
+        "sma_200": "SMA_200",
+        "roc_20": "ROC_20",
     }
     df = df.copy()
     for src, dst in alias_map.items():
@@ -146,11 +175,15 @@ def _build_technicals_payload(df: pd.DataFrame) -> list[dict]:
         out.append(row)
     return out
 
+
 # ----------------------------
 # Data access & indicator calc
 # ----------------------------
 
-def _get_price_history_for_chunk(tickers: list[str], bq_client: bigquery.Client) -> pd.DataFrame:
+
+def _get_price_history_for_chunk(
+    tickers: list[str], bq_client: bigquery.Client
+) -> pd.DataFrame:
     logging.info(f"Querying BigQuery for price history of {len(tickers)} tickers...")
     query = f"""
         SELECT ticker, date, open, high, low, adj_close AS close, volume
@@ -168,10 +201,15 @@ def _get_price_history_for_chunk(tickers: list[str], bq_client: bigquery.Client)
     df["date"] = pd.to_datetime(df["date"])
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    logging.info(f"Query complete. Found data for {df['ticker'].nunique()} unique tickers.")
+    logging.info(
+        f"Query complete. Found data for {df['ticker'].nunique()} unique tickers."
+    )
     return df
 
-def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dict | None:
+
+def _calculate_technicals_for_ticker(
+    ticker: str, price_df: pd.DataFrame
+) -> dict | None:
     try:
         if price_df is None or price_df.empty:
             return {"ticker": ticker, "error": "no price data"}
@@ -192,7 +230,12 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             func = getattr(ta, kind)
             arg_map = {}
             for name in ("close", "open", "high", "low", "volume"):
-                if name in getattr(func, "__code__", type("x", (), {"co_varnames": ()})).co_varnames:
+                if (
+                    name
+                    in getattr(
+                        func, "__code__", type("x", (), {"co_varnames": ()})
+                    ).co_varnames
+                ):
                     arg_map[name] = price_df[name]
             try:
                 result = func(**params, **arg_map)
@@ -204,14 +247,24 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             elif isinstance(result, pd.DataFrame):
                 price_df = price_df.join(result)
             else:
-                logging.warning(f"[{ticker}] Unexpected result type for {kind}: {type(result)}")
+                logging.warning(
+                    f"[{ticker}] Unexpected result type for {kind}: {type(result)}"
+                )
 
         # Ensure core KPIs
         price_df = _ensure_core_kpis(price_df)
 
         # 52w high/low
-        price_df["52w_high"] = price_df["high"].rolling(window=config.ROLLING_52_WEEK_WINDOW, min_periods=1).max()
-        price_df["52w_low"] = price_df["low"].rolling(window=config.ROLLING_52_WEEK_WINDOW, min_periods=1).min()
+        price_df["52w_high"] = (
+            price_df["high"]
+            .rolling(window=config.ROLLING_52_WEEK_WINDOW, min_periods=1)
+            .max()
+        )
+        price_df["52w_low"] = (
+            price_df["low"]
+            .rolling(window=config.ROLLING_52_WEEK_WINDOW, min_periods=1)
+            .min()
+        )
 
         # percent ATR if present
         atr_col = None
@@ -233,9 +286,15 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
 
         # Valid KPI rows (optional for deltas; not used for the per-row payload)
         needed_for_kpis = ["RSI_14", "MACD_12_26_9", "SMA_50", "SMA_200"]
-        valid = price_df.dropna(subset=["open", "high", "low", "close", "volume"] + needed_for_kpis)
+        valid = price_df.dropna(
+            subset=["open", "high", "low", "close", "volume"] + needed_for_kpis
+        )
 
-        use_df = valid if not valid.empty else price_df.dropna(subset=["open", "high", "low", "close", "volume"])
+        use_df = (
+            valid
+            if not valid.empty
+            else price_df.dropna(subset=["open", "high", "low", "close", "volume"])
+        )
         if use_df.empty:
             return {"ticker": ticker, "error": "no row with required OHLCV"}
 
@@ -258,17 +317,35 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
             if len(valid) >= 31:
                 ago_30 = valid.iloc[-31]
                 try:
-                    deltas["close_30d_delta_pct"] = _safe_float((valid.iloc[-1]["close"] - ago_30["close"]) / ago_30["close"] * 100)
-                    deltas["rsi_30d_delta"] = _safe_float(valid.iloc[-1].get("RSI_14", 0) - ago_30.get("RSI_14", 0))
-                    deltas["macd_30d_delta"] = _safe_float(valid.iloc[-1].get("MACD_12_26_9", 0) - ago_30.get("MACD_12_26_9", 0))
+                    deltas["close_30d_delta_pct"] = _safe_float(
+                        (valid.iloc[-1]["close"] - ago_30["close"])
+                        / ago_30["close"]
+                        * 100
+                    )
+                    deltas["rsi_30d_delta"] = _safe_float(
+                        valid.iloc[-1].get("RSI_14", 0) - ago_30.get("RSI_14", 0)
+                    )
+                    deltas["macd_30d_delta"] = _safe_float(
+                        valid.iloc[-1].get("MACD_12_26_9", 0)
+                        - ago_30.get("MACD_12_26_9", 0)
+                    )
                 except Exception:
                     pass
             if len(valid) >= 91:
                 ago_90 = valid.iloc[-91]
                 try:
-                    deltas["close_90d_delta_pct"] = _safe_float((valid.iloc[-1]["close"] - ago_90["close"]) / ago_90["close"] * 100)
-                    deltas["rsi_90d_delta"] = _safe_float(valid.iloc[-1].get("RSI_14", 0) - ago_90.get("RSI_14", 0))
-                    deltas["macd_90d_delta"] = _safe_float(valid.iloc[-1].get("MACD_12_26_9", 0) - ago_90.get("MACD_12_26_9", 0))
+                    deltas["close_90d_delta_pct"] = _safe_float(
+                        (valid.iloc[-1]["close"] - ago_90["close"])
+                        / ago_90["close"]
+                        * 100
+                    )
+                    deltas["rsi_90d_delta"] = _safe_float(
+                        valid.iloc[-1].get("RSI_14", 0) - ago_90.get("RSI_14", 0)
+                    )
+                    deltas["macd_90d_delta"] = _safe_float(
+                        valid.iloc[-1].get("MACD_12_26_9", 0)
+                        - ago_90.get("MACD_12_26_9", 0)
+                    )
                 except Exception:
                     pass
 
@@ -291,20 +368,7 @@ def _calculate_technicals_for_ticker(ticker: str, price_df: pd.DataFrame) -> dic
     except Exception as e:
         return {"ticker": ticker, "error": str(e)}
 
-    logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={total_rows_collected} ---")
 
-    # --- Persist to BigQuery History ---
-    if total_rows_collected > 0:
-        logging.info(f"Persisting {len(update_rows_all)} technical rows to BigQuery history...")
-        try:
-            # We need to accumulate all rows first. The current structure processes chunks.
-            # We didn't accumulate them in the original loop.
-            # Let's fix the loop to accumulate 'update_rows' into a master list.
-            pass # Replaced by logic below in the actual loop modification
-        except Exception as e:
-            logging.error(f"Failed to persist technicals history: {e}")
-
-# We need to rewrite the Orchestrator to accumulate rows.
 def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
     logging.info("--- Parallel Technicals Pipeline Started ---")
     tickers = get_tickers(storage_client)
@@ -314,11 +378,13 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
     max_workers = config.MAX_WORKERS_TIERING.get("technicals_collector") or 4
     chunk_size = config.BATCH_SIZE or 50
-    logging.info(f"Processing {len(tickers)} tickers in chunks of {chunk_size} (max_workers={max_workers}).")
+    logging.info(
+        f"Processing {len(tickers)} tickers in chunks of {chunk_size} (max_workers={max_workers})."
+    )
 
     total_uploaded = 0
     total_errors = 0
-    all_update_rows = [] # Accumulator
+    all_update_rows = []  # Accumulator
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for i in range(0, len(tickers), chunk_size):
@@ -328,7 +394,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
                 logging.warning("No price data for this chunk. Skipping.")
                 continue
 
-            grouped_by_ticker = {t: df for t, df in price_data_chunk.groupby("ticker")}
+            grouped_by_ticker = dict(price_data_chunk.groupby("ticker"))
             futures = {
                 executor.submit(_calculate_technicals_for_ticker, t, df.copy()): t
                 for t, df in grouped_by_ticker.items()
@@ -336,7 +402,7 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
             uploaded = 0
             errors = 0
-            
+
             for future in as_completed(futures):
                 t = futures[future]
                 result = future.result()
@@ -353,12 +419,18 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
                 # --- Upload technicals in the same top-level shape as prices file ---
                 try:
-                    tech_blob_path = f"{config.TECHNICALS_OUTPUT_FOLDER}{t}_technicals.json"
-                    upload_json_to_gcs(storage_client, {
-                        "ticker": result["ticker"],
-                        "as_of_date": result["as_of_date"],
-                        "technicals": result["technicals"],
-                    }, tech_blob_path)
+                    tech_blob_path = (
+                        f"{config.TECHNICALS_OUTPUT_FOLDER}{t}_technicals.json"
+                    )
+                    upload_json_to_gcs(
+                        storage_client,
+                        {
+                            "ticker": result["ticker"],
+                            "as_of_date": result["as_of_date"],
+                            "technicals": result["technicals"],
+                        },
+                        tech_blob_path,
+                    )
                     uploaded += 1
                 except Exception as e:
                     errors += 1
@@ -370,28 +442,38 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
 
             total_uploaded += uploaded
             total_errors += errors
-            logging.info(f"Chunk {i//chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(all_update_rows)}")
+            logging.info(
+                f"Chunk {i // chunk_size + 1}: uploaded={uploaded}, errors={errors}, collected_rows={len(all_update_rows)}"
+            )
 
     # --- Persist to BigQuery History ---
     if all_update_rows:
-        logging.info(f"Persisting {len(all_update_rows)} technical rows to BigQuery history...")
+        logging.info(
+            f"Persisting {len(all_update_rows)} technical rows to BigQuery history..."
+        )
         try:
             # --- Idempotency: Clean up any existing history for today ---
             # Technicals are calculated based on today's price, so we only want one entry per ticker per day.
             cleanup_query = f"DELETE FROM `{config.TECHNICALS_HISTORY_TABLE_ID}` WHERE date = CURRENT_DATE()"
             try:
                 bq_client.query(cleanup_query).result()
-                logging.info(f"Cleaned up existing technicals history for today in {config.TECHNICALS_HISTORY_TABLE_ID}.")
+                logging.info(
+                    f"Cleaned up existing technicals history for today in {config.TECHNICALS_HISTORY_TABLE_ID}."
+                )
             except Exception as e:
-                logging.warning(f"Cleanup query failed (possibly harmless if table is new): {e}")
+                logging.warning(
+                    f"Cleanup query failed (possibly harmless if table is new): {e}"
+                )
 
             df_hist = pd.DataFrame(all_update_rows)
             # Ensure date is date object or string? BQ pandas helper handles datetime.date usually.
             # Convert to appropriate types if needed.
-            
+
             job_config = bigquery.LoadJobConfig(
                 write_disposition="WRITE_APPEND",
-                schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION]
+                schema_update_options=[
+                    bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+                ],
             )
             job = bq_client.load_table_from_dataframe(
                 df_hist, config.TECHNICALS_HISTORY_TABLE_ID, job_config=job_config
@@ -401,4 +483,6 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
         except Exception as e:
             logging.error(f"Failed to persist technicals history: {e}", exc_info=True)
 
-    logging.info(f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={len(all_update_rows)} ---")
+    logging.info(
+        f"--- Technicals collector finished. Uploaded={total_uploaded}, errors={total_errors}, collected_rows={len(all_update_rows)} ---"
+    )

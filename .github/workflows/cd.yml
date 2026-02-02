@@ -1,0 +1,217 @@
+name: Deploy Cloud Functions
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/ingestion/**'
+      - 'src/enrichment/**'
+      - 'src/serving/**'
+
+env:
+  PROJECT_ID: profitscout-lx6bb
+  REGION: us-central1
+  RUNTIME: python312
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ingestion: ${{ steps.changes.outputs.ingestion }}
+      enrichment: ${{ steps.changes.outputs.enrichment }}
+      serving: ${{ steps.changes.outputs.serving }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed paths
+        id: changes
+        run: |
+          # Get changed files between HEAD and previous commit
+          CHANGED=$(git diff --name-only HEAD~1 HEAD)
+          
+          echo "Changed files:"
+          echo "$CHANGED"
+          
+          # Check which modules changed
+          if echo "$CHANGED" | grep -q "^src/ingestion/"; then
+            echo "ingestion=true" >> $GITHUB_OUTPUT
+          else
+            echo "ingestion=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if echo "$CHANGED" | grep -q "^src/enrichment/"; then
+            echo "enrichment=true" >> $GITHUB_OUTPUT
+          else
+            echo "enrichment=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if echo "$CHANGED" | grep -q "^src/serving/"; then
+            echo "serving=true" >> $GITHUB_OUTPUT
+          else
+            echo "serving=false" >> $GITHUB_OUTPUT
+          fi
+
+  deploy-ingestion:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.ingestion == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy ingestion functions
+        run: |
+          echo "🚀 Deploying ingestion functions..."
+          
+          FUNCTIONS=(
+            "run_price_populator"
+            "sync_spy_price_history"
+            "fetch_news"
+            "fetch_options_chain"
+            "run_technicals_collector"
+            "refresh_stock_metadata"
+            "run_calendar_events_loader"
+            "fetch_transcripts"
+            "extract_sec_filings"
+            "load_financial_statements"
+            "run_fundamentals_loader"
+            "run_history_archiver"
+          )
+          
+          for fn in "${FUNCTIONS[@]}"; do
+            echo "  Deploying $fn..."
+            gcloud functions deploy "$fn" \
+              --gen2 \
+              --region=${{ env.REGION }} \
+              --runtime=${{ env.RUNTIME }} \
+              --source=src/ingestion \
+              --entry-point="$fn" \
+              --trigger-http \
+              --allow-unauthenticated \
+              --timeout=540s \
+              --memory=1Gi || echo "⚠️ Failed to deploy $fn"
+          done
+
+  deploy-enrichment:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.enrichment == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy enrichment functions
+        run: |
+          echo "🚀 Deploying enrichment functions..."
+          
+          FUNCTIONS=(
+            "run_mda_analyzer"
+            "run_transcript_analyzer"
+            "run_financials_analyzer"
+            "run_fundamentals_analyzer"
+            "run_technicals_analyzer"
+            "run_news_analyzer"
+            "run_business_summarizer"
+            "run_score_aggregator"
+            "run_options_candidate_selector"
+            "run_options_analyzer"
+            "run_options_feature_engineering"
+            "run_thesis_generator"
+          )
+          
+          for fn in "${FUNCTIONS[@]}"; do
+            echo "  Deploying $fn..."
+            gcloud functions deploy "$fn" \
+              --gen2 \
+              --region=${{ env.REGION }} \
+              --runtime=${{ env.RUNTIME }} \
+              --source=src/enrichment \
+              --entry-point="$fn" \
+              --trigger-http \
+              --allow-unauthenticated \
+              --timeout=540s \
+              --memory=2Gi || echo "⚠️ Failed to deploy $fn"
+          done
+
+  deploy-serving:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.serving == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy serving functions
+        run: |
+          echo "🚀 Deploying serving functions..."
+          
+          FUNCTIONS=(
+            "run_social_media_poster"
+            "run_performance_tracker_updater"
+            "run_winners_dashboard_generator"
+            "run_recommendations_generator"
+            "run_sync_calendar_to_firestore"
+            "run_sync_options_to_firestore"
+            "run_sync_winners_to_firestore"
+            "run_dashboard_generator"
+            "run_data_cruncher"
+            "run_page_generator"
+            "run_price_chart_generator"
+            "run_data_bundler"
+            "run_sync_to_firestore"
+            "run_sync_options_candidates_to_firestore"
+            "run_sync_performance_tracker_to_firestore"
+            "run_sync_spy_to_firestore"
+          )
+          
+          for fn in "${FUNCTIONS[@]}"; do
+            echo "  Deploying $fn..."
+            gcloud functions deploy "$fn" \
+              --gen2 \
+              --region=${{ env.REGION }} \
+              --runtime=${{ env.RUNTIME }} \
+              --source=src/serving \
+              --entry-point="$fn" \
+              --trigger-http \
+              --allow-unauthenticated \
+              --timeout=540s \
+              --memory=1Gi || echo "⚠️ Failed to deploy $fn"
+          done
+
+  notify:
+    needs: [deploy-ingestion, deploy-enrichment, deploy-serving]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Module | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Ingestion | ${{ needs.deploy-ingestion.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Enrichment | ${{ needs.deploy-enrichment.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Serving | ${{ needs.deploy-serving.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

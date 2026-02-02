@@ -53,7 +53,7 @@ deploy_http_function() {
     --entry-point="${entry_point}" \
     --trigger-http \
     --allow-unauthenticated \
-    --timeout=3600s \
+    --timeout=1800s \
     --max-instances=1 \
     $extra_args
 }
