@@ -1,6 +1,6 @@
 # src/enrichment/main.py
 """
-Cloud Function entry points for the ProfitScout enrichment pipelines.
+Cloud Function entry points for the GammaRips enrichment pipelines.
 
 This module defines HTTP-triggered functions that initiate various data
 enrichment tasks. Each function invokes a corresponding pipeline from the

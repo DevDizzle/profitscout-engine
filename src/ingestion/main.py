@@ -1,6 +1,6 @@
 # src/ingestion/main.py
 """
-Cloud Function entry points for the ProfitScout ingestion pipelines.
+Cloud Function entry points for the GammaRips ingestion pipelines.
 
 This module defines HTTP and Pub/Sub-triggered functions that initiate various
 data ingestion tasks. Each function is responsible for initializing the

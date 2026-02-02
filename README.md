@@ -1,6 +1,6 @@
-# ProfitScout — Serverless Financial Data Platform
+# GammaRips — Serverless Financial Data Platform
 
-ProfitScout is an end-to-end AI platform for financial analysis, turning raw market data into actionable investment signals for the Russell 1000. It ingests public filings and prices, enriches them with AI, and serves ranked scores and pages for downstream apps.
+GammaRips is an end-to-end AI platform for financial analysis, turning raw market data into actionable investment signals for the Russell 1000. It ingests public filings and prices, enriches them with AI, and serves ranked scores and pages for downstream apps.
 
 ## Key Features
 
@@ -105,13 +105,13 @@ Configuration for each component is managed within its respective `config.py` fi
 ### Core Configuration
 | Variable                  | Default             | Description                               | Location                            |
 | ------------------------- | ------------------- | ----------------------------------------- | ----------------------------------- |
-| `PROJECT_ID`              | `profitscout-lx6bb` | Source Google Cloud project               | `src/ingestion/core/config.py`      |
+| `PROJECT_ID`              | `gammarips-lx6bb` | Source Google Cloud project               | `src/ingestion/core/config.py`      |
 | `GCS_BUCKET_NAME`         | `profit-scout-data` | Raw data bucket                           | `src/ingestion/core/config.py`      |
 | `BIGQUERY_DATASET`        | `profit_scout`      | Dataset for ingestion outputs             | `src/ingestion/core/config.py`      |
 | `FMP_API_KEY_SECRET`      | `FMP_API_KEY`       | Secret name for FMP API key               | `src/ingestion/core/config.py`      |
 | `SEC_API_KEY_SECRET`      | `SEC_API_KEY`       | Secret name for SEC API key               | `src/ingestion/core/config.py`      |
 | `MODEL_NAME`              | `gemini-2.0-flash`  | Vertex model for summaries                | `src/enrichment/core/config.py`     |
-| `DESTINATION_PROJECT_ID`  | `profitscout-fida8` | Target project for serving assets         | `src/serving/core/config.py`        |
+| `DESTINATION_PROJECT_ID`  | `gammarips-fida8` | Target project for serving assets         | `src/serving/core/config.py`        |
 | `DESTINATION_GCS_BUCKET`  | `profit-scout`      | Bucket for public artifacts               | `src/serving/core/config.py`        |
 | `FIRESTORE_COLLECTION`    | `tickers`           | Firestore collection for serving          | `src/serving/core/config.py`        |
 
