@@ -27,11 +27,11 @@ ANALYSIS_PREFIXES = {
 }
 SCORE_WEIGHTS = {
     "news_score": 0.25,
-    "technicals_score": 0.40,
-    "mda_score": 0.05,
-    "transcript_score": 0.07,
-    "financials_score": 0.08,
-    "fundamentals_score": 0.15,
+    "technicals_score": 0.55,
+    "mda_score": 0.00,
+    "transcript_score": 0.10,
+    "financials_score": 0.05,
+    "fundamentals_score": 0.05,
 }
 
 # --- Recommendation Generator Pipeline ---

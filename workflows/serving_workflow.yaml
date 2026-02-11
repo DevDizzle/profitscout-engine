@@ -19,88 +19,49 @@ main:
             - run_score_aggregator:
                 steps:
                   - call_score_aggregator:
-                      try:
-                        call: http.post
-                        args:
-                          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + score_aggregator_name}
-                          auth: { type: OIDC }
-                          timeout: 1200
-                        result: score_aggregator_result
-                      retry:
-                        predicate: ${http.default_retry_predicate}
-                        max_retries: 5
-                        backoff:
-                          initial_delay: 2
-                          max_delay: 60
-                          multiplier: 2
+                      call: http.post
+                      args:
+                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + score_aggregator_name}
+                        auth: { type: OIDC }
+                        timeout: 1800
+                      result: score_aggregator_result
+
             - run_data_cruncher:
                 steps:
                   - call_data_cruncher:
-                      try:
-                        call: http.post
-                        args:
-                          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + data_cruncher_name}
-                          auth: { type: OIDC }
-                          timeout: 1200
-                        result: data_cruncher_result
-                      retry:
-                        predicate: ${http.default_retry_predicate}
-                        max_retries: 5
-                        backoff:
-                          initial_delay: 2
-                          max_delay: 60
-                          multiplier: 2
+                      call: http.post
+                      args:
+                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + data_cruncher_name}
+                        auth: { type: OIDC }
+                        timeout: 1800
+                      result: data_cruncher_result
 
     # Step 2: Generate the stock-level recommendations (depends on score_aggregator)
     - call_recommendations_generator:
-        try:
-          call: http.post
-          args:
-            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + recommendations_generator_name}
-            auth: { type: OIDC }
-            timeout: 1800
-          result: recommendations_result
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + recommendations_generator_name}
+          auth: { type: OIDC }
+          timeout: 1800
+        result: recommendations_result
 
     # Step 3: Generate the page JSON (depends on recommendations_generator)
     - call_page_generator:
-        try:
-          call: http.post
-          args:
-            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + page_generator_name}
-            auth: { type: OIDC }
-            timeout: 1800
-          result: page_result
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + page_generator_name}
+          auth: { type: OIDC }
+          timeout: 1800
+        result: page_result
 
     # Step 4: Generate the final dashboard JSON (depends on data_cruncher and recommendations)
     - call_dashboard_generator:
-        try:
-          call: http.post
-          args:
-            url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + dashboard_generator_name}
-            auth: { type: OIDC }
-            timeout: 1800
-          result: dashboard_result
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 5
-          backoff:
-            initial_delay: 2
-            max_delay: 60
-            multiplier: 2
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + dashboard_generator_name}
+          auth: { type: OIDC }
+          timeout: 1800
+        result: dashboard_result
 
     - trigger_options_workflow:
         call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.create

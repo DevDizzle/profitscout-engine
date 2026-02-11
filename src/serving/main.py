@@ -3,6 +3,7 @@ import logging
 
 import functions_framework
 
+from .core.logger import setup_logging
 from .core.pipelines import (
     dashboard_generator,
     data_bundler,
@@ -22,9 +23,7 @@ from .core.pipelines import (
     winners_dashboard_generator,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+setup_logging()
 
 
 @functions_framework.http
