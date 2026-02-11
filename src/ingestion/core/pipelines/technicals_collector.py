@@ -394,7 +394,19 @@ def run_pipeline(storage_client: storage.Client, bq_client: bigquery.Client):
                 logging.warning("No price data for this chunk. Skipping.")
                 continue
 
-            grouped_by_ticker = dict(price_data_chunk.groupby("ticker"))
+            # DEBUG / SAFETY: Check if price_data_chunk is valid
+            if not isinstance(price_data_chunk, pd.DataFrame):
+                logging.error(f"CRITICAL: price_data_chunk is not a DataFrame. Type: {type(price_data_chunk)}")
+                continue
+
+            try:
+                # Explicitly use pd.DataFrame.groupby to avoid attribute shadowing (e.g. if a column is named 'groupby')
+                grouped = pd.DataFrame.groupby(price_data_chunk, "ticker")
+                grouped_by_ticker = {k: v for k, v in grouped}
+            except Exception as e:
+                logging.error(f"Groupby failed for chunk. Error: {e}. Columns: {price_data_chunk.columns}")
+                continue
+
             futures = {
                 executor.submit(_calculate_technicals_for_ticker, t, df.copy()): t
                 for t, df in grouped_by_ticker.items()

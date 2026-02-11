@@ -19,6 +19,7 @@ from flask import Request
 from google.cloud import bigquery, firestore, pubsub_v1, storage
 
 from .core import config
+from .core.logger import setup_logging
 from .core.clients.fmp_client import FMPClient
 from .core.clients.polygon_client import PolygonClient
 from .core.clients.sec_api_client import SecApiClient
@@ -39,9 +40,7 @@ from .core.pipelines import (
 )
 
 # --- Global Initialization ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+setup_logging()
 
 
 def _get_secret_or_env(name: str) -> str | None:
