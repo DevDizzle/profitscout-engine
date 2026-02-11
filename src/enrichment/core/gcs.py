@@ -5,7 +5,10 @@ Shared helper functions for reading and writing blobs in GCS for all Enrichment 
 
 import logging
 
+import requests
+from google.auth.transport.requests import AuthorizedSession
 from google.cloud import storage
+from requests.adapters import HTTPAdapter
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -15,8 +18,15 @@ from tenacity import (
 
 
 def _client() -> storage.Client:
-    """Initializes and returns a GCS client."""
-    return storage.Client()
+    """Initializes and returns a GCS client with an expanded connection pool."""
+    # Create a custom session with a larger pool size
+    # Default is 10, we want to support up to MAX_WORKERS (25)
+    adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    return storage.Client(_http=session)
 
 
 def blob_exists(

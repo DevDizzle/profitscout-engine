@@ -153,6 +153,41 @@ class PolygonClient:
 
     # -------------------------- public API: Options --------------------------
 
+    def fetch_stock_snapshot(self, ticker: str) -> dict | None:
+        """
+        Get the full v2 snapshot object for a single ticker.
+        /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+        """
+        url = f"{self.BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}"
+        try:
+            return self._get(url)
+        except Exception as e:
+            logging.error("Stocks snapshot failed for %s: %s", ticker, e)
+            return None
+
+    def fetch_option_contract_snapshot(
+        self, underlying_asset: str, contract_symbol: str
+    ) -> dict | None:
+        """
+        Get the snapshot for a SINGLE option contract.
+        /v3/snapshot/options/{underlyingAsset}/{optionContract}
+        """
+        url = f"{self.BASE}/v3/snapshot/options/{underlying_asset}/{contract_symbol}"
+        try:
+            res = self._get(url)
+            # The structure for a single snapshot usually wraps the result in "results" (dict or list)
+            # or returns it directly.
+            # Polygon docs say: response object has "results": { ... details ... }
+            r = res.get("results")
+            if r:
+                return self._map_options_result(r)
+            return None
+        except Exception as e:
+            logging.error(
+                "Option contract snapshot failed for %s: %s", contract_symbol, e
+            )
+            return None
+
     def fetch_underlying_price(self, ticker: str) -> float | None:
         """
         Get the current price of the underlying stock.

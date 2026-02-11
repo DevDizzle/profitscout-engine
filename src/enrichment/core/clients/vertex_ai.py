@@ -8,7 +8,6 @@ from google.genai import types
 
 from .. import config
 
-logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger(__name__)
 
 

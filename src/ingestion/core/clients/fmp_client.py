@@ -39,7 +39,9 @@ class FMPClient:
         if not api_key:
             raise ValueError("FMP API key is required.")
         self.api_key = api_key
-        self.rate_limiter = RateLimiter(max_calls=45, period=1.0)
+        # Reduced from 45/sec to 10/sec to allow for concurrent Cloud Function instances
+        # without exceeding the global 3000/min quota.
+        self.rate_limiter = RateLimiter(max_calls=10, period=1.0)
 
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10), reraise=True
@@ -154,7 +156,45 @@ class FMPClient:
         return data[0] if isinstance(data, list) and data else None
 
     def get_latest_transcript(self, ticker: str) -> dict | None:
-        """Fetches the most recent earnings call transcript (limit 1)."""
+        """
+        Fetches the most recent earnings call transcript.
+        Uses v4 API to find the latest date/quarter, then v3 to fetch content.
+        This is more reliable than v3 'limit=1' for recent calls.
+        """
+        # 1. Get metadata list from v4 (Metadata only)
+        self.rate_limiter.acquire()
+        v4_url = f"https://financialmodelingprep.com/api/v4/earning_call_transcript?symbol={ticker}&apikey={self.api_key}"
+        try:
+            resp = requests.get(v4_url, timeout=10)
+            resp.raise_for_status()
+            meta_list = resp.json()
+        except Exception as e:
+            logging.error(f"Failed to fetch v4 transcript list for {ticker}: {e}")
+            # Fallback to simple v3 query
+            return self._get_latest_transcript_v3_fallback(ticker)
+
+        if not meta_list:
+            return None
+
+        # v4 returns a list of lists: [quarter, year, date_str, ...]
+        # Sort by date (index 2) descending
+        try:
+            meta_list.sort(key=lambda x: x[2], reverse=True)
+            latest = meta_list[0]
+            quarter = latest[0]
+            year = latest[1]
+            
+            # 2. Fetch content from v3 using specific Q/Y
+            params = {"quarter": quarter, "year": year}
+            data = self._make_request(f"earning_call_transcript/{ticker}", params=params)
+            return data[0] if isinstance(data, list) and data else None
+            
+        except Exception as e:
+            logging.error(f"Error parsing v4 transcript metadata for {ticker}: {e}")
+            return self._get_latest_transcript_v3_fallback(ticker)
+
+    def _get_latest_transcript_v3_fallback(self, ticker: str) -> dict | None:
+        """Fallback to the simple v3 endpoint if v4 fails."""
         params = {"limit": 1}
         data = self._make_request(f"earning_call_transcript/{ticker}", params=params)
         return data[0] if isinstance(data, list) and data else None
