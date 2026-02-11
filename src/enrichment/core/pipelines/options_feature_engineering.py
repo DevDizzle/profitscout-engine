@@ -212,11 +212,27 @@ def run_pipeline():
 
     all_chains_df, all_prices_df = _fetch_all_data(tickers, bq_client)
 
-    chains_by_ticker = dict(all_chains_df.groupby("ticker"))
-    prices_by_ticker = {
-        ticker: group.sort_values("date")
-        for ticker, group in all_prices_df.groupby("ticker")
-    }
+    # --- FIX: Handle empty DataFrames and missing columns safely ---
+    chains_by_ticker = {}
+    if not all_chains_df.empty and "ticker" in all_chains_df.columns:
+        chains_by_ticker = {
+            ticker: group for ticker, group in all_chains_df.groupby("ticker")
+        }
+    elif all_chains_df.empty:
+        logging.warning("Options Chain DataFrame is empty.")
+    else:
+        logging.error(f"Chain DF missing 'ticker' column. Columns: {all_chains_df.columns}")
+
+    prices_by_ticker = {}
+    if not all_prices_df.empty and "ticker" in all_prices_df.columns:
+        prices_by_ticker = {
+            ticker: group.sort_values("date")
+            for ticker, group in all_prices_df.groupby("ticker")
+        }
+    elif all_prices_df.empty:
+        logging.warning("Price History DataFrame is empty.")
+    else:
+        logging.error(f"Price DF missing 'ticker' column. Columns: {all_prices_df.columns}")
 
     results = []
     with ThreadPoolExecutor(max_workers=16) as executor:

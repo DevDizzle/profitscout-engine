@@ -9,6 +9,9 @@ PROJECT_ID = os.getenv("PROJECT_ID", "profitscout-lx6bb")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "profit-scout-data")
 
+# --- External APIs ---
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
+
 # --- BigQuery ---
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET", "profit_scout")
 STOCK_METADATA_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.stock_metadata"
@@ -31,9 +34,9 @@ CAND_TABLE = OPTIONS_CANDIDATES_TABLE_ID
 # Rationale: When significant news hits, it overrides technical structure.
 SCORE_WEIGHTS_EVENT = {
     "news_score": 0.55,  # Dominant factor
-    "technicals_score": 0.30,  # Secondary context
-    "mda_score": 0.025,
-    "transcript_score": 0.025,
+    "technicals_score": 0.25,  # Secondary context
+    "mda_score": 0.00,
+    "transcript_score": 0.10,
     "financials_score": 0.05,
     "fundamentals_score": 0.05,
 }
@@ -44,10 +47,10 @@ SCORE_WEIGHTS_EVENT = {
 SCORE_WEIGHTS_QUIET = {
     "news_score": 0.25,  # Low impact (noise)
     "technicals_score": 0.55,  # Dominant factor
-    "mda_score": 0.025,
-    "transcript_score": 0.025,
-    "financials_score": 0.075,
-    "fundamentals_score": 0.075,
+    "mda_score": 0.00,
+    "transcript_score": 0.10,
+    "financials_score": 0.05,
+    "fundamentals_score": 0.05,
 }
 
 # Helper to ensure we track all columns (keys are identical in both dicts)
@@ -102,7 +105,7 @@ ANALYSIS_PREFIXES = {
 }
 
 # --- Job Parameters ---
-MAX_WORKERS = 10
+MAX_WORKERS = 25
 HEADLINE_LIMIT = 25
 WORKER_TIMEOUT = 300
 

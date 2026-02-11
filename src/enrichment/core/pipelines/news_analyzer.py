@@ -22,10 +22,10 @@ OUTPUT_PREFIX = config.PREFIXES["news_analyzer"]["output"]
 class RateLimiter:
     """
     Thread-safe rate limiter to ensure we don't exceed Vertex AI quotas.
-    Target: 50 RPM (1 request every ~1.2 seconds).
+    Target: 80 RPM (1 request every ~0.75 seconds).
     """
 
-    def __init__(self, interval=1.2):
+    def __init__(self, interval=0.75):
         self.interval = interval
         self.last_call = 0
         self.lock = threading.Lock()
@@ -41,7 +41,7 @@ class RateLimiter:
 
 
 # Initialize global limiter
-_limiter = RateLimiter(interval=1.2)
+_limiter = RateLimiter(interval=0.75)
 
 # Keeps your existing output format
 _EXAMPLE_OUTPUT = """{
@@ -202,7 +202,7 @@ def run_pipeline():
     # 2. List Inputs (Materialize List to Fail Fast)
     logging.info("Listing inputs...")
     try:
-        all_inputs = list(
+        all_blobs = list(
             gcs.list_blobs(
                 config.GCS_BUCKET_NAME, prefix=INPUT_PREFIX, client=storage_client
             )
@@ -211,13 +211,31 @@ def run_pipeline():
         logging.error(f"Failed to list blobs: {e}")
         return
 
+    # --- OPTIMIZATION: Date Filter ---
+    # Only process files from the last 3 days to avoid reprocessing history
+    today = datetime.date.today()
+    cutoff_date = today - datetime.timedelta(days=3)
+    all_inputs = []
+    
+    for blob_name in all_blobs:
+        ticker, date_str = parse_filename(blob_name)
+        if not ticker or not date_str:
+            continue
+            
+        try:
+            file_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            if file_date >= cutoff_date:
+                all_inputs.append(blob_name)
+        except ValueError:
+            continue
+
     if not all_inputs:
-        logging.info("No input news files found.")
+        logging.info("No recent news files found (last 3 days).")
         return
 
     total_files = len(all_inputs)
     logging.info(
-        f"Processing {total_files} news files with {config.MAX_WORKERS} workers..."
+        f"Processing {total_files} recent news files with {config.MAX_WORKERS} workers..."
     )
 
     # 3. Process with ThreadPool (Manual management to skip "wait=True")

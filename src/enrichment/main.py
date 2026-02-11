@@ -15,12 +15,14 @@ import logging
 import functions_framework
 from flask import Request
 
+from .core.logger import setup_logging
 from .core.pipelines import (
     business_summarizer,
     financials_analyzer,
     fundamentals_analyzer,
     macro_thesis,
     mda_analyzer,
+    momentum_scanner,
     news_analyzer,
     options_analyzer,
     options_candidate_selector,
@@ -31,9 +33,7 @@ from .core.pipelines import (
 )
 
 # --- Global Initialization ---
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+setup_logging()
 
 
 # --- Cloud Function Entry Points ---
@@ -214,3 +214,18 @@ def run_thesis_generator(request: Request):
     """
     macro_thesis.run_pipeline()
     return "Macro thesis generator pipeline finished.", 200
+
+
+@functions_framework.http
+def run_momentum_scanner(request: Request):
+    """
+    HTTP-triggered function to run the momentum scanner pipeline.
+
+    Args:
+        request: The Flask request object (not used).
+
+    Returns:
+        A tuple containing a success message and HTTP status code 200.
+    """
+    momentum_scanner.run_pipeline()
+    return "Momentum scanner pipeline finished.", 200
