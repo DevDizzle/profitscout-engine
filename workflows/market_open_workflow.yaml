@@ -1,0 +1,131 @@
+main:
+  steps:
+    - init:
+        assign:
+          - project_id: "profitscout-lx6bb"
+          - region: "us-central1"
+          # Function Names
+          - fetch_news_name: "fetch-news"
+          - news_analyzer_name: "news-analyzer"
+          - score_aggregator_name: "score-aggregator"
+          - options_fetcher_name: "options-fetcher"
+          - options_selector_name: "options-selector"
+          - options_feature_engineering_name: "options-feature-engineering"
+          - options_analyzer_name: "options-analyzer"
+          - recommendations_generator_name: "recommendations-generator"
+          - winners_dashboard_generator_name: "run-winners-dashboard-generator"
+          - data_bundler_name: "data-bundler"
+          # Sync Functions
+          - sync_options_name: "run-sync-options-to-firestore"
+          - sync_winners_name: "run-sync-winners-to-firestore"
+          - sync_options_candidates_name: "run-sync-options-candidates-to-firestore"
+
+    # --- Phase 1: News & Scoring ---
+    - call_fetch_news:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + fetch_news_name}
+          auth: { type: OIDC }
+          timeout: 1800
+
+    - call_news_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + news_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 1800
+
+    - call_score_aggregator:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + score_aggregator_name}
+          auth: { type: OIDC }
+          timeout: 1800
+
+    # --- Phase 2: Options Analysis ---
+    - call_options_fetcher:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_fetcher_name}
+          auth: { type: OIDC }
+          timeout: 1800
+
+    - call_options_selector:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_selector_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_options_feature_engineering:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_feature_engineering_name}
+          auth: { type: OIDC }
+          timeout: 1800
+
+    - call_options_analyzer:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + options_analyzer_name}
+          auth: { type: OIDC }
+          timeout: 1800
+
+    # --- Phase 3: Serving & Recommendations ---
+    - call_recommendations_generator:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + recommendations_generator_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_winners_dashboard_generator:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + winners_dashboard_generator_name}
+          auth: { type: OIDC }
+          timeout: 900
+
+    - call_data_bundler:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + data_bundler_name}
+          auth: { type: OIDC }
+          timeout: 1200
+
+    # --- Phase 4: Final Sync ---
+    - final_sync:
+        parallel:
+          branches:
+            - sync_options:
+                steps:
+                  - call_sync_options:
+                      call: http.post
+                      args:
+                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_options_name}
+                        auth: { type: OIDC }
+                        timeout: 900
+            - sync_winners:
+                steps:
+                  - call_sync_winners:
+                      call: http.post
+                      args:
+                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_winners_name}
+                        auth: { type: OIDC }
+                        timeout: 900
+            - sync_candidates:
+                steps:
+                  - call_sync_candidates:
+                      call: http.post
+                      args:
+                        url: ${"https://" + region + "-" + project_id + ".cloudfunctions.net/" + sync_options_candidates_name}
+                        auth: { type: OIDC }
+                        timeout: 900
+
+    - log_finish:
+        call: sys.log
+        args:
+          text: "Market Open Workflow finished successfully."
+
+    - done:
+        return: "Workflow finished successfully."
