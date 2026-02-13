@@ -340,3 +340,16 @@ def fetch_options_chain(request: Request):
     except ValueError as e:
         logging.error(f"Failed to initialize PolygonClient: {e}")
         return "Server config error: failed to initialize PolygonClient.", 500
+
+
+@functions_framework.http
+def run_history_archiver(request: Request):
+    """
+    HTTP-triggered function to run the history archiver pipeline.
+    """
+    if not bq_client:
+        logging.error("History archiver clients not initialized.")
+        return "Server config error: history archiver clients not initialized.", 500
+
+    history_archiver.run_pipeline(bq_client=bq_client)
+    return "History archiver pipeline started.", 202

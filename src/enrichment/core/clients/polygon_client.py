@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import date
 import requests
 from requests.adapters import HTTPAdapter
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -140,3 +141,80 @@ class PolygonClient:
                 "Option contract snapshot failed for %s: %s", contract_symbol, e
             )
             return None
+
+    def fetch_all_tickers_snapshot(self) -> list[dict]:
+        """
+        Get snapshot for ALL stock tickers in one call.
+        /v2/snapshot/locale/us/markets/stocks/tickers
+        """
+        url = f"{self.BASE}/v2/snapshot/locale/us/markets/stocks/tickers"
+        try:
+            res = self._get(url)
+            return res.get("tickers") or []
+        except Exception as e:
+            logging.error("All-tickers snapshot failed: %s", e)
+            return []
+
+    def fetch_underlying_price(self, ticker: str) -> float | None:
+        """
+        Fetch current/latest price for a ticker (for backfilling options data).
+        """
+        try:
+            snap = self.fetch_stock_snapshot(ticker)
+            if not snap:
+                return None
+            t = snap.get("ticker") or {}
+            # 1. lastTrade.p
+            lt = t.get("lastTrade") or {}
+            p = lt.get("p")
+            if p is not None: return float(p)
+            # 2. day.c
+            day = t.get("day") or {}
+            c = day.get("c")
+            if c is not None: return float(c)
+            # 3. prevDay.c
+            pd = t.get("prevDay") or {}
+            pc = pd.get("c")
+            if pc is not None: return float(pc)
+            
+            return self._extract_underlying_price(t)
+        except Exception:
+            return None
+
+    def fetch_options_chain(self, ticker: str, max_days: int = 90) -> list[dict]:
+        """
+        Snapshot all active option contracts for an underlying (paged).
+        """
+        from datetime import timedelta
+
+        url = f"{self.BASE}/v3/snapshot/options/{ticker}"
+        params = {"limit": 250}
+        out: list[dict] = []
+        today = date.today()
+        max_exp = today + timedelta(days=max_days)
+
+        while True:
+            j = self._get(url, params=params)
+            for r in j.get("results") or []:
+                exp = (r.get("details") or {}).get("expiration_date")
+                try:
+                    if exp and not (today <= date.fromisoformat(exp) <= max_exp):
+                        continue
+                except Exception:
+                    continue
+                out.append(self._map_options_result(r))
+
+            next_url = j.get("next_url")
+            if not next_url:
+                break
+            url, params = next_url, {}
+
+        # Backfill underlying price if missing
+        if out and any(o.get("underlying_price") is None for o in out):
+            upx = self.fetch_underlying_price(ticker)
+            if isinstance(upx, (int, float)):
+                for o in out:
+                    if o.get("underlying_price") is None:
+                        o["underlying_price"] = float(upx)
+
+        return out

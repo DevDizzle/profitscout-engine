@@ -27,6 +27,10 @@ PRICE_TABLE_ID = f"{PROJECT_ID}.{BIGQUERY_DATASET}.price_data"
 CHAIN_TABLE = OPTIONS_CHAIN_TABLE_ID
 CAND_TABLE = OPTIONS_CANDIDATES_TABLE_ID
 
+# Overnight Scanner
+OVERNIGHT_SIGNALS_TABLE = f"{PROJECT_ID}.{BIGQUERY_DATASET}.overnight_signals"
+OVERNIGHT_UNIVERSE_FILE = os.getenv("UNIVERSE_FILE", "overnight-universe.txt")
+
 # --- Score Aggregator: Regime-Aware Weighting ---
 
 # 1. EVENT REGIME: Catalyst Driven

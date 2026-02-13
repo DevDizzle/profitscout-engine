@@ -1,3 +1,3 @@
 # src/enrichment/core/__init__.py
 
-from . import pipelines
+# from . import pipelines
