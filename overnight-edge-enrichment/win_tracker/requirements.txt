@@ -1,0 +1,5 @@
+functions-framework==3.*
+google-cloud-bigquery==3.*
+google-cloud-firestore==2.*
+tweepy==4.*
+requests==2.*
