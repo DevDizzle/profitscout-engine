@@ -133,7 +133,7 @@ def _uoa_depth(contracts: list[dict]) -> float:
 
 
 def _best_contract(contracts: list[dict], direction: str, underlying_price: float) -> dict | None:
-    """Find the single best contract to trade."""
+    """Find the single best contract to trade with full Greeks."""
     candidates = []
     today = date.today()
 
@@ -148,7 +148,7 @@ def _best_contract(contracts: list[dict], direction: str, underlying_price: floa
             continue
 
         dte = (exp_date - today).days
-        if not (14 <= dte <= 45):
+        if not (7 <= dte <= 90):
             continue
 
         vol = c.get("volume") or 0
@@ -161,29 +161,36 @@ def _best_contract(contracts: list[dict], direction: str, underlying_price: floa
             continue
 
         spread_pct = (ask - bid) / mid
-        if spread_pct > 0.20:
+        if spread_pct > 0.40:
             continue
-        if vol < 100:
+        if vol < 10:
             continue
 
         oi = c.get("open_interest") or 0
 
-        # Moneyness filter
+        # Moneyness filter — widened for OTM institutional flow
         if underlying_price and underlying_price > 0:
             if direction == "call":
                 mny = strike / underlying_price
-                if not (0.95 <= mny <= 1.10):
+                if not (0.90 <= mny <= 1.25):
                     continue
             else:
                 mny = underlying_price / strike
-                if not (0.95 <= mny <= 1.10):
+                if not (0.90 <= mny <= 1.25):
                     continue
 
+        delta = abs(c.get("delta") or 0)
+        gamma = c.get("gamma") or 0
+        theta = c.get("theta") or 0
+        iv = c.get("implied_volatility") or 0
+
         score = (
-            min(vol / 1000, 5.0) * 2.0
-            + (1.0 - spread_pct) * 3.0
+            min(vol / 500, 5.0) * 2.0
+            + (1.0 - min(spread_pct, 1.0)) * 3.0
             + min(vol / max(oi, 1), 3.0) * 1.5
-            + (c.get("gamma") or 0) * 20.0
+            + gamma * 20.0
+            + (2.0 if 0.25 <= delta <= 0.50 else 0)  # Sweet spot delta bonus
+            - (abs(theta) / max(mid, 0.01)) * 1.0     # Theta drag penalty
         )
         candidates.append({
             "contract_symbol": c.get("contract_symbol"),
@@ -194,9 +201,11 @@ def _best_contract(contracts: list[dict], direction: str, underlying_price: floa
             "spread_pct": round(spread_pct, 4),
             "volume": vol,
             "open_interest": oi,
-            "implied_volatility": c.get("implied_volatility"),
-            "gamma": c.get("gamma"),
-            "delta": c.get("delta"),
+            "implied_volatility": round(iv, 4) if iv else None,
+            "gamma": round(gamma, 6) if gamma else None,
+            "delta": round(c.get("delta") or 0, 4),
+            "theta": round(theta, 4) if theta else None,
+            "vega": round(c.get("vega") or 0, 4) if c.get("vega") else None,
             "contract_score": round(score, 3),
         })
 
@@ -381,6 +390,13 @@ def _score_ticker(data: dict) -> dict:
         "recommended_mid_price": best.get("mid_price") if best else None,
         "recommended_spread_pct": best.get("spread_pct") if best else None,
         "contract_score": best.get("contract_score") if best else None,
+        "recommended_delta": best.get("delta") if best else None,
+        "recommended_gamma": best.get("gamma") if best else None,
+        "recommended_theta": best.get("theta") if best else None,
+        "recommended_vega": best.get("vega") if best else None,
+        "recommended_iv": best.get("implied_volatility") if best else None,
+        "recommended_volume": best.get("volume") if best else None,
+        "recommended_oi": best.get("open_interest") if best else None,
     }
 
 
@@ -417,6 +433,13 @@ def _ensure_table(bq: bigquery.Client):
         bigquery.SchemaField("recommended_mid_price", "FLOAT"),
         bigquery.SchemaField("recommended_spread_pct", "FLOAT"),
         bigquery.SchemaField("contract_score", "FLOAT"),
+        bigquery.SchemaField("recommended_delta", "FLOAT"),
+        bigquery.SchemaField("recommended_gamma", "FLOAT"),
+        bigquery.SchemaField("recommended_theta", "FLOAT"),
+        bigquery.SchemaField("recommended_vega", "FLOAT"),
+        bigquery.SchemaField("recommended_iv", "FLOAT"),
+        bigquery.SchemaField("recommended_volume", "INTEGER"),
+        bigquery.SchemaField("recommended_oi", "INTEGER"),
         bigquery.SchemaField("inserted_at", "TIMESTAMP"),
     ]
     table = bigquery.Table(table_id, schema=schema)
@@ -476,6 +499,13 @@ def _write_results(bq: bigquery.Client, scored: list[dict]):
             "recommended_mid_price": s.get("recommended_mid_price"),
             "recommended_spread_pct": s.get("recommended_spread_pct"),
             "contract_score": s.get("contract_score"),
+            "recommended_delta": s.get("recommended_delta"),
+            "recommended_gamma": s.get("recommended_gamma"),
+            "recommended_theta": s.get("recommended_theta"),
+            "recommended_vega": s.get("recommended_vega"),
+            "recommended_iv": s.get("recommended_iv"),
+            "recommended_volume": s.get("recommended_volume"),
+            "recommended_oi": s.get("recommended_oi"),
             "inserted_at": now.isoformat(),
         })
 

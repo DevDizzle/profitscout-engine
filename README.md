@@ -1,143 +1,119 @@
-# GammaRips — Serverless Financial Data Platform
+# GammaRips Engine
 
-GammaRips is an end-to-end AI platform for financial analysis, turning raw market data into actionable investment signals for the Russell 1000. It ingests public filings and prices, enriches them with AI, and serves ranked scores and pages for downstream apps.
+Backend infrastructure for **The Overnight Edge** — an AI-powered overnight institutional options flow intelligence platform.
 
-## Key Features
-
-- **Broad Ingestion**: Cloud Functions pull SEC filings, fundamentals, prices, and technical indicators into Google Cloud Storage and BigQuery.
-- **AI Enrichment**: Vertex AI summarizers and analyzers transform raw data into structured insights.
-- **Automated Serving**: Score aggregation, recommendation generation, and site content are produced and synced to Firestore.
-- **Options Analysis**: Ingests options chain data, enriches it with feature engineering, and generates daily buy/sell recommendations.
-- **Workflow-First**: Cloud Workflows coordinate each stage and run on a Cloud Scheduler trigger for fully serverless operation.
-
-## How It Works
-
-On a schedule, a workflow fan-outs to ingestion jobs that collect raw data from external APIs and persist to Cloud Storage and BigQuery. A second workflow calls summarization and analysis functions that read that data, invoke Vertex AI, and write enriched artifacts. A final workflow aggregates scores, builds recommendation pages, and pushes data to Firestore for consumption. A parallel set of workflows handles the options data pipeline.
-
-```mermaid
-flowchart LR
-  subgraph Core Pipeline
-    Scheduler((Cloud Scheduler)) --> IngestWF[Workflow: src/ingestion/workflow.yaml]
-    IngestWF --> IngestFns{{Ingestion Functions}}
-    IngestFns --> GCS[(GCS: profit-scout-data)]
-    IngestFns --> BQ[(BigQuery: profit_scout)]
-    GCS --> EnrichWF[Workflow: src/enrichment/workflow.yaml]
-    EnrichWF --> EnrichFns{{Summarizers & Analyzers}}
-    EnrichFns --> GCS
-    EnrichFns --> BQ
-    BQ --> ServeWF[Workflow: src/serving/workflow.yaml]
-    ServeWF --> ServeFns{{Scoring & Pages}}
-    ServeFns --> Firestore[(Firestore: tickers)]
-    ServeFns --> DestGCS[(GCS: profit-scout)]
-  end
-
-  subgraph Options Pipeline
-    Scheduler --> OptionsIngestWF[Workflow: src/options/ingestion/workflow.yaml]
-    OptionsIngestWF --> OptionsIngestFns{{Options Ingestion}}
-    OptionsIngestFns --> BQ
-    BQ --> OptionsEnrichWF[Workflow: src/options/enrichment/workflow.yaml]
-    OptionsEnrichWF --> OptionsEnrichFns{{Options Enrichment}}
-    OptionsEnrichFns --> BQ
-    BQ --> OptionsServeWF[Workflow: src/options/serving/workflow.yaml]
-    OptionsServeWF --> OptionsServeFns{{Options Serving}}
-    OptionsServeFns --> Firestore
-  end
-```
-
-## Repository Structure
-
-The repository is organized into a `src` directory containing all application code and a `tests` directory for unit tests.
+## Architecture
 
 ```
-.
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── src/
-│   ├── ingestion/
-│   ├── enrichment/
-│   ├── serving/
-│   ├── options/
-│   └── utils/
-├── tests/
-│   ├── ingestion/
-│   └── enrichment/
-├── .gitignore
-└── README.md
+4:00 AM UTC    overnight-scanner     Scans full US options market for unusual institutional flow
+     │
+4:30 AM UTC    enrichment-trigger    Enriches top signals with news, technicals, AI thesis
+     │
+5:00 AM UTC    agent-arena           5 AI agents debate and produce 1 consensus trade
+     │
+9:30 PM UTC    win-tracker           Tracks signal performance over 3 trading days
 ```
 
-- **`src/ingestion/`**: Cloud Functions and pipelines for collecting raw data.
-- **`src/enrichment/`**: AI-powered summarizers and analyzers.
-- **`src/serving/`**: Aggregates scores and publishes recommendations.
-- **`src/options/`**: Code for the options-related features.
-- **`src/utils/`**: Helper scripts for deployment and data management.
-- **`tests/`**: Unit tests for all application code.
+## Services (Cloud Run)
 
-## Quickstart
+| Service | Directory | Description |
+|---------|-----------|-------------|
+| `overnight-scanner` | `src/` + `server_scanner.py` | Polygon options flow scanner. Scores signals 1-10. |
+| `enrichment-trigger` | `overnight-edge-enrichment/` | Gemini grounded news + Polygon technicals + AI thesis |
+| `agent-arena` | `agent-arena/` | 5-model adversarial debate (Grok, Gemini, Claude, DeepSeek V3, GPT-5.2) |
+| `win-tracker` | `overnight-edge-enrichment/win_tracker/` | 3-trading-day performance tracking + X auto-posting |
 
-### Prerequisites
-- Python 3.12+
-- `gcloud` CLI, authenticated to a Google Cloud project.
-- An environment variable `FMP_API_KEY` set with your Financial Modeling Prep API key.
+## Directory Structure
 
-### Setup
-1.  **Create a virtual environment:**
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate
-    ```
+```
+gammarips-engine/
+├── agent-arena/              # Agent Arena service (FastAPI)
+│   ├── main.py               # 4-round debate orchestration
+│   ├── agents.py             # Multi-provider LLM client (5 providers)
+│   ├── config.py             # Agent roles, prompts, thresholds
+│   ├── Dockerfile
+│   └── deploy.sh
+├── overnight-edge-enrichment/ # Enrichment + Win Tracker service (Flask)
+│   ├── main.py               # 6-step enrichment pipeline
+│   ├── win_tracker/           # Performance tracking sub-service
+│   ├── Dockerfile
+│   ├── deploy.sh
+│   └── PROMPT-*.md           # Webapp change prompts (run via Gemini)
+├── src/                       # Scanner core (used by server_scanner.py)
+│   └── enrichment/core/
+│       ├── config.py          # Polygon API key, project config
+│       ├── clients/
+│       │   └── polygon_client.py  # Options chain, snapshots, prices
+│       └── pipelines/
+│           └── overnight_scanner.py  # Signal scoring engine
+├── server_scanner.py          # Scanner Cloud Run entry point
+├── Dockerfile.scanner         # Scanner container
+├── _archive/                  # Legacy code (ingestion, serving, tests, workflows)
+└── .env                       # API keys (Polygon, X/Twitter)
+```
 
-2.  **Install all dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+## Data Flow
 
-### Running Tests
-To run the full suite of unit tests, use `pytest`:
+**Input:** Polygon.io options market snapshots (full US market)
+**Processing:** Score → Filter (≥6) → Enrich → Debate → Track
+**Output:** BigQuery + Firestore + gammarips.com + WhatsApp War Room
+
+### BigQuery Tables (`profitscout-fida8.profit_scout`)
+
+| Table | Lifecycle | Description |
+|-------|-----------|-------------|
+| `overnight_signals` | Fresh daily (truncate + write) | Raw scanner output |
+| `overnight_signals_enriched` | Fresh daily (truncate + write) | Enriched signals |
+| `agent_arena_consensus` | Fresh daily | Arena consensus pick |
+| `agent_arena_picks` | Fresh daily | Individual agent picks |
+| `agent_arena_rounds` | Fresh daily | Full debate rounds |
+| `signal_performance` | Append-only (historical) | 3-day performance tracking |
+
+### Firestore Collections
+
+| Collection | Description |
+|------------|-------------|
+| `overnight_signals` | Enriched signals for webapp |
+| `overnight_summaries` | Daily scan summaries |
+| `daily_reports` | Markdown reports |
+| `arena_debates` | Arena debate results |
+| `signal_performance` | Performance for webapp |
+
+## External APIs
+
+| API | Used By | Purpose |
+|-----|---------|---------|
+| Polygon.io | Scanner, Enrichment, Win Tracker | Options data, price bars |
+| Google Gemini | Enrichment | Grounded news search + AI thesis |
+| xAI (Grok) | Arena | Momentum agent |
+| Google (Gemini) | Arena | Contrarian agent |
+| Anthropic (Claude) | Arena | Risk manager agent |
+| HuggingFace (DeepSeek V3) | Arena | Catalyst hunter agent |
+| OpenAI (GPT-5.2) | Arena | Technical analyst agent |
+| X/Twitter (Tweepy) | Win Tracker | Auto-post strong wins |
+
+## Deployment
+
+Each service has its own `Dockerfile` and `deploy.sh`. All deploy to GCP Cloud Run in `us-central1`.
+
 ```bash
-pytest
+# Deploy scanner
+gcloud run deploy overnight-scanner --source . --dockerfile Dockerfile.scanner
+
+# Deploy enrichment
+cd overnight-edge-enrichment && ./deploy.sh
+
+# Deploy arena
+cd agent-arena && ./deploy.sh
+
+# Deploy win tracker
+cd overnight-edge-enrichment/win_tracker && ./deploy.sh
 ```
 
-## Configuration
+## Archive
 
-Configuration for each component is managed within its respective `config.py` file.
+Legacy code from the learning-project phase (ingestion pipelines, serving layer, tests, workflows, CI/CD) is preserved in `_archive/` for reference. None of it is used by the active Overnight Edge pipeline.
 
-### Core Configuration
-| Variable                  | Default             | Description                               | Location                            |
-| ------------------------- | ------------------- | ----------------------------------------- | ----------------------------------- |
-| `PROJECT_ID`              | `gammarips-lx6bb` | Source Google Cloud project               | `src/ingestion/core/config.py`      |
-| `GCS_BUCKET_NAME`         | `profit-scout-data` | Raw data bucket                           | `src/ingestion/core/config.py`      |
-| `BIGQUERY_DATASET`        | `profit_scout`      | Dataset for ingestion outputs             | `src/ingestion/core/config.py`      |
-| `FMP_API_KEY_SECRET`      | `FMP_API_KEY`       | Secret name for FMP API key               | `src/ingestion/core/config.py`      |
-| `SEC_API_KEY_SECRET`      | `SEC_API_KEY`       | Secret name for SEC API key               | `src/ingestion/core/config.py`      |
-| `MODEL_NAME`              | `gemini-2.0-flash`  | Vertex model for summaries                | `src/enrichment/core/config.py`     |
-| `DESTINATION_PROJECT_ID`  | `gammarips-fida8` | Target project for serving assets         | `src/serving/core/config.py`        |
-| `DESTINATION_GCS_BUCKET`  | `profit-scout`      | Bucket for public artifacts               | `src/serving/core/config.py`        |
-| `FIRESTORE_COLLECTION`    | `tickers`           | Firestore collection for serving          | `src/serving/core/config.py`        |
+---
 
-### Options Configuration
-| Variable                  | Default             | Description                               | Location                            |
-| ------------------------- | ------------------- | ----------------------------------------- | ----------------------------------- |
-| `POLYGON_API_KEY`         | `None`              | Polygon API key                           | `src/options/ingestion/core/config.py` |
-| `OPTIONS_CHAIN_TABLE`     | `options_chain`     | BigQuery table for options chain data     | `src/options/ingestion/core/config.py` |
-| `SCORES_TABLE`            | `analysis_scores`   | BigQuery table for analysis scores        | `src/options/enrichment/core/config.py`|
-| `CAND_TABLE`              | `options_candidates`| BigQuery table for options candidates     | `src/options/enrichment/core/config.py`|
-| `PRICE_TABLE_ID`          | `price_data`        | BigQuery table for price data             | `src/options/enrichment/core/config.py`|
-| `OPTIONS_MD_PREFIX`       | `options-recommendations/` | GCS prefix for options recommendations | `src/options/serving/core/config.py`   |
-
-## CI/CD
-This repository uses GitHub Actions for continuous integration. The workflow, defined in `.github/workflows/ci.yml`, runs automatically on every push and pull request to:
-1.  Install all dependencies.
-2.  Run the `black` formatter to check for code style.
-3.  Execute the `pytest` suite to ensure code quality and correctness.
-
-## Contributing
-
-1.  Create a feature branch off `main`.
-2.  Make your changes and ensure they are well-documented.
-3.  Format your code with `black .` and run tests with `pytest` before committing.
-4.  Submit a pull request describing the change and referencing any related issues.
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+*GammaRips — The Overnight Edge*

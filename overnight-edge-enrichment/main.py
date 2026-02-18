@@ -12,11 +12,12 @@ import logging
 import os
 from datetime import date, datetime, timezone
 
-import functions_framework
-from flask import Request
+from flask import Flask, Request, jsonify, request
 from google.cloud import bigquery, storage
 from google import genai
 from google.genai import types
+
+app = Flask(__name__)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "").strip()
 
 # Vertex AI / Gemini
 VERTEX_PROJECT = os.getenv("VERTEX_PROJECT", PROJECT_ID)
-VERTEX_LOCATION = "global"
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
 
 # Model Config
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
@@ -66,6 +67,8 @@ def get_signal_tickers(bq_client: bigquery.Client, scan_date: str = None) -> lis
     SELECT ticker, direction, overnight_score, price_change_pct, underlying_price,
            signals, recommended_contract, recommended_strike, recommended_expiration,
            recommended_mid_price, recommended_spread_pct, contract_score,
+           recommended_delta, recommended_gamma, recommended_theta, recommended_vega,
+           recommended_iv, recommended_volume, recommended_oi, recommended_dte,
            call_dollar_volume, put_dollar_volume, call_uoa_depth, put_uoa_depth,
            call_active_strikes, put_active_strikes, call_vol_oi_ratio, put_vol_oi_ratio
     FROM `{SIGNALS_TABLE}`
@@ -82,7 +85,7 @@ def get_signal_tickers(bq_client: bigquery.Client, scan_date: str = None) -> lis
 # STEP 2: Fetch & Analyze news (Gemini Grounded Search)
 # =====================================================================
 
-def fetch_and_analyze_news(ticker: str, direction: str, price_change_pct: float) -> dict | None:
+def fetch_and_analyze_news(ticker: str, direction: str, price_change_pct: float, flow_volume: float = 0) -> dict | None:
     """
     Use Gemini with Google Search grounding to fetch and analyze
     recent news for a ticker in a single call.
@@ -101,9 +104,24 @@ def fetch_and_analyze_news(ticker: str, direction: str, price_change_pct: float)
         # Google Search grounding tool
         search_tool = types.Tool(google_search=types.GoogleSearch())
 
-        prompt = f"""You are a financial analyst. Search for the latest news about {ticker} stock from the past 48 hours.
+        prompt = f"""You are a senior institutional options flow analyst. Search for the latest news about {ticker} stock from the past 48 hours.
 
-The stock moved {price_change_pct:+.1f}% and institutional options flow is {direction}.
+CONTEXT:
+- Stock moved {price_change_pct:+.1f}% recently
+- Institutional options flow direction: {direction}
+- Flow volume: ${flow_volume:,.0f}
+
+CRITICAL ANALYSIS: You must assess whether this options flow is DIRECTIONAL (a new bet on future movement) or HEDGING (protecting existing positions after a move already happened). This distinction is everything.
+
+Key signals of HEDGING flow (not tradeable):
+- Large flow AFTER a big move (>10%) in the same direction
+- Flow is protecting existing equity positions
+- The catalyst is already known/priced in
+
+Key signals of DIRECTIONAL flow (tradeable):
+- Flow appears BEFORE or independent of a catalyst
+- Flow size is disproportionate to the move
+- New information not yet reflected in price
 
 Based on what you find, respond in valid JSON only (no markdown, no code fences):
 {{
@@ -112,7 +130,12 @@ Based on what you find, respond in valid JSON only (no markdown, no code fences)
   "summary": "<2-3 sentence analysis of what is driving this move and whether institutional flow is likely to continue>",
   "key_headline": "<single most important headline you found>",
   "news_found": <boolean, true if you found relevant recent news>,
-  "sources_count": <integer, number of distinct news sources found>
+  "sources_count": <integer, number of distinct news sources found>,
+  "flow_intent": "<DIRECTIONAL|HEDGING|MECHANICAL|MIXED — classify the likely intent of the institutional flow>",
+  "flow_intent_reasoning": "<1 sentence explaining why you classified the flow this way>",
+  "move_overdone": <boolean, true if the price move appears disproportionate to the catalyst>,
+  "reversal_probability": <float 0.0-1.0, probability of a reversal in the next 1-5 trading days based on historical patterns for this type of event>,
+  "thesis": "<2-3 sentence trade thesis synthesizing flow direction, catalyst, and setup. Write as a trader briefing: what's the trade, why now, what's the risk. Example: 'FSLY BULL $25C Mar 21. Agentic AI traffic driving blockbuster earnings beat with 1,986% call volume surge. Entry above $22 support with $28 resistance target. Risk: post-earnings fade if guidance disappoints on follow-through.'"
 }}
 
 If you find no relevant news, set catalyst_type to "No Clear Catalyst", catalyst_score to 0.1, and provide a summary noting the lack of news coverage."""
@@ -125,7 +148,7 @@ If you find no relevant news, set catalyst_type to "No Clear Catalyst", catalyst
             candidate_count=CANDIDATE_COUNT,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             tools=[search_tool],
-            response_mime_type="application/json",
+            # REMOVED: response_mime_type="application/json" (causes issues with grounding)
         )
 
         response = client.models.generate_content(
@@ -137,14 +160,29 @@ If you find no relevant news, set catalyst_type to "No Clear Catalyst", catalyst
         text = response.text.strip()
         logger.info(f"  {ticker}: Grounded search response length={len(text)}")
 
-        # Parse JSON — handle markdown code fences if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            text = text.rsplit("```", 1)[0]
-        text = text.strip()
+        # Parse JSON manually (robust extraction)
+        def _extract_json_object(text: str) -> str:
+            if not text:
+                return ""
+            # Strip code fences
+            import re
+            text = re.sub(r"^\s*```json\s*", "", text, flags=re.MULTILINE)
+            text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
+            text = text.strip()
+            # Find the JSON bracket boundaries
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return text[start : end + 1]
+            return text
+
+        clean_json = _extract_json_object(text)
+        if not clean_json:
+            logger.warning(f"  {ticker}: No JSON object found in response")
+            return None
 
         # Try parsing as JSON
-        result = json.loads(text)
+        result = json.loads(clean_json)
 
         # Handle list response (Gemini sometimes returns a list)
         if isinstance(result, list) and len(result) > 0:
@@ -167,6 +205,14 @@ If you find no relevant news, set catalyst_type to "No Clear Catalyst", catalyst
         result.setdefault("key_headline", f"{ticker} moves {price_change_pct:+.1f}%")
         result.setdefault("news_found", bool(result.get("sources_count", 0) > 0))
         result.setdefault("sources_count", 0)
+        result.setdefault("flow_intent", "MIXED")
+        result.setdefault("flow_intent_reasoning", "Unable to determine flow intent.")
+        result.setdefault("move_overdone", False)
+        result.setdefault("thesis", "")
+        try:
+            result["reversal_probability"] = float(result.get("reversal_probability", 0.3))
+        except (ValueError, TypeError):
+            result["reversal_probability"] = 0.3
 
         return result
 
@@ -198,8 +244,13 @@ def fetch_and_analyze_news_batch(
         ticker = signal["ticker"]
         direction = signal.get("direction", "unknown")
         move_pct = signal.get("price_change_pct", 0.0)
+        # Pass the relevant flow volume for intent analysis
+        if direction == "BULLISH":
+            flow_vol = float(signal.get("call_dollar_volume", 0) or 0)
+        else:
+            flow_vol = float(signal.get("put_dollar_volume", 0) or 0)
 
-        analysis = fetch_and_analyze_news(ticker, direction, move_pct)
+        analysis = fetch_and_analyze_news(ticker, direction, move_pct, flow_vol)
 
         # Store result in GCS for audit trail
         if analysis:
@@ -239,10 +290,10 @@ def fetch_technicals_for_ticker(ticker: str, polygon_key: str) -> dict | None:
     import requests
 
     try:
-        # Get 60 days of daily bars
+        # Get 300 days of daily bars (need 200+ for SMA_200)
         from datetime import timedelta
         end_date = date.today().isoformat()
-        start_date = (date.today() - timedelta(days=90)).isoformat()
+        start_date = (date.today() - timedelta(days=420)).isoformat()
 
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}"
         params = {"adjusted": "true", "sort": "asc", "apiKey": polygon_key}
@@ -292,6 +343,34 @@ def fetch_technicals_for_ticker(ticker: str, polygon_key: str) -> dict | None:
             except:
                 return None
 
+        # --- Support / Resistance from price structure ---
+        close_price = float(latest.get("close", 0) or 0)
+        
+        # 52-week high/low (from available data, up to 90 days)
+        high_52w = safe_float(df["high"].max())
+        low_52w = safe_float(df["low"].min())
+        
+        # Swing high/low detection (last 20 bars for near-term levels)
+        recent = df.tail(20)
+        recent_high = safe_float(recent["high"].max())
+        recent_low = safe_float(recent["low"].min())
+        
+        # Support = strongest floor: max of (recent swing low, SMA 200, Bollinger lower)
+        support_candidates = [v for v in [
+            safe_float(recent_low),
+            safe_float(latest.get("SMA_200")),
+            safe_float(latest.get("BBL_20_2.0")),
+        ] if v is not None and v < close_price]
+        support = max(support_candidates) if support_candidates else safe_float(recent_low)
+        
+        # Resistance = strongest ceiling: min of (recent swing high, SMA 50 if above, Bollinger upper)
+        resistance_candidates = [v for v in [
+            safe_float(recent_high),
+            safe_float(latest.get("SMA_50")),
+            safe_float(latest.get("BBU_20_2.0")),
+        ] if v is not None and v > close_price]
+        resistance = min(resistance_candidates) if resistance_candidates else safe_float(recent_high)
+
         result = {
             "ticker": ticker,
             "date": latest.get("date"),
@@ -312,6 +391,11 @@ def fetch_technicals_for_ticker(ticker: str, polygon_key: str) -> dict | None:
             "above_sma_50": bool(latest.get("close", 0) > latest.get("SMA_50", 0)) if latest.get("SMA_50") else None,
             "above_sma_200": bool(latest.get("close", 0) > latest.get("SMA_200", 0)) if latest.get("SMA_200") else None,
             "golden_cross": bool(latest.get("SMA_50", 0) > latest.get("SMA_200", 0)) if latest.get("SMA_200") else None,
+            # NEW: Key levels
+            "support": support,
+            "resistance": resistance,
+            "high_52w": high_52w,
+            "low_52w": low_52w,
         }
 
         logger.info(f"  {ticker}: technicals computed (RSI={result['rsi_14']}, SMA50={'above' if result['above_sma_50'] else 'below'})")
@@ -354,6 +438,131 @@ def fetch_technicals_batch(tickers: list[str], polygon_key: str, gcs_client: sto
 
 
 # =====================================================================
+# STEP 4: Compute derived risk fields
+# =====================================================================
+
+def compute_risk_fields(sig: dict, tech: dict, news: dict) -> dict:
+    """
+    Compute mean_reversion_risk, atr_normalized_move, flow_intent,
+    and enrichment_quality_score from raw signal + enrichment data.
+    """
+    import math
+
+    pct = float(sig.get("price_change_pct", 0) or 0)
+    direction = sig.get("direction", "")
+    rsi = float(tech.get("rsi_14", 50) or 50)
+    atr = float(tech.get("atr_14", 0) or 0)
+    price = float(sig.get("underlying_price", 0) or 0)
+    catalyst_score = float(news.get("catalyst_score", 0.1) or 0.1)
+    reversal_prob = float(news.get("reversal_probability", 0.3) or 0.3)
+    overnight_score = int(sig.get("overnight_score", 5) or 5)
+
+    # --- ATR-normalized move ---
+    # How many ATRs did the stock move? >2 = extreme, >1.5 = significant
+    atr_pct = (atr / price * 100) if price > 0 and atr > 0 else 3.0  # default 3% daily range
+    atr_normalized_move = abs(pct) / atr_pct if atr_pct > 0 else 0
+    atr_normalized_move = round(atr_normalized_move, 2)
+
+    # --- Mean-reversion risk (0.0-1.0) ---
+    mr_risk = 0.0
+
+    # Price already moved significantly in flow direction?
+    flow_aligned = (direction == "BEARISH" and pct < 0) or (direction == "BULLISH" and pct > 0)
+    if flow_aligned:
+        if abs(pct) > 15:
+            mr_risk += 0.45
+        elif abs(pct) > 10:
+            mr_risk += 0.30
+        elif abs(pct) > 5:
+            mr_risk += 0.10
+
+    # RSI extremes
+    if direction == "BEARISH" and rsi < 30:
+        mr_risk += 0.25  # Oversold + bear flow = capitulation risk
+    elif direction == "BEARISH" and rsi < 35:
+        mr_risk += 0.15
+    elif direction == "BULLISH" and rsi > 70:
+        mr_risk += 0.25  # Overbought + bull flow = euphoria risk
+    elif direction == "BULLISH" and rsi > 65:
+        mr_risk += 0.15
+
+    # ATR-normalized extremes
+    if atr_normalized_move > 2.5:
+        mr_risk += 0.20
+    elif atr_normalized_move > 1.5:
+        mr_risk += 0.10
+
+    # Strong catalyst reduces reversion risk
+    if catalyst_score > 0.8:
+        mr_risk -= 0.10
+    elif catalyst_score > 0.6:
+        mr_risk -= 0.05
+
+    # Gemini's reversal probability factors in
+    mr_risk = mr_risk * 0.6 + reversal_prob * 0.4
+
+    mr_risk = round(max(0.0, min(1.0, mr_risk)), 3)
+
+    # --- Flow intent (from Gemini, with computed fallback) ---
+    flow_intent = news.get("flow_intent", "MIXED")
+    flow_intent_reasoning = news.get("flow_intent_reasoning", "")
+
+    # --- Enrichment quality score (0-10) ---
+    # Composite: overnight_score (40%) + catalyst relevance (20%) + 
+    # inverse mean-reversion risk (20%) + technical alignment (20%)
+    tech_alignment = 0.5  # neutral default
+    if direction == "BULLISH":
+        if rsi > 40 and rsi < 70:
+            tech_alignment = 0.7  # healthy momentum zone
+        elif rsi < 40:
+            tech_alignment = 0.3  # buying into weakness
+    elif direction == "BEARISH":
+        if rsi < 60 and rsi > 30:
+            tech_alignment = 0.7
+        elif rsi > 60:
+            tech_alignment = 0.3
+
+    quality = (
+        (overnight_score / 10) * 0.4 +
+        catalyst_score * 0.2 +
+        (1.0 - mr_risk) * 0.2 +
+        tech_alignment * 0.2
+    ) * 10
+    quality = round(max(0, min(10, quality)), 1)
+
+    return {
+        "mean_reversion_risk": mr_risk,
+        "atr_normalized_move": atr_normalized_move,
+        "flow_intent": flow_intent,
+        "flow_intent_reasoning": flow_intent_reasoning,
+        "move_overdone": news.get("move_overdone", False),
+        "reversal_probability": round(reversal_prob, 3),
+        "enrichment_quality_score": quality,
+    }
+
+
+def _calc_risk_reward(price, direction, support, resistance):
+    """Calculate risk/reward ratio from price and key levels."""
+    try:
+        price = float(price or 0)
+        support = float(support or 0)
+        resistance = float(resistance or 0)
+        if price <= 0 or support <= 0 or resistance <= 0:
+            return None
+        if direction == "BULLISH":
+            reward = resistance - price
+            risk = price - support
+        else:  # BEARISH
+            reward = price - support
+            risk = resistance - price
+        if risk <= 0:
+            return None
+        return round(reward / risk, 2)
+    except (ValueError, TypeError):
+        return None
+
+
+# =====================================================================
 # STEP 5: Write enriched signals to BigQuery
 # =====================================================================
 
@@ -371,8 +580,11 @@ def write_enriched_signals(
         tech = technicals.get(ticker, {}) or {}
         news = news_analysis.get(ticker, {}) or {}
         
+        # Compute derived risk fields
+        risk = compute_risk_fields(sig, tech, news)
+        
         if news:
-            logger.info(f"  {ticker}: merging news data — catalyst_score={news.get('catalyst_score')}")
+            logger.info(f"  {ticker}: catalyst={news.get('catalyst_score')} intent={risk['flow_intent']} mr_risk={risk['mean_reversion_risk']} quality={risk['enrichment_quality_score']}")
 
         row = {
             "scan_date": scan_date,
@@ -394,9 +606,17 @@ def write_enriched_signals(
             "recommended_contract": sig.get("recommended_contract"),
             "recommended_strike": sig.get("recommended_strike"),
             "recommended_expiration": str(sig.get("recommended_expiration")) if sig.get("recommended_expiration") else None,
+            "recommended_dte": sig.get("recommended_dte"),
             "recommended_mid_price": sig.get("recommended_mid_price"),
             "recommended_spread_pct": sig.get("recommended_spread_pct"),
             "contract_score": sig.get("contract_score"),
+            "recommended_delta": sig.get("recommended_delta"),
+            "recommended_gamma": sig.get("recommended_gamma"),
+            "recommended_theta": sig.get("recommended_theta"),
+            "recommended_vega": sig.get("recommended_vega"),
+            "recommended_iv": sig.get("recommended_iv"),
+            "recommended_volume": sig.get("recommended_volume"),
+            "recommended_oi": sig.get("recommended_oi"),
             # Technicals
             "rsi_14": tech.get("rsi_14"),
             "macd": tech.get("macd"),
@@ -413,6 +633,27 @@ def write_enriched_signals(
             "catalyst_type": news.get("catalyst_type"),
             "news_summary": news.get("summary"),
             "key_headline": news.get("key_headline"),
+            # NEW: Flow intent analysis
+            "flow_intent": risk["flow_intent"],
+            "flow_intent_reasoning": risk["flow_intent_reasoning"],
+            # NEW: Risk assessment
+            "mean_reversion_risk": risk["mean_reversion_risk"],
+            "atr_normalized_move": risk["atr_normalized_move"],
+            "move_overdone": risk["move_overdone"],
+            "reversal_probability": risk["reversal_probability"],
+            "enrichment_quality_score": risk["enrichment_quality_score"],
+            # NEW: AI Trade Thesis
+            "thesis": news.get("thesis", ""),
+            # NEW: Key Levels
+            "support": tech.get("support"),
+            "resistance": tech.get("resistance"),
+            "high_52w": tech.get("high_52w"),
+            "low_52w": tech.get("low_52w"),
+            # NEW: Risk/Reward
+            "risk_reward_ratio": _calc_risk_reward(
+                sig.get("underlying_price", 0), sig.get("direction", ""),
+                tech.get("support"), tech.get("resistance")
+            ),
             # Metadata
             "enriched_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -422,8 +663,25 @@ def write_enriched_signals(
         logger.warning("No enriched rows to write")
         return
 
-    # Write to BigQuery
+    # Write to BigQuery — delete existing rows for this scan_date first (dedup)
+    delete_query = f"DELETE FROM `{ENRICHED_SIGNALS_TABLE}` WHERE scan_date = '{scan_date}'"
+    bq_client.query(delete_query).result()
+    logger.info(f"Deleted existing rows for {scan_date} (dedup)")
+
     table_ref = bq_client.dataset(DATASET).table("overnight_signals_enriched")
+
+    # Force numeric fields to proper types before writing
+    for row in rows:
+        for float_field in ["catalyst_score", "ema_21", "rsi_14", "macd", "macd_hist", "sma_50", "sma_200", "atr_14",
+                            "call_vol_oi_ratio", "put_vol_oi_ratio", "recommended_mid_price", "recommended_spread_pct",
+                            "contract_score", "price_change_pct", "underlying_price",
+                            "recommended_delta", "recommended_gamma", "recommended_theta",
+                            "recommended_vega", "recommended_iv", "recommended_strike"]:
+            if row.get(float_field) is not None:
+                try:
+                    row[float_field] = float(row[float_field])
+                except (ValueError, TypeError):
+                    row[float_field] = None
 
     job_config = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
@@ -477,12 +735,21 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
             "put_uoa_depth": sig.get("put_uoa_depth"),
             "call_active_strikes": sig.get("call_active_strikes"),
             "put_active_strikes": sig.get("put_active_strikes"),
-            # Contract
+            # Contract + Greeks
             "recommended_contract": sig.get("recommended_contract"),
             "recommended_strike": sig.get("recommended_strike"),
             "recommended_expiration": str(sig.get("recommended_expiration")) if sig.get("recommended_expiration") else None,
+            "recommended_dte": sig.get("recommended_dte"),
             "recommended_mid_price": sig.get("recommended_mid_price"),
+            "recommended_spread_pct": sig.get("recommended_spread_pct"),
             "contract_score": sig.get("contract_score"),
+            "recommended_delta": sig.get("recommended_delta"),
+            "recommended_gamma": sig.get("recommended_gamma"),
+            "recommended_theta": sig.get("recommended_theta"),
+            "recommended_vega": sig.get("recommended_vega"),
+            "recommended_iv": sig.get("recommended_iv"),
+            "recommended_volume": sig.get("recommended_volume"),
+            "recommended_oi": sig.get("recommended_oi"),
             # Technicals
             "rsi_14": tech.get("rsi_14"),
             "macd_hist": tech.get("macd_hist"),
@@ -498,6 +765,25 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
             "news_summary": news.get("summary"),
             "key_headline": news.get("key_headline"),
             "news_found": news.get("news_found", False),
+            # Flow intent & risk
+            "flow_intent": news.get("flow_intent", "MIXED"),
+            "flow_intent_reasoning": news.get("flow_intent_reasoning", ""),
+            "mean_reversion_risk": compute_risk_fields(sig, tech, news).get("mean_reversion_risk", 0),
+            "atr_normalized_move": compute_risk_fields(sig, tech, news).get("atr_normalized_move", 0),
+            "reversal_probability": news.get("reversal_probability", 0.3),
+            "enrichment_quality_score": compute_risk_fields(sig, tech, news).get("enrichment_quality_score", 5),
+            # NEW: AI Trade Thesis
+            "thesis": news.get("thesis", ""),
+            # NEW: Key Levels
+            "support": tech.get("support"),
+            "resistance": tech.get("resistance"),
+            "high_52w": tech.get("high_52w"),
+            "low_52w": tech.get("low_52w"),
+            # NEW: Risk/Reward
+            "risk_reward_ratio": _calc_risk_reward(
+                sig.get("underlying_price", 0), sig.get("direction", ""),
+                tech.get("support"), tech.get("resistance")
+            ),
             # Meta
             "enriched_at": datetime.now(timezone.utc),
             "updated_at": firestore.SERVER_TIMESTAMP,
@@ -522,6 +808,7 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
         "bearish_count": bear_count,
         "top_bullish": [s["ticker"] for s in signals if s["direction"] == "BULLISH"][:10],
         "top_bearish": [s["ticker"] for s in signals if s["direction"] == "BEARISH"][:10],
+        "created_at": firestore.SERVER_TIMESTAMP,
         "updated_at": firestore.SERVER_TIMESTAMP,
     })
 
@@ -533,15 +820,16 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
 # CLOUD FUNCTION ENTRY POINT
 # =====================================================================
 
-@functions_framework.http
-def enrichment_trigger(request: Request):
+@app.route("/", methods=["GET", "POST"])
+def enrichment_trigger():
     """
     Main entry point. Call after overnight scanner completes.
     Enriches high-score signals with technicals + news + AI analysis,
     writes to BigQuery + Firestore.
     """
     logger.info("=" * 60)
-    logger.info("OVERNIGHT EDGE ENRICHMENT TRIGGER")
+    logger.info("OVERNIGHT EDGE ENRICHMENT TRIGGER (Fixed grounding)")
+    logger.info("Using google-genai>=0.3.0")
     logger.info("=" * 60)
 
     # Init clients
@@ -556,7 +844,28 @@ def enrichment_trigger(request: Request):
     # Step 1: Get today's high-score signals
     signals, scan_date = get_signal_tickers(bq_client)
     if not signals:
-        return json.dumps({"status": "no_signals", "scan_date": scan_date}), 200
+        return jsonify({"status": "no_signals", "scan_date": scan_date}), 200
+
+    # Check for force flag (POST JSON body or query param)
+    force = False
+    if request.method == "POST" and request.is_json:
+        force = request.get_json(silent=True).get("force", False)
+    elif request.args.get("force"):
+        force = True
+
+    if not force:
+        # Guard: skip if scan_date is stale (>3 calendar days old — covers 3-day weekends)
+        scan_dt = datetime.strptime(scan_date, "%Y-%m-%d").date()
+        if (date.today() - scan_dt).days > 3:
+            logger.info(f"Scan date {scan_date} is stale (>3 days old). Skipping.")
+            return jsonify({"status": "skipped_stale", "scan_date": scan_date, "today": str(date.today())}), 200
+
+        # Guard: skip if already enriched for this scan_date
+        existing_q = f"SELECT COUNT(*) as cnt FROM `{ENRICHED_SIGNALS_TABLE}` WHERE scan_date = '{scan_date}'"
+        existing = list(bq_client.query(existing_q).result())[0]["cnt"]
+        if existing > 0:
+            logger.info(f"Already {existing} enriched rows for {scan_date}. Skipping.")
+            return jsonify({"status": "already_enriched", "scan_date": scan_date, "existing_rows": existing}), 200
 
     tickers = list(set(s["ticker"] for s in signals))
     logger.info(f"Enriching {len(tickers)} tickers for {scan_date}")
@@ -623,4 +932,9 @@ def enrichment_trigger(request: Request):
         "technicals_computed": len([v for v in technicals.values() if v]),
     }
     logger.info(f"ENRICHMENT COMPLETE: {json.dumps(summary)}")
-    return json.dumps(summary), 200
+    return jsonify(summary), 200
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
