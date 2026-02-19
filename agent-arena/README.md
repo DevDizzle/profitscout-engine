@@ -1,94 +1,134 @@
-# 🏟️ Agent Arena — The War Room
+# 🏟️ Agent Arena — Multi-Agent Adversarial Consensus System
 
-**7 AI agents. Same data. Adversarial debate. Consensus trade.**
+**5 AI agents. Same data. Adversarial debate. One consensus trade.**
+
+Agent Arena is a production multi-agent orchestration system where 5 LLMs with distinct analytical roles debate overnight institutional options flow data through structured rounds to produce a single high-conviction consensus trade.
 
 ## The Agents
 
-| ID | Name | Model | Provider | Origin |
-|----|------|-------|----------|--------|
-| claude | Claude | claude-sonnet-4 | Anthropic | 🇺🇸 USA |
-| gpt | GPT | gpt-4o | OpenAI | 🇺🇸 USA |
-| grok | Grok | grok-3-mini | xAI | 🇺🇸 USA |
-| gemini | Gemini | gemini-2.0-flash | Google | 🇺🇸 USA |
-| deepseek | DeepSeek | deepseek-chat (V3) | DeepSeek | 🇨🇳 China |
-| llama | Llama | llama-3.3-70b | Meta via Groq | 🇺🇸 USA |
-| mistral | Mistral | mistral-large | Mistral AI | 🇫🇷 France |
+| ID | Name | Model | Role | Lens |
+|----|------|-------|------|------|
+| grok | Grok | `grok-4-1-fast-reasoning` | 🔴 Momentum Trader | Trend following, volume confirmation |
+| gemini | Gemini | `gemini-3-flash-preview` (thinking=high) | 🟡 Contrarian | Mean-reversion, oversold/overbought extremes |
+| claude | Claude | `claude-sonnet-4` | 🟣 Risk Manager | Flow intent classification, risk/reward |
+| deepseek | DeepSeek | `DeepSeek-V3` | 🔵 Catalyst Hunter | Event-driven, catalyst timing |
+| gpt | GPT-5.2 | `gpt-5.2-2025-12-11` | 🟢 Technical Analyst | Price structure, support/resistance |
+
+### Why Roles Matter
+
+Without roles, agents converge on the same analysis (groupthink). With assigned roles, each agent applies a different analytical lens to the same data — creating genuine adversarial tension that produces better consensus.
 
 ## The Debate Protocol
 
 ```
-Round 1: PICK      — Each agent independently picks top 3 trades
-Round 2: ATTACK    — Agents challenge each other's picks  
-Round 3: DEFEND    — Agents defend, revise, or drop picks
-Round 4: VOTE      — Final picks with updated conviction
-         CONSENSUS — Tally votes, classify agreement level
+Round 1: PICK      → Each agent independently picks their single best trade
+Round 2: ATTACK    → Agents cross-examine each other's picks using their role's expertise
+Round 3: DEFEND    → Agents hold, revise conviction, or drop picks based on attacks
+Round 4: VOTE      → Final vote — one pick per agent, informed by full debate
+         CONSENSUS → Tally votes, output single consensus trade
 ```
+
+### Flow Intent Framework
+
+Every pick requires flow intent classification before trading:
+
+| Intent | Meaning | Tradeable? |
+|--------|---------|------------|
+| **Directional** | New positions betting on a move, usually pre-catalyst | ✅ Yes |
+| **Hedging** | Protection on existing positions, usually post-move | ❌ No |
+| **Mechanical** | Market maker delta-hedging, gamma exposure | ❌ No |
+| **Rolling** | Closing + opening new positions | ⚠️ Mixed |
 
 ## Consensus Levels
 
-| Level | Threshold | Meaning |
-|-------|-----------|---------|
-| Unanimous | 7/7 | All agents agree — strongest signal |
-| Supermajority | 6/7 (80%+) | Strong consensus |
-| Majority | 4-5/7 (60%+) | Consensus trade — this gets published |
-| Split | 2-3/7 | Disagreement — caution flag |
-| Solo | 1/7 | Contrarian pick — tracked separately |
+| Level | Threshold | Action |
+|-------|-----------|--------|
+| Unanimous | 5/5 | Strongest signal — published with full conviction |
+| Supermajority | 4/5 (80%+) | Strong consensus — published |
+| Majority | 3/5 (60%+) | Consensus trade — published |
+| Split | 2/5 | No consensus — highest individual conviction pick surfaces |
+| No Trade | 0-1/5 | Agents agree nothing is worth trading today |
 
-## API Endpoints
+## Architecture
+
+```
+FastAPI (async) → Cloud Run (auto-scaling)
+     │
+     ├── 5 LLM providers (xAI, Google, Anthropic, HuggingFace, OpenAI)
+     │
+     ├── BigQuery (picks, rounds, consensus tables)
+     │
+     ├── Firestore (arena_debates collection)
+     │
+     └── GCP Secret Manager (API keys)
+```
+
+## Stack
+
+- **Runtime:** Python 3.11 + FastAPI + uvicorn
+- **Deployment:** GCP Cloud Run (containerized)
+- **Storage:** BigQuery (structured) + Firestore (documents)
+- **Secrets:** GCP Secret Manager
+- **CI/CD:** Cloud Build
+- **LLM SDKs:** Anthropic, Google GenAI, OpenAI-compatible (xAI, DeepSeek, GPT)
+
+## API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /debate | Run the full 4-round debate |
-| GET | /health | Check which agents are configured |
-| GET | /latest | Get most recent debate from Firestore |
-
-## API Keys Required
-
-Set in GCP Secret Manager, mounted as env vars:
-
-| Secret Name | Provider | Get Key At |
-|-------------|----------|------------|
-| ANTHROPIC_API_KEY | Anthropic (Claude) | https://console.anthropic.com/ |
-| OPENAI_API_KEY | OpenAI (GPT) | https://platform.openai.com/ |
-| XAI_API_KEY | xAI (Grok) | https://console.x.ai/ |
-| GOOGLE_API_KEY | Google (Gemini) | https://aistudio.google.com/apikey |
-| DEEPSEEK_API_KEY | DeepSeek | https://platform.deepseek.com/ |
-| GROQ_API_KEY | Groq (Llama) | https://console.groq.com/ |
-| MISTRAL_API_KEY | Mistral | https://console.mistral.ai/ |
-
-## Deploy
-
-```bash
-cd agent-arena
-./deploy.sh
-```
+| `POST` | `/` | Run full 4-round debate (optional `{"scan_date": "YYYY-MM-DD"}`) |
+| `GET` | `/health` | Health check + configured agent status |
+| `GET` | `/latest` | Most recent debate from Firestore |
 
 ## Pipeline Integration
 
 ```
-4:00 AM  Scanner runs → overnight_signals
-4:25 AM  Enrichment → overnight_signals_enriched  
-4:30 AM  Agent Arena → /debate triggered by Cloud Scheduler
-4:33 AM  Results in BQ + Firestore
-6:00 AM  GammaMolt delivers highlights to War Room WhatsApp
-6:00 AM  Daily report includes consensus trade
+4:00 UTC  │ Scanner → overnight_signals (BigQuery)
+4:30 UTC  │ Enrichment → overnight_signals_enriched (BigQuery + Firestore)
+5:00 UTC  │ Agent Arena → /debate triggered by Cloud Scheduler
+           │   → agent_arena_picks, agent_arena_consensus, agent_arena_rounds (BigQuery)
+           │   → arena_debates (Firestore)
+6:00 AM EST │ Daily report includes consensus trade
+           │ War Room WhatsApp receives debate highlights
 ```
 
-## Cost Estimate
+## API Keys
 
-~$1-2/day for all 7 agents × 4 rounds = 28 API calls.
-DeepSeek, Groq, and Gemini Flash are near-free.
-Claude and GPT-4o are the main cost drivers (~$0.15 each).
+Stored in GCP Secret Manager, mounted as environment variables:
 
-## Research Output
+| Secret | Provider |
+|--------|----------|
+| `XAI_API_KEY` | xAI (Grok) |
+| `ARENA_GOOGLE_API_KEY` | Google (Gemini) |
+| `ANTHROPIC_API_KEY` | Anthropic (Claude) |
+| `HF_TOKEN` | HuggingFace (DeepSeek V3) |
+| `OPENAI_API_KEY` | OpenAI (GPT-5.2) |
 
-BQ tables for PhD analysis:
-- `agent_arena_picks` — Every pick, every round, with performance tracking
-- `agent_arena_consensus` — Daily consensus metrics
-- `agent_arena_rounds` — Full raw transcripts
+## Deploy
 
-Questions this data answers:
-1. Does multi-agent consensus outperform individual models?
-2. Which architectures are best at which signal types?
-3. Does adversarial debate improve prediction accuracy?
-4. Is agent disagreement a volatility predictor?
+```bash
+./deploy.sh
+```
+
+Builds container, pushes to Artifact Registry, deploys to Cloud Run with secrets.
+
+## Key Design Decisions
+
+- **1 pick per agent, 1 consensus output** — One high-conviction trade beats three diluted ones
+- **Flow intent is mandatory** — Agents must classify flow as directional/hedging before picking
+- **Mean-reversion risk flags** — Signals with >10% price moves get ⚠️ flags requiring extra justification
+- **Split-decision fallback** — When no consensus, the highest individual conviction pick surfaces
+- **Structured JSON throughout** — Every round uses strict JSON schemas for reliable parsing
+
+## Cost
+
+~$0.50-1.00/day for 5 agents × 4 rounds = 20 API calls.
+DeepSeek V3 and Gemini Flash are near-free. Claude and GPT-5.2 are the main cost drivers.
+
+## Research Applications
+
+BQ tables support analysis of:
+- Does multi-agent consensus outperform individual models?
+- Which roles catch which failure modes?
+- Does adversarial debate improve prediction accuracy?
+- Is agent disagreement a volatility predictor?
