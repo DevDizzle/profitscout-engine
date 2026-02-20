@@ -26,6 +26,269 @@ MIN_DOLLAR_VOLUME = float(
 )
 MIN_SCORE = int(__import__("os").environ.get("MIN_SCORE", "6"))
 MAX_WORKERS = 16
+# Cluster boost config
+CLUSTER_MIN_SIZE = 4         # Minimum qualifying tickers in same industry+direction
+CLUSTER_MIN_SCORE = 3        # Only count tickers scoring >= this toward cluster
+CLUSTER_BOOST_THRESHOLD = 6  # Only boost tickers scoring below this
+
+
+# =====================================================================
+# METADATA (sector/industry from Polygon API at runtime)
+# =====================================================================
+
+# Maps Polygon SIC descriptions to clean industry names
+_SIC_TO_INDUSTRY = {
+    'PHARMACEUTICAL PREPARATIONS': 'Drug Manufacturers',
+    'SERVICES-PREPACKAGED SOFTWARE': 'Software - Application',
+    'BIOLOGICAL PRODUCTS, (NO DIAGNOSTIC SUBSTANCES)': 'Biotechnology',
+    'REAL ESTATE INVESTMENT TRUSTS': 'REIT',
+    'SURGICAL & MEDICAL INSTRUMENTS & APPARATUS': 'Medical - Instruments & Supplies',
+    'STATE COMMERCIAL BANKS': 'Banks - Regional',
+    'FINANCE SERVICES': 'Financial Services',
+    'SERVICES-BUSINESS SERVICES, NEC': 'Business Services',
+    'SEMICONDUCTORS & RELATED DEVICES': 'Semiconductors',
+    'CRUDE PETROLEUM & NATURAL GAS': 'Oil & Gas Exploration & Production',
+    'FIRE, MARINE & CASUALTY INSURANCE': 'Insurance - Property & Casualty',
+    'SERVICES-COMPUTER PROCESSING & DATA PREPARATION': 'Information Technology Services',
+    'NATIONAL COMMERCIAL BANKS': 'Banks - Diversified',
+    'SERVICES-COMPUTER PROGRAMMING, DATA PROCESSING, ETC.': 'Information Technology Services',
+    'COMPUTER COMMUNICATIONS EQUIPMENT': 'Communication Equipment',
+    'ELECTRONIC COMPUTERS': 'Computer Hardware',
+    'ELECTROMEDICAL & ELECTROTHERAPEUTIC APPARATUS': 'Medical - Devices',
+    'IN VITRO & IN VIVO DIAGNOSTIC SUBSTANCES': 'Medical - Diagnostics & Research',
+    'ELECTRONIC COMPONENTS, NEC': 'Electronic Components',
+    'MINING & QUARRYING OF NONMETALLIC MINERALS (NO FUELS)': 'Mining',
+    'GOLD AND SILVER ORES': 'Gold',
+    'PETROLEUM REFINING': 'Oil & Gas Refining',
+    'NATURAL GAS DISTRIBUTION': 'Utilities - Gas',
+    'ELECTRIC SERVICES': 'Regulated Electric',
+    'RETAIL-DRUG STORES AND PROPRIETARY STORES': 'Pharmaceutical Retail',
+    'COMMUNICATIONS EQUIPMENT, NEC': 'Communication Equipment',
+    'MEASURING & CONTROLLING DEVICES, NEC': 'Scientific Instruments',
+    'SERVICES-MANAGEMENT CONSULTING SERVICES': 'Consulting Services',
+    'PRINTED CIRCUIT BOARDS': 'Semiconductors',
+    'SERVICES-ENGINEERING SERVICES': 'Engineering & Construction',
+    'RETAIL-EATING PLACES': 'Restaurants',
+    'SERVICES-HOSPITALS': 'Healthcare Providers',
+    'SERVICES-MISC HEALTH & ALLIED SERVICES, NEC': 'Healthcare Services',
+    'MISCELLANEOUS FOOD PREPARATIONS & KINDRED PRODUCTS': 'Packaged Foods',
+    'MEAT PACKING PLANTS': 'Packaged Foods',
+    'AIR TRANSPORTATION, SCHEDULED': 'Airlines',
+    'SERVICES-ADVERTISING SERVICES': 'Advertising',
+    'COMPUTER PERIPHERAL EQUIPMENT, NEC': 'Computer Hardware',
+    'RADIO & TV BROADCASTING & COMMUNICATIONS EQUIPMENT': 'Communication Equipment',
+    'MOTOR VEHICLE PARTS & ACCESSORIES': 'Auto - Parts',
+    'SERVICES-MOTION PICTURE & TAPE DISTRIBUTION': 'Entertainment',
+    'PLASTIC MATERIALS, SYNTH RESINS & NONVULCAN ELASTOMERS': 'Chemicals - Specialty',
+    'STEEL WORKS, BLAST FURNACES & ROLLING & FINISHING MILLS': 'Steel',
+    'AIRCRAFT ENGINES & ENGINE PARTS': 'Aerospace & Defense',
+    'AIRCRAFT PARTS & AUXILIARY EQUIPMENT, NEC': 'Aerospace & Defense',
+    'GUIDED MISSILES & SPACE VEHICLES & PARTS': 'Aerospace & Defense',
+    'SEARCH, DETECTION, NAVIGATION, GUIDANCE, AERONAUTICAL SYS': 'Aerospace & Defense',
+    'INDUSTRIAL INSTRUMENTS FOR MEASUREMENT, DISPLAY, ANALYZING': 'Scientific Instruments',
+    'SERVICES-COMPUTER INTEGRATED SYSTEMS DESIGN': 'Information Technology Services',
+    'SERVICES-MISCELLANEOUS BUSINESS SERVICES NEC': 'Business Services',
+    'BEVERAGES': 'Beverages',
+    'CANNED, FROZEN & PRESERVED FRUIT, VEG & FOOD SPECIALTIES': 'Packaged Foods',
+    'LABORATORY ANALYTICAL INSTRUMENTS': 'Scientific Instruments',
+    'SERVICES-HELP SUPPLY SERVICES': 'Staffing',
+    'SPECIAL INDUSTRY MACHINERY, NEC': 'Industrial - Machinery',
+    'OIL & GAS FIELD SERVICES, NEC': 'Oil & Gas Equipment & Services',
+    'RETAIL-VARIETY STORES': 'Specialty Retail',
+    'SERVICES-COMPUTER RENTAL & LEASING': 'Information Technology Services',
+    'BLANK CHECKS': 'Shell Companies',
+    'SAVINGS INSTITUTION, FEDERALLY CHARTERED': 'Banks - Regional',
+    'GENERAL INDUSTRIAL MACHINERY & EQUIPMENT, NEC': 'Industrial - Machinery',
+    'MOTOR VEHICLES & PASSENGER CAR BODIES': 'Auto - Manufacturers',
+    'SERVICES-MEDICAL LABORATORIES': 'Medical - Diagnostics & Research',
+    'LIFE INSURANCE': 'Insurance - Life',
+    'RETAIL-LUMBER & OTHER BUILDING MATERIALS DEALERS': 'Home Improvement',
+    'SERVICES-DETECTIVE, GUARD & ARMORED CAR SERVICES': 'Security Services',
+    'METALWORKING MACHINERY & EQUIPMENT': 'Industrial - Machinery',
+    'ACCIDENT & HEALTH INSURANCE': 'Insurance - Health',
+    'ELECTRIC LIGHTING & WIRING EQUIPMENT': 'Electrical Equipment',
+    'LABORATORY APPARATUS & FURNITURE': 'Scientific Instruments',
+    'WHOLESALE-DRUGS, PROPRIETARIES & DRUGGISTS SUNDRIES': 'Drug Manufacturers',
+    'SERVICES-EDUCATIONAL SERVICES': 'Education',
+}
+
+# Maps Polygon SIC descriptions to sector
+_SIC_TO_SECTOR = {
+    'PHARMACEUTICAL PREPARATIONS': 'Healthcare',
+    'SERVICES-PREPACKAGED SOFTWARE': 'Technology',
+    'BIOLOGICAL PRODUCTS, (NO DIAGNOSTIC SUBSTANCES)': 'Healthcare',
+    'REAL ESTATE INVESTMENT TRUSTS': 'Real Estate',
+    'SURGICAL & MEDICAL INSTRUMENTS & APPARATUS': 'Healthcare',
+    'STATE COMMERCIAL BANKS': 'Financial Services',
+    'FINANCE SERVICES': 'Financial Services',
+    'SERVICES-BUSINESS SERVICES, NEC': 'Industrials',
+    'SEMICONDUCTORS & RELATED DEVICES': 'Technology',
+    'CRUDE PETROLEUM & NATURAL GAS': 'Energy',
+    'FIRE, MARINE & CASUALTY INSURANCE': 'Financial Services',
+    'SERVICES-COMPUTER PROCESSING & DATA PREPARATION': 'Technology',
+    'NATIONAL COMMERCIAL BANKS': 'Financial Services',
+    'SERVICES-COMPUTER PROGRAMMING, DATA PROCESSING, ETC.': 'Technology',
+    'COMPUTER COMMUNICATIONS EQUIPMENT': 'Technology',
+    'ELECTRONIC COMPUTERS': 'Technology',
+    'ELECTROMEDICAL & ELECTROTHERAPEUTIC APPARATUS': 'Healthcare',
+    'IN VITRO & IN VIVO DIAGNOSTIC SUBSTANCES': 'Healthcare',
+    'ELECTRONIC COMPONENTS, NEC': 'Technology',
+    'MINING & QUARRYING OF NONMETALLIC MINERALS (NO FUELS)': 'Basic Materials',
+    'GOLD AND SILVER ORES': 'Basic Materials',
+    'PETROLEUM REFINING': 'Energy',
+    'NATURAL GAS DISTRIBUTION': 'Utilities',
+    'ELECTRIC SERVICES': 'Utilities',
+    'RETAIL-DRUG STORES AND PROPRIETARY STORES': 'Consumer Defensive',
+    'COMMUNICATIONS EQUIPMENT, NEC': 'Technology',
+    'MEASURING & CONTROLLING DEVICES, NEC': 'Technology',
+    'SERVICES-MANAGEMENT CONSULTING SERVICES': 'Industrials',
+    'PRINTED CIRCUIT BOARDS': 'Technology',
+    'SERVICES-ENGINEERING SERVICES': 'Industrials',
+    'RETAIL-EATING PLACES': 'Consumer Cyclical',
+    'SERVICES-HOSPITALS': 'Healthcare',
+    'SERVICES-MISC HEALTH & ALLIED SERVICES, NEC': 'Healthcare',
+    'MISCELLANEOUS FOOD PREPARATIONS & KINDRED PRODUCTS': 'Consumer Defensive',
+    'MEAT PACKING PLANTS': 'Consumer Defensive',
+    'AIR TRANSPORTATION, SCHEDULED': 'Industrials',
+    'SERVICES-ADVERTISING SERVICES': 'Communication Services',
+    'COMPUTER PERIPHERAL EQUIPMENT, NEC': 'Technology',
+    'RADIO & TV BROADCASTING & COMMUNICATIONS EQUIPMENT': 'Technology',
+    'MOTOR VEHICLE PARTS & ACCESSORIES': 'Consumer Cyclical',
+    'SERVICES-MOTION PICTURE & TAPE DISTRIBUTION': 'Communication Services',
+    'PLASTIC MATERIALS, SYNTH RESINS & NONVULCAN ELASTOMERS': 'Basic Materials',
+    'STEEL WORKS, BLAST FURNACES & ROLLING & FINISHING MILLS': 'Basic Materials',
+    'AIRCRAFT ENGINES & ENGINE PARTS': 'Industrials',
+    'AIRCRAFT PARTS & AUXILIARY EQUIPMENT, NEC': 'Industrials',
+    'GUIDED MISSILES & SPACE VEHICLES & PARTS': 'Industrials',
+    'SEARCH, DETECTION, NAVIGATION, GUIDANCE, AERONAUTICAL SYS': 'Industrials',
+    'INDUSTRIAL INSTRUMENTS FOR MEASUREMENT, DISPLAY, ANALYZING': 'Technology',
+    'SERVICES-COMPUTER INTEGRATED SYSTEMS DESIGN': 'Technology',
+    'SERVICES-MISCELLANEOUS BUSINESS SERVICES NEC': 'Industrials',
+    'BEVERAGES': 'Consumer Defensive',
+    'CANNED, FROZEN & PRESERVED FRUIT, VEG & FOOD SPECIALTIES': 'Consumer Defensive',
+    'LABORATORY ANALYTICAL INSTRUMENTS': 'Technology',
+    'SERVICES-HELP SUPPLY SERVICES': 'Industrials',
+    'SPECIAL INDUSTRY MACHINERY, NEC': 'Industrials',
+    'OIL & GAS FIELD SERVICES, NEC': 'Energy',
+    'RETAIL-VARIETY STORES': 'Consumer Cyclical',
+    'SERVICES-COMPUTER RENTAL & LEASING': 'Technology',
+    'BLANK CHECKS': 'Financial Services',
+    'SAVINGS INSTITUTION, FEDERALLY CHARTERED': 'Financial Services',
+    'GENERAL INDUSTRIAL MACHINERY & EQUIPMENT, NEC': 'Industrials',
+    'MOTOR VEHICLES & PASSENGER CAR BODIES': 'Consumer Cyclical',
+    'SERVICES-MEDICAL LABORATORIES': 'Healthcare',
+    'LIFE INSURANCE': 'Financial Services',
+    'RETAIL-LUMBER & OTHER BUILDING MATERIALS DEALERS': 'Consumer Cyclical',
+    'SERVICES-DETECTIVE, GUARD & ARMORED CAR SERVICES': 'Industrials',
+    'METALWORKING MACHINERY & EQUIPMENT': 'Industrials',
+    'ACCIDENT & HEALTH INSURANCE': 'Financial Services',
+    'ELECTRIC LIGHTING & WIRING EQUIPMENT': 'Industrials',
+    'LABORATORY APPARATUS & FURNITURE': 'Technology',
+    'WHOLESALE-DRUGS, PROPRIETARIES & DRUGGISTS SUNDRIES': 'Healthcare',
+    'SERVICES-EDUCATIONAL SERVICES': 'Consumer Defensive',
+}
+
+
+def _load_metadata_from_polygon(poly) -> dict:
+    """
+    Fetch sector/industry for all active US stock tickers from Polygon
+    reference endpoint. Bulk paginated call — ~6 requests covers everything.
+    """
+    meta = {}
+    url = f"{poly.BASE}/v3/reference/tickers"
+    params = {"market": "stocks", "active": "true", "limit": 1000}
+
+    page = 0
+    while True:
+        page += 1
+        try:
+            data = poly._get(url, params=params)
+        except Exception as e:
+            logger.error("Polygon metadata fetch failed on page %d: %s", page, e)
+            break
+
+        results = data.get("results") or []
+        for t in results:
+            ticker = t.get("ticker")
+            if not ticker:
+                continue
+            sic = (t.get("sic_description") or "").strip()
+            if sic:
+                industry = _SIC_TO_INDUSTRY.get(sic, sic)
+                sector = _SIC_TO_SECTOR.get(sic, "Other")
+            else:
+                industry = None
+                sector = None
+            meta[ticker] = {"sector": sector, "industry": industry}
+
+        next_url = data.get("next_url")
+        if not next_url:
+            break
+        url = next_url
+        params = {}  # next_url includes params
+
+    logger.info("Loaded metadata for %d tickers from Polygon (%d pages).", len(meta), page)
+    return meta
+
+
+# =====================================================================
+# CLUSTER BOOST
+# =====================================================================
+
+def _apply_cluster_boost(scored: list[dict], metadata: dict) -> list[dict]:
+    """
+    Apply industry cluster boost to under-threshold tickers.
+    When 4+ tickers in the same industry flag the same direction,
+    boost tickers scoring below threshold.
+    
+    Boost: 4 tickers = +1, 5-7 = +2, 8+ = +3
+    Only applied to tickers with overnight_score < CLUSTER_BOOST_THRESHOLD.
+    """
+    from collections import Counter
+
+    # Tag each signal with sector/industry
+    for s in scored:
+        meta = metadata.get(s['ticker'], {})
+        s['sector'] = meta.get('sector') or None
+        s['industry'] = meta.get('industry') or None
+
+    # Count clusters: only tickers scoring >= CLUSTER_MIN_SCORE count
+    clusters = Counter()
+    for s in scored:
+        if s.get('industry') and s['overnight_score'] >= CLUSTER_MIN_SCORE:
+            clusters[(s['industry'], s['direction'])] += 1
+
+    # Apply boost
+    boosted_count = 0
+    for s in scored:
+        s['original_score'] = s['overnight_score']
+        s['cluster_boost'] = 0
+        s['cluster_size'] = 0
+
+        if not s.get('industry'):
+            continue
+
+        key = (s['industry'], s['direction'])
+        cluster_size = clusters.get(key, 0)
+        s['cluster_size'] = cluster_size
+
+        # Only boost tickers below threshold
+        if (s['overnight_score'] < CLUSTER_BOOST_THRESHOLD
+                and cluster_size >= CLUSTER_MIN_SIZE):
+            if cluster_size >= 8:
+                boost = 3
+            elif cluster_size >= 5:
+                boost = 2
+            else:  # 4
+                boost = 1
+
+            s['cluster_boost'] = boost
+            s['overnight_score'] = min(s['overnight_score'] + boost, 10)
+            boosted_count += 1
+
+    logger.info("Cluster boost applied: %d tickers boosted. %d clusters detected (size >= %d).",
+                boosted_count, sum(1 for v in clusters.values() if v >= CLUSTER_MIN_SIZE), CLUSTER_MIN_SIZE)
+    return scored
 
 
 # =====================================================================
@@ -77,12 +340,15 @@ def _pass1_stock_snapshots(poly: PolygonClient, universe: set[str]) -> list[dict
         # Also try prevDay close as fallback context
         prev_close = (item.get("prevDay") or {}).get("c")
 
-        if abs(change_pct) >= MIN_PRICE_CHANGE_PCT and close_price:
+        # Use prevDay close when day close is missing (pre-market)
+        effective_price = close_price or prev_close
+
+        if abs(change_pct) >= MIN_PRICE_CHANGE_PCT and effective_price:
             movers.append({
                 "ticker": ticker,
                 "todaysChangePerc": round(change_pct, 2),
                 "day_volume": int(day_vol) if day_vol else 0,
-                "underlying_price": float(close_price),
+                "underlying_price": float(effective_price),
                 "prev_close": float(prev_close) if prev_close else None,
             })
 
@@ -332,9 +598,9 @@ def _score_ticker(data: dict) -> dict:
 
     # --- SIGNAL 2: Volume/OI Ratio (0-2 pts) ---
     rel_vol_oi = data.get("call_vol_oi", 0) if bullish else data.get("put_vol_oi", 0)
-    if rel_vol_oi > 3.0:
+    if rel_vol_oi > 2.0:
         score += 2; signals.append(f"Vol/OI {rel_vol_oi:.1f}x (very unusual)")
-    elif rel_vol_oi > 1.5:
+    elif rel_vol_oi > 0.8:
         score += 1; signals.append(f"Vol/OI {rel_vol_oi:.1f}x (unusual)")
 
     # --- SIGNAL 3: Multi-Strike Accumulation (0-2 pts) ---
@@ -352,7 +618,7 @@ def _score_ticker(data: dict) -> dict:
         score += 1; signals.append(f"${rel_uoa / 1e3:.0f}K new positioning")
 
     # --- SIGNAL 5: Price Momentum (0-1 pt) ---
-    if abs(price_change_pct) > 2.0:
+    if abs(price_change_pct) > 1.5:
         score += 1; signals.append(f"Price moved {price_change_pct:+.1f}%")
 
     # --- SIGNAL 6: Smart Money Divergence (0-1 pt) ---
@@ -370,6 +636,11 @@ def _score_ticker(data: dict) -> dict:
         "ticker": data["ticker"],
         "direction": direction,
         "overnight_score": score,
+        "original_score": score,  # Will be overwritten by cluster boost
+        "cluster_boost": 0,       # Will be overwritten by cluster boost
+        "cluster_size": 0,        # Will be overwritten by cluster boost
+        "sector": None,           # Will be overwritten by cluster boost
+        "industry": None,         # Will be overwritten by cluster boost
         "price_change_pct": price_change_pct,
         "underlying_price": data.get("underlying_price"),
         "day_volume": data.get("day_volume"),
@@ -441,6 +712,11 @@ def _ensure_table(bq: bigquery.Client):
         bigquery.SchemaField("recommended_volume", "INTEGER"),
         bigquery.SchemaField("recommended_oi", "INTEGER"),
         bigquery.SchemaField("inserted_at", "TIMESTAMP"),
+        bigquery.SchemaField("sector", "STRING"),
+        bigquery.SchemaField("industry", "STRING"),
+        bigquery.SchemaField("cluster_size", "INTEGER"),
+        bigquery.SchemaField("cluster_boost", "INTEGER"),
+        bigquery.SchemaField("original_score", "INTEGER"),
     ]
     table = bigquery.Table(table_id, schema=schema)
     table.time_partitioning = bigquery.TimePartitioning(
@@ -507,6 +783,11 @@ def _write_results(bq: bigquery.Client, scored: list[dict]):
             "recommended_volume": s.get("recommended_volume"),
             "recommended_oi": s.get("recommended_oi"),
             "inserted_at": now.isoformat(),
+            "sector": s.get("sector"),
+            "industry": s.get("industry"),
+            "cluster_size": s.get("cluster_size"),
+            "cluster_boost": s.get("cluster_boost"),
+            "original_score": s.get("original_score"),
         })
 
     errors = bq.insert_rows_json(config.OVERNIGHT_SIGNALS_TABLE, rows)
@@ -552,33 +833,44 @@ def run_pipeline():
         logger.error("Empty universe. Aborting.")
         return
 
-    # Step 2: Pass 1 — stock snapshots, filter movers
+    # Step 2: Load metadata for cluster detection (from Polygon API)
+    metadata = _load_metadata_from_polygon(poly)
+
+    # Step 3: Pass 1 - stock snapshots, filter movers
     movers = _pass1_stock_snapshots(poly, universe)
     if not movers:
         logger.info("No movers found. Nothing to scan.")
         return
 
-    # Step 3: Pass 2 — options chains for movers
+    # Step 4: Pass 2 - options chains for movers
     enriched = _pass2_options(poly, movers)
     if not enriched:
         logger.info("No options data collected. Exiting.")
         return
 
-    # Step 4: Score everything
+    # Step 5: Score individually
     scored = [_score_ticker(d) for d in enriched]
+
+    # Step 6: Apply industry cluster boost
+    scored = _apply_cluster_boost(scored, metadata)
     scored.sort(key=lambda x: x["overnight_score"], reverse=True)
 
-    # Step 5: Filter to min score and cap at 10
+    # Step 7: Filter to min score
     top = [s for s in scored if s["overnight_score"] >= MIN_SCORE][:10]
 
     logger.info("=" * 60)
     logger.info("RESULTS: %d tickers scored >= %d (out of %d total)", len(top), MIN_SCORE, len(scored))
     for t in top:
         contract = t.get("recommended_contract") or "NO CONTRACT"
+        boost_info = ""
+        if t.get("cluster_boost", 0) > 0:
+            boost_info = f" [BOOSTED +{t['cluster_boost']} from {t.get('industry', '?')} cluster({t.get('cluster_size', 0)})]"
         logger.info(
-            "  %s | Score %d | %s | %s | $%.2f | %s",
+            "  %s | Score %d (orig %d)%s | %s | %s | $%.2f | %s",
             t["ticker"],
             t["overnight_score"],
+            t.get("original_score", t["overnight_score"]),
+            boost_info,
             t["direction"],
             contract,
             t.get("recommended_mid_price") or 0,

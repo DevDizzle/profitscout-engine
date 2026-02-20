@@ -6,9 +6,9 @@ rm -rf src
 mkdir -p src/enrichment/core/pipelines
 mkdir -p src/enrichment/core/clients
 
-cp ../../src/enrichment/core/config.py src/enrichment/core/
-cp ../../src/enrichment/core/pipelines/overnight_scanner.py src/enrichment/core/pipelines/
-cp ../../src/enrichment/core/clients/polygon_client.py src/enrichment/core/clients/
+cp ../src/enrichment/core/config.py src/enrichment/core/
+cp ../src/enrichment/core/pipelines/overnight_scanner.py src/enrichment/core/pipelines/
+cp ../src/enrichment/core/clients/polygon_client.py src/enrichment/core/clients/
 
 # Create __init__.py files
 touch src/__init__.py
