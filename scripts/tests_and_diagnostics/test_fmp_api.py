@@ -1,6 +1,7 @@
+import os
 import requests
 
-FMP_API_KEY = "Lzi8DIqT0fM1zV8rLQlon2NwGX8DrePT"
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 start_date = "2026-02-24"
 end_date = "2026-03-17" 
 
