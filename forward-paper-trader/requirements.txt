@@ -1,0 +1,9 @@
+Flask==3.0.3
+gunicorn==22.0.0
+pandas==2.2.3
+requests==2.32.3
+pandas-market-calendars==4.6.1
+google-cloud-bigquery==3.27.0
+db-dtypes==1.2.0
+yfinance==0.2.54
+pytz==2025.1

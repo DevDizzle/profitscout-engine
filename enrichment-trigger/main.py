@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from flask import Flask, Request, jsonify, request
 from google.cloud import bigquery, storage
@@ -90,7 +91,13 @@ def fetch_and_analyze_news(ticker: str, direction: str, price_change_pct: float,
     Use Gemini with Google Search grounding to fetch and analyze
     recent news for a ticker in a single call.
     """
-    try:
+    import time as _time
+
+    MAX_RETRIES = 3
+    RETRY_CODES = {429, 499, 504}
+
+    for attempt in range(MAX_RETRIES):
+      try:
         client = genai.Client(
             vertexai=True,
             project=VERTEX_PROJECT,
@@ -216,11 +223,19 @@ If you find no relevant news, set catalyst_type to "No Clear Catalyst", catalyst
 
         return result
 
-    except json.JSONDecodeError as e:
+      except json.JSONDecodeError as e:
         logger.error(f"  {ticker}: Failed to parse grounded search JSON: {e}")
         logger.error(f"  {ticker}: Raw text: {text[:500]}")
         return None
-    except Exception as e:
+      except Exception as e:
+        error_str = str(e)
+        # Check if retryable (429, 499, 504)
+        is_retryable = any(str(code) in error_str for code in RETRY_CODES)
+        if is_retryable and attempt < MAX_RETRIES - 1:
+            wait = (2 ** attempt) * 5  # 5s, 10s, 20s
+            logger.warning(f"  {ticker}: Retryable error (attempt {attempt+1}/{MAX_RETRIES}), waiting {wait}s: {e}")
+            _time.sleep(wait)
+            continue
         logger.error(f"  {ticker}: Grounded search failed: {e}")
         return None
 
@@ -263,14 +278,13 @@ def fetch_and_analyze_news_batch(
 
         return ticker, analysis
 
-    # Gemini has higher rate limits than Polygon, but be respectful
-    # Process 4 at a time with small delay
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    # 2 concurrent workers to avoid 429 rate limits on grounded search
+    with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {pool.submit(_process_one, s): s["ticker"] for s in signals}
         for future in as_completed(futures):
             ticker, analysis = future.result()
             results[ticker] = analysis
-            time.sleep(0.3)  # Rate limit: ~3 req/sec to be safe
+            time.sleep(0.5)  # Rate limit: ~2 req/sec to stay under quota
 
     news_found = sum(1 for v in results.values() if v and v.get("news_found"))
     no_news = sum(1 for v in results.values() if v and not v.get("news_found"))
@@ -562,6 +576,43 @@ def _calc_risk_reward(price, direction, support, resistance):
         return None
 
 
+def _calc_premium_fields(row: dict) -> dict:
+    """
+    Calculate all premium signal fields for a given signal.
+    Returns dict with all premium fields ready to merge into the row.
+    
+    Based on deep analysis of 287 backfilled signals.
+    Each pattern independently showed 80%+ win rate.
+    """
+    flow_intent = (row.get("flow_intent") or "").upper()
+    risk_reward = float(row.get("risk_reward_ratio") or 0)
+    move_overdone = bool(row.get("move_overdone", True))
+    call_vol_oi = float(row.get("call_vol_oi_ratio") or 0)
+    put_vol_oi = float(row.get("put_vol_oi_ratio") or 0)
+    direction = (row.get("direction") or "").upper()
+    atr_move = float(row.get("atr_normalized_move") or 0)
+    
+    # Individual pattern flags
+    hedge = (flow_intent == "HEDGING")
+    high_rr = (risk_reward > 2.0 and not move_overdone)
+    bull_flow = (call_vol_oi > 1.5 and direction == "BULLISH" and not move_overdone)
+    high_atr = (atr_move > 2.0)
+    bear_flow = (put_vol_oi > 2.0 and direction == "BEARISH")
+    
+    score = sum([hedge, high_rr, bull_flow, high_atr, bear_flow])
+    is_tradeable = (hedge and high_rr) or (hedge and high_atr)
+    
+    return {
+        "premium_hedge": hedge,
+        "premium_high_rr": high_rr,
+        "premium_bull_flow": bull_flow,
+        "premium_high_atr": high_atr,
+        "premium_bear_flow": bear_flow,
+        "premium_score": score,
+        "is_premium_signal": score >= 1,  # TRUE if ANY pattern matches
+        "is_tradeable": is_tradeable,
+    }
+
 # =====================================================================
 # STEP 5: Write enriched signals to BigQuery
 # =====================================================================
@@ -654,9 +705,35 @@ def write_enriched_signals(
                 sig.get("underlying_price", 0), sig.get("direction", ""),
                 tech.get("support"), tech.get("resistance")
             ),
-            # Metadata
-            "enriched_at": datetime.now(timezone.utc).isoformat(),
         }
+        
+        # Premium signal scoring
+        premium_input = {
+            "flow_intent": risk["flow_intent"],
+            "risk_reward_ratio": _calc_risk_reward(
+                sig.get("underlying_price", 0), sig.get("direction", ""),
+                tech.get("support"), tech.get("resistance")
+            ),
+            "move_overdone": risk["move_overdone"],
+            "call_vol_oi_ratio": sig.get("call_vol_oi_ratio"),
+            "put_vol_oi_ratio": sig.get("put_vol_oi_ratio"),
+            "direction": sig["direction"],
+            "atr_normalized_move": risk["atr_normalized_move"],
+        }
+        premium = _calc_premium_fields(premium_input)
+        
+        row.update({
+            "is_premium_signal": premium["is_premium_signal"],
+            "premium_score": premium["premium_score"],
+            "premium_hedge": premium["premium_hedge"],
+            "premium_high_rr": premium["premium_high_rr"],
+            "premium_bull_flow": premium["premium_bull_flow"],
+            "premium_high_atr": premium["premium_high_atr"],
+            "premium_bear_flow": premium["premium_bear_flow"],
+            "is_tradeable": premium["is_tradeable"],
+            "enriched_at": datetime.now(timezone.utc).isoformat(),
+        })
+        
         rows.append(row)
 
     if not rows:
@@ -713,15 +790,20 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
     batch = db.batch()
     count = 0
 
+    # Use today's EST date for document IDs and display dates
+    # scan_date is the underlying scanner date (previous trading day)
+    report_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
     # Write each signal as a document
     for sig in signals:
         ticker = sig["ticker"]
         tech = technicals.get(ticker, {}) or {}
         news = news_analysis.get(ticker, {}) or {}
 
-        doc_ref = db.collection("overnight_signals").document(f"{scan_date}_{ticker}")
+        doc_ref = db.collection("overnight_signals").document(f"{report_date}_{ticker}")
         doc_data = {
-            "scan_date": scan_date,
+            "scan_date": report_date,
+            "underlying_scan_date": scan_date,
             "ticker": ticker,
             "direction": sig["direction"],
             "overnight_score": sig["overnight_score"],
@@ -784,10 +866,35 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
                 sig.get("underlying_price", 0), sig.get("direction", ""),
                 tech.get("support"), tech.get("resistance")
             ),
+        }
+        
+        premium_input = {
+            "flow_intent": news.get("flow_intent", "MIXED"),
+            "risk_reward_ratio": _calc_risk_reward(
+                sig.get("underlying_price", 0), sig.get("direction", ""),
+                tech.get("support"), tech.get("resistance")
+            ),
+            "move_overdone": news.get("move_overdone", False),
+            "call_vol_oi_ratio": sig.get("call_vol_oi_ratio"),
+            "put_vol_oi_ratio": sig.get("put_vol_oi_ratio"),
+            "direction": sig["direction"],
+            "atr_normalized_move": compute_risk_fields(sig, tech, news).get("atr_normalized_move", 0),
+        }
+        premium = _calc_premium_fields(premium_input)
+        
+        doc_data.update({
+            "is_premium_signal": premium["is_premium_signal"],
+            "premium_score": premium["premium_score"],
+            "premium_hedge": premium["premium_hedge"],
+            "premium_high_rr": premium["premium_high_rr"],
+            "premium_bull_flow": premium["premium_bull_flow"],
+            "premium_high_atr": premium["premium_high_atr"],
+            "premium_bear_flow": premium["premium_bear_flow"],
+            "is_tradeable": premium["is_tradeable"],
             # Meta
             "enriched_at": datetime.now(timezone.utc),
             "updated_at": firestore.SERVER_TIMESTAMP,
-        }
+        })
 
         batch.set(doc_ref, doc_data)
         count += 1
@@ -796,13 +903,14 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
             batch.commit()
             batch = db.batch()
 
-    # Write daily summary document
-    summary_ref = db.collection("overnight_summaries").document(scan_date)
+    # Write daily summary document — keyed by report date (today EST)
+    summary_ref = db.collection("overnight_summaries").document(report_date)
     bull_count = len([s for s in signals if s["direction"] == "BULLISH"])
     bear_count = len([s for s in signals if s["direction"] == "BEARISH"])
 
     batch.set(summary_ref, {
-        "scan_date": scan_date,
+        "scan_date": report_date,
+        "underlying_scan_date": scan_date,
         "total_signals": len(signals),
         "bullish_count": bull_count,
         "bearish_count": bear_count,
@@ -813,7 +921,7 @@ def sync_to_firestore(signals: list[dict], technicals: dict, news_analysis: dict
     })
 
     batch.commit()
-    logger.info(f"Synced {count} signals + summary to Firestore for {scan_date}")
+    logger.info(f"Synced {count} signals + summary to Firestore for {report_date} (scan: {scan_date})")
 
 
 # =====================================================================
@@ -849,7 +957,7 @@ def enrichment_trigger():
     # Check for force flag (POST JSON body or query param)
     force = False
     if request.method == "POST" and request.is_json:
-        force = request.get_json(silent=True).get("force", False)
+        force = (request.get_json(silent=True) or {}).get("force", False)
     elif request.args.get("force"):
         force = True
 
@@ -860,11 +968,16 @@ def enrichment_trigger():
             logger.info(f"Scan date {scan_date} is stale (>3 days old). Skipping.")
             return jsonify({"status": "skipped_stale", "scan_date": scan_date, "today": str(date.today())}), 200
 
-        # Guard: skip if already enriched for this scan_date
-        existing_q = f"SELECT COUNT(*) as cnt FROM `{ENRICHED_SIGNALS_TABLE}` WHERE scan_date = '{scan_date}'"
+        # Guard: skip if already enriched TODAY for this scan_date
+        # This allows Monday re-enrichment of Friday's scan (fresh technicals + weekend news)
+        existing_q = f"""
+        SELECT COUNT(*) as cnt FROM `{ENRICHED_SIGNALS_TABLE}`
+        WHERE scan_date = '{scan_date}'
+          AND DATE(enriched_at) = '{date.today().isoformat()}'
+        """
         existing = list(bq_client.query(existing_q).result())[0]["cnt"]
         if existing > 0:
-            logger.info(f"Already {existing} enriched rows for {scan_date}. Skipping.")
+            logger.info(f"Already {existing} enriched rows for {scan_date} enriched today. Skipping.")
             return jsonify({"status": "already_enriched", "scan_date": scan_date, "existing_rows": existing}), 200
 
     tickers = list(set(s["ticker"] for s in signals))

@@ -8,7 +8,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@app.route("/", methods=["POST"])
+@app.route("/scan", methods=["POST"])
 def run_scanner():
     """Trigger the overnight scanner pipeline."""
     try:

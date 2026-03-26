@@ -2,8 +2,7 @@ flask==3.1.*
 gunicorn==23.*
 google-cloud-bigquery==3.27.0
 google-cloud-firestore==2.19.0
+google-genai==1.22.0
+pandas>=2.3.2
 requests==2.32.3
-tweepy==4.14.0
-pandas>=2.0.0
-yfinance>=0.2.30
-numpy>=1.24.0
+pydantic>=2.9.0

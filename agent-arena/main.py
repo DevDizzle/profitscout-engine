@@ -239,17 +239,17 @@ def load_performance_context() -> str:
                 p.ticker,
                 p.direction,
                 p.conviction,
-                sp.return_1d,
-                sp.return_3d,
+                e.next_day_pct as return_1d,
+                e.peak_return_3d as return_3d,
                 CASE 
-                    WHEN p.direction = 'bull' AND SAFE_CAST(sp.return_1d AS FLOAT64) > 0 THEN 1
-                    WHEN p.direction = 'bear' AND SAFE_CAST(sp.return_1d AS FLOAT64) < 0 THEN 1
+                    WHEN p.direction = 'bull' AND SAFE_CAST(e.next_day_pct AS FLOAT64) > 0 THEN 1
+                    WHEN p.direction = 'bear' AND SAFE_CAST(e.next_day_pct AS FLOAT64) < 0 THEN 1
                     ELSE 0
                 END as win_1d
             FROM `{GCP_PROJECT}.{BQ_DATASET}.{BQ_PICKS_TABLE}` p
-            LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.signal_performance` sp
-                ON p.ticker = sp.ticker AND CAST(p.scan_date AS STRING) = CAST(sp.scan_date AS STRING)
-            WHERE sp.return_1d IS NOT NULL
+            LEFT JOIN `{GCP_PROJECT}.{BQ_DATASET}.overnight_signals_enriched` e
+                ON p.ticker = e.ticker AND CAST(p.scan_date AS STRING) = CAST(e.scan_date AS STRING)
+            WHERE e.next_day_pct IS NOT NULL
         ),
         agent_stats AS (
             SELECT 

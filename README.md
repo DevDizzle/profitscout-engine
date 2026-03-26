@@ -1,6 +1,20 @@
 # GammaRips Engine
 
+> Current source of truth: start with `.gemini/GEMINI.MD`, then `docs/TRADING-STRATEGY.md`.
+
+
 Backend infrastructure for **The Overnight Edge** — an AI-powered overnight institutional options flow intelligence platform.
+
+## Current forward-paper policy
+
+The current forward-validation policy is **V3 liquidity-only**:
+- `premium_score >= 2`
+- `recommended_volume > 250 OR recommended_oi > 500`
+- no macro VIX gate for eligibility
+- VIX is logged as telemetry only
+- forward writes should go to `profit_scout.forward_paper_ledger_v3` with explicit policy metadata
+
+Canonical project context lives in `.gemini/GEMINI.MD` and `docs/TRADING-STRATEGY.md`.
 
 ## Architecture
 

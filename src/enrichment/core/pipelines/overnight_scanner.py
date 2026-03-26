@@ -7,7 +7,8 @@ Pure numeric scoring — zero LLM calls.
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery, storage
 
@@ -738,7 +739,8 @@ def _write_results(bq: bigquery.Client, scored: list[dict]):
         return
 
     now = datetime.now(timezone.utc)
-    today = now.date()
+    # Use EST date — scanner runs Friday night EST, UTC may already be Saturday
+    today = datetime.now(ZoneInfo("America/New_York")).date()
 
     rows = []
     for s in scored:
@@ -810,8 +812,8 @@ def run_pipeline():
     bq = bigquery.Client(project=config.PROJECT_ID)
     poly = PolygonClient(api_key=config.POLYGON_API_KEY)
 
-    # Check idempotency — skip if already ran today
-    today_str = date.today().isoformat()
+    # Check idempotency — skip if already ran today (EST)
+    today_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     check_q = f"""
         SELECT COUNT(*) as cnt FROM `{config.OVERNIGHT_SIGNALS_TABLE}`
         WHERE scan_date = '{today_str}'
